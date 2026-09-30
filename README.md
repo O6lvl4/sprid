@@ -32,47 +32,68 @@ so that its memory is a number you can check, not a hope:
 
 See `src/scrollback.almd`.
 
-## Status: M1 — the core, headless
+## Status: M3 — a window you can use
 
 ```
-sprid run <command>    run <command> on a PTY, print the final screen
-sprid bench [MB]       stream Claude-Code-like output, report memory
+sprid                    open a window running your login shell
+sprid run <command>      run <command> on a PTY headless, print the screen
+sprid bench [MB]         stream Claude-Code-like output, report memory
+sprid capture <png>      draw one screen of $SPRID_CAPTURE_CMD and save it
 ```
 
-`bench 256` on an M-series Mac (10 MB scrollback budget):
+The window is [snaidhm](https://github.com/almide-graphics/snaidhm)'s:
+winit for the window and input, wgpu for the GPU, snaidhm's glyph cache for
+text. A frame is one draw call of quads — background runs, glyphs, lines,
+cursor — built straight into a vertex buffer.
 
-```
-fed MB   footprint   scrollback   lines kept   MB/s
-     0       1 MiB        0 MiB          163   0.0
-    32      20 MiB        9 MiB        77258   15.5
-   128       7 MiB        9 MiB        77123   16.7
-   256       6 MiB        9 MiB        76985   16.9
-```
+What works:
 
-Memory is flat however much output arrives. Throughput is low: 17 MB/s,
-where Ghostty does GB/s. That is plenty for Claude Code, which writes KB/s,
-but not for `cat`-ing a large file. Making the hot loop fast is M2.
+- **Text**: UDEV Gothic 35NFLG when installed (SF Mono, Menlo, DejaVu Sans Mono
+  otherwise; `SPRID_FONT=<path>` to choose), falling back to Hiragino for
+  Japanese and to Menlo / STIX Two Math / Apple Symbols for the symbols
+  Claude Code draws (⏺ ✻ ✔). Bold, faint, underline, strikethrough, inverse,
+  256 and direct colour, wide chars, combining marks. Theme: Tokyo Night Storm.
+- **Input**: keys with Ctrl / Option-as-Alt / Shift in xterm's encoding,
+  DECCKM, function keys, the macOS input method (Japanese composition is drawn
+  at the cursor), Cmd+V paste with bracketed paste.
+- **Scrollback**: the wheel scrolls back through it (full-screen programs get
+  arrow keys, or wheel reports if they asked for the mouse), Shift+PageUp /
+  PageDown by pages. The view stays put while new output arrives below.
+- **Selection**: drag to select, across scrollback and screen; Cmd+C copies.
+- **Resize**: the grid follows the window (content is cut, not reflowed).
+- **Synchronized output** (mode 2026), which Claude Code uses, holds the
+  frame until the update is complete.
 
-What works: the DEC VT500 parser state machine with UTF-8, CSI cursor
-movement / erase / insert / delete / scroll, margins, SGR (16, 256 and direct
-color, colon sub-parameters), wide chars, combining marks, the alternate
-screen (47/1047/1049), DEC special graphics, tabs, save/restore cursor,
-DSR/DA replies, OSC titles, and skipping DCS/APC/PM/SOS. Everything is
-covered by `src/*_test.almd`.
+Measured on an M-series Mac:
+
+| | sprid | Ghostty 1.2.3 |
+|---|---|---|
+| Footprint, idle, one window | 74 MB | 684 MB (504 MB of it GPU surfaces) |
+| Footprint after 256 MB of Claude-Code-like output | flat (`bench`) | grows ([the leak](https://mitchellh.com/writing/ghostty-memory-leak-fix)) |
+| `cat` of 20 MB in the window | ~5 MB/s | GB/s |
+| CPU, idle | ~2 % | ~0 % |
+
+The last two rows are M2 and M4.
+
+Not yet: reflow on resize, colour emoji (snaidhm reads outlines, not
+bitmaps), mouse clicks reported to programs, the window title, a config file,
+tabs and splits.
 
 ## Milestones
 
 | Milestone | Done when |
 |---|---|
-| **M1 core** | Parser, screen and bounded scrollback pass their tests; real programs run on a PTY headless |
+| **M1 core** | ✅ Parser, screen and bounded scrollback pass their tests; real programs run on a PTY headless |
+| **M3 window** | ✅ A native window through snaidhm: glyph cache, cell rendering, keyboard and IME, scrollback, selection, resize |
 | **M2 speed** | A byte-level fast path for printable runs; ≥ 200 MB/s on `bench` |
-| **M3 window** | A native window through snaidhm: glyph atlas, cell rendering, keyboard and IME, resize with reflow |
-| **M4 daily driver** | A week of Claude Code sessions in sprid: no crash, footprint flat, measured against Ghostty |
+| **M4 daily driver** | Idle CPU ~0 (the PTY wakes the event loop instead of polling it), reflow, config; a week of Claude Code sessions in sprid with the footprint flat |
 
 ## Requirements
 
 Almide with the fix for [almide#3049](https://github.com/almide/almide/issues/3049)
-(branch `fix-hoist-unique-names`). Without it, calls such as
+([almide#3056](https://github.com/almide/almide/pull/3056)), and snaidhm with
+modifier keys on input (branch `terminal-input`, checked out next to this
+repository: `almide.toml` points at `../snaidhm`). Without it, calls such as
 `erase_cells(t, t.y, t.x, t.cols)` silently pass the wrong arguments and the
 tests fail.
 
@@ -88,10 +109,15 @@ before `t.field = empty`).
 
 ```
 native/pty.rs        forkpty, read with poll, write, resize (the OS boundary)
-native/sys.rs        memory footprint and a clock, for bench
+native/sys.rs        memory footprint and a clock
 src/cell.almd        cell layout: 16 bytes per cell in one flat grid
 src/width.almd       cell width of a codepoint
 src/scrollback.almd  bounded scrollback
 src/terminal.almd    parser + screen
-src/main.almd        headless CLI
+src/view.almd        lines by absolute number: viewport and selection
+src/keys.almd        keyboard input to xterm bytes
+src/gui/fonts.almd   faces and fallbacks
+src/gui/render.almd  the screen as quads
+src/gui/app.almd     the window's loop
+src/main.almd        CLI
 ```
