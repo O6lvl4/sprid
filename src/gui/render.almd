@@ -20,6 +20,7 @@ import snaidhm.sfnt as sfnt
 import snaidhm.text as text
 import self.cell
 import self.gui.fonts
+import self.gui.sprite
 import self.scrollback
 import self.terminal
 import self.view
@@ -53,6 +54,8 @@ type Renderer = {
   palette: List[Int],
   // (code point * 2 + bold) -> glyph cache slot, -1 for no glyph.
   glyphs: Map[Int, Int],
+  // Box drawing and block elements, as rectangles for this cell size.
+  sprites: Map[Int, List[sprite.Piece]],
   vtx: Int,
   capacity: Int,
   count: Int,
@@ -101,6 +104,7 @@ fn new(device: Int, faces: fonts.Faces, size_px: Int, pad_x: Int, pad_y: Int, ce
     line_w: int.max(1, size_px / 14),
     palette: palette256(),
     glyphs: [:],
+    sprites: [:],
     vtx: 0,
     capacity: 0,
     count: 0,
@@ -145,6 +149,18 @@ fn glyph(mut r: Renderer, cp: Int, bold: Bool) -> Int = {
     }
   }
 }
+
+/// The rectangles drawing box-drawing or block character `cp`, made once
+/// per character.
+fn sprite_pieces(mut r: Renderer, cp: Int) -> List[sprite.Piece] =
+  match map.get(r.sprites, cp) {
+    some(ps) => ps,
+    none => {
+      let ps = sprite.pieces(cp, r.cell_w, r.cell_h, r.line_w)
+      map.insert(r.sprites, cp, ps)
+      ps
+    }
+  }
 
 // ── Quads ─────────────────────────────────────────────────────────────────
 
@@ -224,7 +240,9 @@ fn draw(mut r: Renderer, t: terminal.Terminal, back: Int, sel: Option[view.Selec
         for x in 0..<t.cols {
           let o = x * cell.SIZE
           let cp = bytes.read_u32_le(row.cells, o + cell.OFF_CP)
-          if cp > 32 then {
+          if sprite.is_sprite(cp) then {
+            marks_total = marks_total + list.len(sprite_pieces(r, cp))
+          } else if cp > 32 then {
             let bold = int.band(bytes.read_u16_le(row.cells, o + cell.OFF_ATTRS), cell.ATTR_BOLD) != 0
             let _ = glyph(r, cp, bold)
             for mark in marks(row, x) {
@@ -341,7 +359,12 @@ fn draw_row(mut r: Renderer, row: scrollback.Row, line: Int, sel: Option[view.Se
     let bold = int.band(attrs, cell.ATTR_BOLD) != 0
     let left = r.pad_x + cx * r.cell_w
     let w = r.cell_w * int.max(1, bytes.read_u8(row.cells, o + cell.OFF_WIDTH))
-    if cp > 32 and int.band(attrs, cell.ATTR_HIDDEN) == 0 then {
+    if sprite.is_sprite(cp) and int.band(attrs, cell.ATTR_HIDDEN) == 0 then {
+      for p in sprite_pieces(r, cp) {
+        rect(r, left + p.x0, top + p.y0, left + p.x1, top + p.y1, fg, alpha * p.alpha, sx, sy)
+        n = n + 1
+      }
+    } else if cp > 32 and int.band(attrs, cell.ATTR_HIDDEN) == 0 then {
       let slot = glyph(r, cp, bold)
       if slot >= 0 then {
         glyph_quad(r, slot, left, top + r.baseline, fg, alpha, sx, sy)

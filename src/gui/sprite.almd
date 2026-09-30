@@ -1,0 +1,210 @@
+// Box drawing and block elements drawn as rectangles fitted to the cell.
+//
+// A font's glyphs for these are drawn at the font's own height, so with any
+// line spacing the logo Claude Code draws out of blocks (▐▛███▜▌) splits into
+// strips, and box lines break between rows. Like Ghostty, sprid draws them
+// itself: every piece is a rectangle in the cell's own pixels, and lines run
+// edge to edge, so neighbouring cells join exactly.
+
+import math
+
+/// A filled rectangle in cell pixels, drawn in the cell's colour at `alpha`.
+type Piece = { x0: Int, y0: Int, x1: Int, y1: Int, alpha: Float }
+
+/// U+2500..U+257F: the arms of each box-drawing character, 2 bits each —
+/// up, right << 2, down << 4, left << 6; 1 light, 2 heavy, 3 double. -2 is
+/// a rounded corner, -1 a character left to the font (dashes, diagonals).
+let BOX_ARMS = [
+  68, 136, 17, 34, -1, -1, -1, -1, -1, -1, -1, -1, 20, 24, 36, 40,
+  80, 144, 96, 160, 5, 9, 6, 10, 65, 129, 66, 130, 21, 25, 22, 37,
+  38, 26, 41, 42, 81, 145, 82, 97, 98, 146, 161, 162, 84, 148, 88, 152,
+  100, 164, 104, 168, 69, 133, 73, 137, 70, 134, 74, 138, 85, 149, 89, 153,
+  86, 101, 102, 150, 90, 165, 105, 154, 169, 166, 106, 170, -1, -1, -1, -1,
+  204, 51, 28, 52, 60, 208, 112, 240, 13, 7, 15, 193, 67, 195, 29, 55,
+  63, 209, 115, 243, 220, 116, 252, 205, 71, 207, 221, 119, 255, -2, -2, -2,
+  -2, -1, -1, -1, 64, 1, 4, 16, 128, 2, 8, 32, 72, 33, 132, 18,
+]
+
+fn is_sprite(cp: Int) -> Bool =
+  (cp >= 0x2500 and cp <= 0x257F and BOX_ARMS[cp - 0x2500] != -1) or (cp >= 0x2580 and cp <= 0x259F)
+
+/// The pieces drawing `cp` in a `w` x `h` cell with light lines `lw` thick;
+/// empty when the font should draw it.
+fn pieces(cp: Int, w: Int, h: Int, lw: Int) -> List[Piece] =
+  if cp >= 0x2580 and cp <= 0x259F then block(cp, w, h)
+  else if cp >= 0x2500 and cp <= 0x257F then {
+    let arms = BOX_ARMS[cp - 0x2500]
+    if arms == -2 then rounded(cp, w, h, lw)
+    else if arms < 0 then []
+    else box(int.band(arms, 3), int.band(int.bshr(arms, 2), 3), int.band(int.bshr(arms, 4), 3), int.band(int.bshr(arms, 6), 3), w, h, lw)
+  }
+  else []
+
+fn piece(x0: Int, y0: Int, x1: Int, y1: Int) -> Piece = Piece { x0: x0, y0: y0, x1: x1, y1: y1, alpha: 1.0 }
+
+// ── Block elements ────────────────────────────────────────────────────────
+
+/// Pixel `k` eighths along `n`.
+fn eighths(n: Int, k: Int) -> Int = (n * k + 4) / 8
+
+/// Quadrants of a `w` x `h` cell: bit 1 upper left, 2 upper right, 4 lower
+/// left, 8 lower right.
+fn quadrants(q: Int, w: Int, h: Int) -> List[Piece] = {
+  let mx = w / 2
+  let my = h / 2
+  var ps: List[Piece] = []
+  if int.band(q, 1) != 0 then list.push(ps, piece(0, 0, mx, my))
+  if int.band(q, 2) != 0 then list.push(ps, piece(mx, 0, w, my))
+  if int.band(q, 4) != 0 then list.push(ps, piece(0, my, mx, h))
+  if int.band(q, 8) != 0 then list.push(ps, piece(mx, my, w, h))
+  ps
+}
+
+fn shade(w: Int, h: Int, a: Float) -> List[Piece] = [Piece { x0: 0, y0: 0, x1: w, y1: h, alpha: a }]
+
+fn block(cp: Int, w: Int, h: Int) -> List[Piece] = match cp {
+  0x2580 => [piece(0, 0, w, h / 2)],
+  0x2588 => [piece(0, 0, w, h)],
+  0x2590 => [piece(w / 2, 0, w, h)],
+  0x2591 => shade(w, h, 0.25),
+  0x2592 => shade(w, h, 0.5),
+  0x2593 => shade(w, h, 0.75),
+  0x2594 => [piece(0, 0, w, eighths(h, 1))],
+  0x2595 => [piece(w - eighths(w, 1), 0, w, h)],
+  0x2596 => quadrants(4, w, h),
+  0x2597 => quadrants(8, w, h),
+  0x2598 => quadrants(1, w, h),
+  0x2599 => quadrants(1 + 4 + 8, w, h),
+  0x259A => quadrants(1 + 8, w, h),
+  0x259B => quadrants(1 + 2 + 4, w, h),
+  0x259C => quadrants(1 + 2 + 8, w, h),
+  0x259D => quadrants(2, w, h),
+  0x259E => quadrants(2 + 4, w, h),
+  0x259F => quadrants(2 + 4 + 8, w, h),
+  // U+2581..U+2587: lower k eighths; U+2589..U+258F: left 7..1 eighths.
+  _ => if cp < 0x2588 then [piece(0, h - eighths(h, cp - 0x2580), w, h)]
+       else [piece(0, 0, eighths(w, 8 - (cp - 0x2588)), h)],
+}
+
+// ── Box drawing ───────────────────────────────────────────────────────────
+
+/// Thickness of an arm of weight `k`: light, heavy (twice), double (two light
+/// lines a light line apart).
+fn thickness(k: Int, lw: Int) -> Int =
+  if k == 2 then 2 * lw else if k == 3 then 3 * lw else if k == 1 then lw else 0
+
+/// The strokes across a band starting at `start` for an arm of weight `k`:
+/// one, or the two of a double.
+fn strokes(k: Int, start: Int, lw: Int) -> List[(Int, Int)] =
+  if k == 3 then [(start, start + lw), (start + 2 * lw, start + 3 * lw)]
+  else [(start, start + thickness(k, lw))]
+
+fn box(u: Int, r: Int, d: Int, l: Int, w: Int, h: Int, lw: Int) -> List[Piece] = {
+  let cx = w / 2
+  let cy = h / 2
+  // Where the vertical and horizontal strokes cross: arms reach across it,
+  // so corners and junctions are filled.
+  let vt = int.max(thickness(u, lw), thickness(d, lw))
+  let ht = int.max(thickness(l, lw), thickness(r, lw))
+  let vx0 = cx - vt / 2
+  let hy0 = cy - ht / 2
+  var ps: List[Piece] = []
+  if u > 0 then {
+    for s in strokes(u, cx - thickness(u, lw) / 2, lw) {
+      list.push(ps, piece(s.0, 0, s.1, if ht > 0 then hy0 + ht else cy))
+    }
+  }
+  if d > 0 then {
+    for s in strokes(d, cx - thickness(d, lw) / 2, lw) {
+      list.push(ps, piece(s.0, if ht > 0 then hy0 else cy, s.1, h))
+    }
+  }
+  if l > 0 then {
+    for s in strokes(l, cy - thickness(l, lw) / 2, lw) {
+      list.push(ps, piece(0, s.0, if vt > 0 then vx0 + vt else cx, s.1))
+    }
+  }
+  if r > 0 then {
+    for s in strokes(r, cy - thickness(r, lw) / 2, lw) {
+      list.push(ps, piece(if vt > 0 then vx0 else cx, s.0, w, s.1))
+    }
+  }
+  ps
+}
+
+/// ╭ ╮ ╯ ╰: a quarter circle joining a vertical and a horizontal light arm,
+/// drawn as squares along the arc.
+fn rounded(cp: Int, w: Int, h: Int, lw: Int) -> List[Piece] = {
+  let cx = w / 2
+  let cy = h / 2
+  let rad = int.min(cx, cy)
+  // Which way the arms go: +1 right or down, -1 left or up.
+  let sx = if cp == 0x256D or cp == 0x2570 then 1 else -1
+  let sy = if cp == 0x256D or cp == 0x256E then 1 else -1
+  let x0 = cx - lw / 2
+  let y0 = cy - lw / 2
+  var ps: List[Piece] = []
+  // The straight parts, from where the arc ends to the cell's edges.
+  if sx > 0 then list.push(ps, piece(cx + rad, y0, w, y0 + lw)) else list.push(ps, piece(0, y0, cx - rad + 1, y0 + lw))
+  if sy > 0 then list.push(ps, piece(x0, cy + rad, x0 + lw, h)) else list.push(ps, piece(x0, 0, x0 + lw, cy - rad + 1))
+  // The arc, centred a radius into the corner, from the vertical stroke's
+  // end to the horizontal one's.
+  let ccx = int.to_float(cx + sx * rad)
+  let ccy = int.to_float(cy + sy * rad)
+  let r = int.to_float(rad)
+  let steps = int.max(8, rad * 3)
+  for i in 0...steps {
+    let phi = math.pi() / 2.0 * int.to_float(i) / int.to_float(steps)
+    let px = ccx - int.to_float(sx) * r * math.cos(phi)
+    let py = ccy - int.to_float(sy) * r * math.sin(phi)
+    let qx = float.to_int(float.round(px)) - lw / 2
+    let qy = float.to_int(float.round(py)) - lw / 2
+    list.push(ps, piece(qx, qy, qx + lw, qy + lw))
+  }
+  ps
+}
+
+fn covers(ps: List[Piece], x: Int, y: Int) -> Bool =
+  list.any(ps, (p) => x >= p.x0 and x < p.x1 and y >= p.y0 and y < p.y1)
+
+test "blocks fill the cell edge to edge" {
+  let full = pieces(0x2588, 10, 21, 2)
+  assert(covers(full, 0, 0) and covers(full, 9, 20))
+  let upper = pieces(0x2580, 10, 21, 2)
+  assert(covers(upper, 9, 9) and not covers(upper, 0, 10))
+  let lower = pieces(0x2584, 10, 21, 2)
+  assert(covers(lower, 0, 11) and covers(lower, 9, 20) and not covers(lower, 0, 9))
+}
+
+test "quadrants split at the middle" {
+  let q = pieces(0x259B, 10, 20, 2)
+  assert(covers(q, 0, 0) and covers(q, 9, 0) and covers(q, 0, 19))
+  assert(not covers(q, 9, 19))
+}
+
+test "lines run edge to edge so rows and columns join" {
+  let v = pieces(0x2502, 10, 21, 2)
+  assert(covers(v, 5, 0) and covers(v, 5, 20))
+  let hl = pieces(0x2500, 10, 21, 2)
+  assert(covers(hl, 0, 10) and covers(hl, 9, 10))
+}
+
+test "a corner fills where its arms meet" {
+  let c = pieces(0x250C, 10, 20, 2)
+  assert(covers(c, 4, 9) and covers(c, 9, 10) and covers(c, 5, 19))
+  assert(not covers(c, 0, 10) and not covers(c, 5, 0))
+}
+
+test "rounded corners reach both edges" {
+  let c = pieces(0x256D, 10, 20, 2)
+  assert(covers(c, 9, 10) and covers(c, 5, 19))
+  assert(not covers(c, 0, 10) and not covers(c, 5, 0))
+  let d = pieces(0x256F, 10, 20, 2)
+  assert(covers(d, 0, 10) and covers(d, 5, 0))
+}
+
+test "dashes and diagonals are left to the font" {
+  assert_eq(list.len(pieces(0x2504, 10, 20, 2)), 0)
+  assert_eq(list.len(pieces(0x2571, 10, 20, 2)), 0)
+  assert(not is_sprite(0x2571) and is_sprite(0x259B))
+}
