@@ -1,0 +1,116 @@
+// A one-line text field: its text, a caret and a selection, edited the way a
+// Mac text field is — typing replaces the selection, Shift extends it,
+// Option moves by word, Cmd to the ends.
+//
+// Positions count code points. The selection runs between `anchor` and
+// `caret`; when they are equal there is none.
+
+type Field = { chars: List[Int], caret: Int, anchor: Int }
+
+/// A field holding `s`, the caret at its end.
+fn of(s: String) -> Field = {
+  let cps = code_points(s)
+  Field { chars: cps, caret: list.len(cps), anchor: list.len(cps) }
+}
+
+fn code_points(s: String) -> List[Int] = list.map(string.chars(s), (ch) => string.codepoint(ch) ?? 32)
+
+fn text(f: Field) -> String = string.join(list.map(f.chars, (cp) => string.from_codepoint(cp)), "")
+
+/// The selection as (start, end), start <= end.
+fn range(f: Field) -> (Int, Int) = (int.min(f.caret, f.anchor), int.max(f.caret, f.anchor))
+
+fn has_selection(f: Field) -> Bool = f.caret != f.anchor
+
+fn selected(f: Field) -> String = {
+  let (a, b) = range(f)
+  string.join(list.map(list.slice(f.chars, a, b), (cp) => string.from_codepoint(cp)), "")
+}
+
+fn select_all(f: Field) -> Field = { ...f, anchor: 0, caret: list.len(f.chars) }
+
+/// The caret moved to `to` (clamped), the selection extended there when
+/// `extend`, else gone.
+fn move_to(f: Field, to: Int, extend: Bool) -> Field = {
+  let at = int.clamp(to, 0, list.len(f.chars))
+  { ...f, caret: at, anchor: if extend then f.anchor else at }
+}
+
+/// Left or right (`dir` -1 or 1) by a character. Without Shift a selection
+/// collapses to that end instead.
+fn step(f: Field, dir: Int, extend: Bool) -> Field = {
+  let (a, b) = range(f)
+  if has_selection(f) and not extend then move_to(f, if dir < 0 then a else b, false)
+  else move_to(f, f.caret + dir, extend)
+}
+
+fn is_space(cp: Int) -> Bool = cp == 32 or cp == 9
+
+/// Where a word move from `from` lands: left to the start of the word
+/// before, right to the end of the word after.
+fn word_edge(f: Field, from: Int, dir: Int) -> Int = {
+  let n = list.len(f.chars)
+  var i = from
+  if dir < 0 then {
+    while i > 0 and is_space(f.chars[i - 1]) {
+      i = i - 1
+    }
+    while i > 0 and not is_space(f.chars[i - 1]) {
+      i = i - 1
+    }
+  } else {
+    while i < n and is_space(f.chars[i]) {
+      i = i + 1
+    }
+    while i < n and not is_space(f.chars[i]) {
+      i = i + 1
+    }
+  }
+  i
+}
+
+/// `s` in place of the selection, or at the caret; the caret after it.
+fn insert(f: Field, s: String) -> Field = {
+  let (a, b) = range(f)
+  let add = code_points(s)
+  let at = a + list.len(add)
+  Field { chars: list.take(f.chars, a) + add + list.drop(f.chars, b), caret: at, anchor: at }
+}
+
+/// Delete the selection, or else from the caret to `to`.
+fn delete_to(f: Field, to: Int) -> Field =
+  if has_selection(f) then insert(f, "")
+  else {
+    let a = int.clamp(int.min(f.caret, to), 0, list.len(f.chars))
+    let b = int.clamp(int.max(f.caret, to), 0, list.len(f.chars))
+    Field { chars: list.take(f.chars, a) + list.drop(f.chars, b), caret: a, anchor: a }
+  }
+
+test "typing replaces the selection" {
+  let f = insert(select_all(of("foo")), "b")
+  assert_eq((text(f), f.caret), ("b", 1))
+  let g = insert(move_to(of("ac"), 1, false), "b")
+  assert_eq((text(g), g.caret), ("abc", 2))
+}
+
+test "shift extends, arrows collapse" {
+  let f = step(step(of("hello"), -1, true), -1, true)
+  assert_eq(selected(f), "lo")
+  assert_eq(step(f, 1, false).caret, 5)
+  assert_eq(step(f, -1, false).caret, 3)
+}
+
+test "words and deleting" {
+  let f = of("git log --oneline")
+  assert_eq(word_edge(f, f.caret, -1), 8)
+  assert_eq(word_edge(f, 3, 1), 7)
+  assert_eq(text(delete_to(f, word_edge(f, f.caret, -1))), "git log ")
+  assert_eq(text(delete_to(f, 0)), "")
+  assert_eq(text(delete_to(move_to(f, 0, false), 1)), "it log --oneline")
+  assert_eq(text(delete_to(select_all(f), 0)), "")
+}
+
+test "wide characters count as one" {
+  let f = step(of("日本語"), -1, true)
+  assert_eq((selected(f), text(insert(f, "x"))), ("語", "日本x"))
+}

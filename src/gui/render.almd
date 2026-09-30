@@ -24,6 +24,7 @@ import self.gui.emoji
 import self.gui.sprite
 import self.scrollback
 import self.search
+import self.field
 import self.terminal
 import self.view
 import self.width as cell_width
@@ -380,27 +381,27 @@ fn glyph_quad(r: Renderer, slot: Int, x: Int, y: Int, rgb: Int, alpha: Float, sx
 /// Draw `t` into the window's current frame: the viewport scrolled `back`
 /// lines into scrollback, `sel` highlighted, and `preedit` — what the input
 /// method is composing — at the cursor. `width` x `height` is the drawable.
-/// With `find`, its matches are marked and its bar is shown, the
-/// composition in it.
+/// With `find`, its matches are marked and its bar is shown — while the bar
+/// has the focus, with the composition in it.
 fn draw(mut r: Renderer, t: terminal.Terminal, back: Int, sel: Option[view.Selection],
         preedit: List[Int], width: Int, height: Int, tabs: List[String], active: Int,
-        find: Option[search.Find]) -> Unit = {
+        find: Option[Bar]) -> Unit = {
   let gy = grid_top(r, list.len(tabs))
   let titles = if list.len(tabs) > 1 then list.map(tabs, (s) => text.code_points(s)) else []
   let top_line = view.top_line(t, back)
   let lines = list.map(0..<t.rows, (y) => view.line_at(t, top_line + y))
-  let query = match find { some(f) => f.query, none => "" }
+  let query = match find { some(b) => b.find.query, none => "" }
   // The matches on each row, and the current one's columns where it is.
   let found = list.map(lines, (line) => match line {
     some(row) => search.row_spans(row, t.cols, query),
     none => [],
   })
   let current = match find {
-    some(f) => if f.index >= 0 then (f.line - top_line, f.from, f.to) else (-1, 0, 0),
+    some(b) => if b.find.index >= 0 then (b.find.line - top_line, b.find.from, b.find.to) else (-1, 0, 0),
     none => (-1, 0, 0),
   }
   let bar = match find {
-    some(f) => find_text(f, preedit),
+    some(b) => bar_chars(b, preedit) + find_count(b.find),
     none => [],
   }
 
@@ -447,7 +448,7 @@ fn draw(mut r: Renderer, t: terminal.Terminal, back: Int, sel: Option[view.Selec
   // Room for the worst case: per cell a background, a glyph and two lines,
   // plus marks, the cursor, the scrollbar and the composition.
   let quads = t.rows * t.cols * 4 + marks_total + 3 + list.len(preedit) * 3 + title_chars + list.len(titles) * 3 + 1
-    + list.len(bar) + FIND_QUADS
+    + list.len(bar) * 3 + FIND_QUADS
   if quads * 6 > r.capacity then {
     // Grow by half again, so a count creeping up doesn't replace the buffer
     // every frame, and free the old one: its GPU memory isn't reclaimed
@@ -477,7 +478,8 @@ fn draw(mut r: Renderer, t: terminal.Terminal, back: Int, sel: Option[view.Selec
   if cursor_row >= 0 and cursor_row < t.rows then {
     let cx = r.pad_x + t.x * r.cell_w
     let ctop = gy + cursor_row * r.cell_h
-    if list.len(preedit) > 0 and find == none then {
+    let in_bar = match find { some(b) => b.focused, none => false }
+    if list.len(preedit) > 0 and not in_bar then {
       var px = cx
       for cp in preedit {
         let w = r.cell_w * int.max(1, cell_width.of(cp))
@@ -511,7 +513,7 @@ fn draw(mut r: Renderer, t: terminal.Terminal, back: Int, sel: Option[view.Selec
 
   if list.len(titles) > 1 then n = n + draw_tabs(r, titles, active, width, sx, sy)
   match find {
-    some(f) => { n = n + draw_find(r, f, preedit, gy, width, sx, sy) },
+    some(b) => { n = n + draw_find(r, b, preedit, gy, width, sx, sy) },
     none => (),
   }
 
@@ -670,9 +672,13 @@ fn colors(r: Renderer, row: scrollback.Row, line: Int, x: Int, sel: Option[view.
 
 // ── Find bar ──────────────────────────────────────────────────────────────
 
-/// Quads of the find bar besides its characters: its box, border, caret
-/// and the composition's underline.
-let FIND_QUADS = 8
+/// The find bar: the search, the field its query is typed in, and whether
+/// it has the focus — typing goes to it rather than the program.
+type Bar = { find: search.Find, field: field.Field, focused: Bool }
+
+/// Quads of the find bar besides its characters and their selection and
+/// underlines: its box, border and caret.
+let FIND_QUADS = 7
 
 /// Width of the find bar's box, cells, at the least.
 let FIND_CELLS = 30
@@ -681,13 +687,16 @@ let FIND_CELLS = 30
 fn find_count(f: search.Find) -> List[Int] =
   if f.query == "" then [] else text.code_points("${int.to_string(f.index + 1)}/${int.to_string(f.total)}")
 
-/// Every character the find bar draws.
-fn find_text(f: search.Find, preedit: List[Int]) -> List[Int] =
-  text.code_points(f.query) + preedit + find_count(f)
+/// What the field shows: its text with the composition, if it has the
+/// focus, at the caret.
+fn bar_chars(b: Bar, preedit: List[Int]) -> List[Int] = {
+  let pre = if b.focused then preedit else []
+  list.take(b.field.chars, b.field.caret) + pre + list.drop(b.field.chars, b.field.caret)
+}
 
 /// The find bar's box: (x0, y0, x1, y1), at the top right of the grid.
-fn find_box(r: Renderer, f: search.Find, preedit: List[Int], gy: Int, width: Int) -> (Int, Int, Int, Int) = {
-  let want = cols_of(text.code_points(f.query) + preedit) + list.len(find_count(f)) + 4
+fn find_box(r: Renderer, b: Bar, preedit: List[Int], gy: Int, width: Int) -> (Int, Int, Int, Int) = {
+  let want = cols_of(bar_chars(b, preedit)) + list.len(find_count(b.find)) + 4
   let w = int.min(width - 2 * r.pad_x, int.max(FIND_CELLS, want) * r.cell_w + r.pad_x)
   let x1 = width - r.pad_x
   (x1 - w, gy, x1, gy + r.cell_h + r.pad_y)
@@ -696,30 +705,81 @@ fn find_box(r: Renderer, f: search.Find, preedit: List[Int], gy: Int, width: Int
 /// Columns `cps` take.
 fn cols_of(cps: List[Int]) -> Int = list.fold(cps, 0, (acc, cp) => acc + int.max(1, cell_width.of(cp)))
 
-/// Where the find bar's caret is: (x, y) of the cell it stands in, pixels.
-fn find_caret(r: Renderer, f: search.Find, preedit: List[Int], tabs: Int, width: Int) -> (Int, Int) = {
-  let (x0, y0, x1, _) = find_box(r, f, preedit, grid_top(r, tabs), width)
-  let room = (x1 - x0 - r.pad_x) / r.cell_w - list.len(find_count(f)) - 2
-  (x0 + r.pad_x / 2 + int.min(cols_of(text.code_points(f.query)), room) * r.cell_w, y0 + r.pad_y / 2)
+/// The field's layout in the box: where its text starts (pixels), how many
+/// columns it may take, and the first character shown — the text scrolls
+/// so the caret stays in view.
+fn field_layout(r: Renderer, b: Bar, preedit: List[Int], box: (Int, Int, Int, Int)) -> (Int, Int, Int) = {
+  let (x0, _, x1, _) = box
+  let room = int.max(1, (x1 - x0 - r.pad_x) / r.cell_w - list.len(find_count(b.find)) - 2)
+  let chars = bar_chars(b, preedit)
+  let caret = b.field.caret + (if b.focused then list.len(preedit) else 0)
+  // Back from the caret while the columns up to it fit.
+  var first = caret
+  var used = 0
+  while first > 0 and used + int.max(1, cell_width.of(chars[first - 1])) < room {
+    first = first - 1
+    used = used + int.max(1, cell_width.of(chars[first]))
+  }
+  (x0 + r.pad_x / 2, room, first)
 }
 
-/// The find bar: the query (its end, when it outgrows the box), the
-/// composition, a caret, and the count on the right. Returns the quads it
-/// pushed.
-fn draw_find(mut r: Renderer, f: search.Find, preedit: List[Int], gy: Int, width: Int, sx: Float, sy: Float) -> Int = {
-  let (x0, y0, x1, y1) = find_box(r, f, preedit, gy, width)
+/// The x of the edge before character `i` of what the field shows.
+fn field_x(r: Renderer, b: Bar, preedit: List[Int], box: (Int, Int, Int, Int), i: Int) -> Int = {
+  let (left, _, first) = field_layout(r, b, preedit, box)
+  left + cols_of(list.slice(bar_chars(b, preedit), first, int.max(first, i))) * r.cell_w
+}
+
+/// Where the find bar's caret is: (x, y) of the cell it stands in, pixels.
+fn find_caret(r: Renderer, b: Bar, preedit: List[Int], tabs: Int, width: Int) -> (Int, Int) = {
+  let box = find_box(r, b, preedit, grid_top(r, tabs), width)
+  (field_x(r, b, preedit, box, b.field.caret), box.1 + r.pad_y / 2)
+}
+
+/// Whether pixel (`px`, `py`) is on the find bar.
+fn on_bar(r: Renderer, b: Bar, tabs: Int, width: Int, px: Int, py: Int) -> Bool = {
+  let (x0, y0, x1, y1) = find_box(r, b, [], grid_top(r, tabs), width)
+  px >= x0 and px < x1 and py >= y0 and py < y1
+}
+
+/// The caret position in the field nearest pixel column `px`.
+fn field_index_at(r: Renderer, b: Bar, tabs: Int, width: Int, px: Int) -> Int = {
+  let box = find_box(r, b, [], grid_top(r, tabs), width)
+  let (left, _, first) = field_layout(r, b, [], box)
+  var i = first
+  var x = left
+  let n = list.len(b.field.chars)
+  var done = false
+  while not done and i < n {
+    let w = r.cell_w * int.max(1, cell_width.of(b.field.chars[i]))
+    if px < x + w / 2 then done = true
+    else {
+      x = x + w
+      i = i + 1
+    }
+  }
+  i
+}
+
+/// The find bar: the field — its selection, the composition underlined,
+/// the caret while it has the focus — and the count on the right. Its border
+/// is the accent colour while it has the focus. Returns the quads it pushed.
+fn draw_find(mut r: Renderer, b: Bar, preedit: List[Int], gy: Int, width: Int, sx: Float, sy: Float) -> Int = {
+  let box = find_box(r, b, preedit, gy, width)
+  let (x0, y0, x1, y1) = box
   let lw = int.max(1, r.line_w)
+  let edge = if b.focused then ACCENT else TAB_RULE
   rect(r, x0, y0, x1, y1, TAB_BAR, 1.0, sx, sy)
-  rect(r, x0, y0, x1, y0 + lw, TAB_RULE, 1.0, sx, sy)
-  rect(r, x0, y1 - lw, x1, y1, TAB_RULE, 1.0, sx, sy)
-  rect(r, x0, y0, x0 + lw, y1, TAB_RULE, 1.0, sx, sy)
-  rect(r, x1 - lw, y0, x1, y1, TAB_RULE, 1.0, sx, sy)
+  rect(r, x0, y0, x1, y0 + lw, edge, 1.0, sx, sy)
+  rect(r, x0, y1 - lw, x1, y1, edge, 1.0, sx, sy)
+  rect(r, x0, y0, x0 + lw, y1, edge, 1.0, sx, sy)
+  rect(r, x1 - lw, y0, x1, y1, edge, 1.0, sx, sy)
   var n = 5
-  let count = find_count(f)
+  let count = find_count(b.find)
   let baseline = y0 + r.pad_y / 2 + r.baseline
+  let ctop = y0 + r.pad_y / 2
   // The count, right-aligned; red when nothing matches.
   var cx = x1 - r.pad_x / 2 - list.len(count) * r.cell_w
-  let count_color = if f.total == 0 then NO_MATCH else TAB_DIM
+  let count_color = if b.find.total == 0 then NO_MATCH else TAB_DIM
   for cp in count {
     let slot = glyph(r, cp, false)
     if slot >= 0 then {
@@ -728,36 +788,46 @@ fn draw_find(mut r: Renderer, f: search.Find, preedit: List[Int], gy: Int, width
     }
     cx = cx + r.cell_w
   }
-  // The query, its tail when it doesn't fit, then the composition.
-  let room = (x1 - x0 - r.pad_x) / r.cell_w - list.len(count) - 2
-  var shown = text.code_points(f.query) + preedit
-  while cols_of(shown) > room and list.len(shown) > 0 {
-    shown = list.drop(shown, 1)
-  }
-  let typed = list.len(shown) - list.len(preedit)
-  var pen = x0 + r.pad_x / 2
-  var i = 0
-  var caret = pen
-  for cp in shown {
-    let w = r.cell_w * int.max(1, cell_width.of(cp))
+  // The field: characters from `first` while they fit.
+  let (left, room, first) = field_layout(r, b, preedit, box)
+  let chars = bar_chars(b, preedit)
+  let pre = if b.focused then list.len(preedit) else 0
+  let caret = b.field.caret
+  let (sel_a, sel_b) = field.range(b.field)
+  var pen = left
+  var used = 0
+  var i = first
+  while i < list.len(chars) and used + int.max(1, cell_width.of(chars[i])) <= room {
+    let cp = chars[i]
+    let cols = int.max(1, cell_width.of(cp))
+    let w = r.cell_w * cols
+    // Character `i` shown is the field's `at`, or part of the composition.
+    let composing = i >= caret and i < caret + pre
+    let at = if i < caret then i else i - pre
+    if not composing and at >= sel_a and at < sel_b then {
+      rect(r, pen, ctop, pen + w, ctop + r.cell_h, SELECTION, 1.0, sx, sy)
+      n = n + 1
+    }
     let slot = glyph(r, cp, false)
     if slot >= 0 then {
       glyph_quad(r, slot, pen, baseline, DEFAULT_FG, 1.0, sx, sy)
       n = n + 1
     }
-    if i >= typed then {
+    if composing then {
       let uy = baseline + r.line_w
       rect(r, pen, uy, pen + w, uy + r.line_w, DEFAULT_FG, 1.0, sx, sy)
       n = n + 1
     }
     pen = pen + w
+    used = used + cols
     i = i + 1
-    if i == typed then caret = pen
   }
-  if typed <= 0 then caret = x0 + r.pad_x / 2
-  let ctop = y0 + r.pad_y / 2
-  rect(r, caret, ctop, caret + int.max(2, r.line_w * 2), ctop + r.cell_h, ACCENT, 1.0, sx, sy)
-  n + 1
+  if b.focused and not field.has_selection(b.field) then {
+    let x = field_x(r, b, preedit, box, caret + pre)
+    rect(r, x, ctop, x + int.max(2, r.line_w * 2), ctop + r.cell_h, ACCENT, 1.0, sx, sy)
+    n = n + 1
+  }
+  n
 }
 
 fn rgb_floats(rgb: Int) -> (Float, Float, Float) = (
@@ -765,4 +835,3 @@ fn rgb_floats(rgb: Int) -> (Float, Float, Float) = (
   int.to_float(int.band(int.bshr(rgb, 8), 0xFF)) / 255.0,
   int.to_float(int.band(rgb, 0xFF)) / 255.0,
 )
-

@@ -25,6 +25,7 @@ import self.keys
 import self.pty
 import self.scrollback
 import self.search
+import self.field
 import self.sys
 import self.terminal
 import self.view
@@ -93,6 +94,12 @@ type Ui = {
   // stays when the bar closes, for Cmd+G and the next Cmd+F.
   finding: Bool,
   find: search.Find,
+  // The bar's text field, whether it has the focus (typing goes to it, not
+  // the program; a click on the terminal gives the focus back), and whether
+  // a drag in it is selecting.
+  field: field.Field,
+  find_focus: Bool,
+  field_drag: Bool,
 }
 
 /// How the window starts: a command for the first tab instead of the login
@@ -180,6 +187,7 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
   let ja = string.starts_with(env.get("LANG") ?? "", "ja")
   var ui = Ui { preedit: [], wheel_acc: 0.0, dragging: false, anchor_line: 0, anchor_col: 0, dirty: true,
                 renaming: false, draft: "", click_ms: 0, click_tab: -1, home: home, finding: false, find: search.empty(),
+                field: field.of(""), find_focus: false, field_drag: false,
                 app_button: -1, report_col: -1, report_row: -1 }
   var alive = true
   var last_frame = 0
@@ -251,6 +259,7 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
       if switches_tab(act) then {
         ui.finding = false
         ui.find = search.empty()
+        ui.field = field.of("")
       }
       match act {
         NewTab => {
@@ -357,13 +366,13 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
           if not held then {
             let t0 = sys.now_ms()
             render.draw(r, cur.t, cur.back, cur.sel, ui.preedit, width, height, titles, active,
-              if ui.finding then some(ui.find) else none)
+              bar_of(ui))
             frames = frames + 1
             draw_ms = draw_ms + sys.now_ms() - t0
             // The input method composes where typing goes: the find bar
             // while it is open, else the cursor.
             let gy = render.grid_top(r, list.len(titles))
-            let (ix, iy) = if ui.finding then render.find_caret(r, ui.find, ui.preedit, list.len(titles), width)
+            let (ix, iy) = if ui.finding and ui.find_focus then render.find_caret(r, bar(ui), ui.preedit, list.len(titles), width)
               else (r.pad_x + cur.t.x * r.cell_w, gy + cur.t.y * r.cell_h)
             window.set_ime_area(int.to_float(ix) / scale, int.to_float(iy) / scale,
               int.to_float(r.cell_w) / scale, int.to_float(r.cell_h) / scale)
@@ -389,7 +398,17 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
             match env.get("SPRID_CAPTURE_FIND") {
               some(q) => {
                 ui.finding = true
+                ui.find_focus = true
+                ui.field = field.of(q)
                 set_query(cur, ui, q, true)
+                // The bar's field with its text selected, or without the focus.
+                match env.get("SPRID_CAPTURE_FIND_STATE") {
+                  some(st) => {
+                    if st == "selected" then ui.field = field.select_all(ui.field)
+                    if st == "blurred" then ui.find_focus = false
+                  },
+                  none => (),
+                }
                 for _ in 0..<(int.parse(env.get("SPRID_CAPTURE_FIND_UP") ?? "0") ?? 0) {
                   find_step(cur, ui, -1)
                 }
@@ -397,7 +416,7 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
               none => (),
             }
             render.draw(r, cur.t, cur.back, cur.sel, ui.preedit, width, height, titles, active,
-              if ui.finding then some(ui.find) else none)
+              bar_of(ui))
             list.push(tabs, cur)
           },
           none => (),
@@ -592,10 +611,17 @@ fn drain(mut tb: Tab, budget_ms: Int) -> (Bool, Bool) = {
 /// returned. `tabs` is how many are open, `width` the drawable's.
 effect fn handle(mut cur: Tab, mut ui: Ui, kind: Int, r: render.Renderer, scale: Float, tabs: Int, width: Int) -> Act = {
   let t = cur.t
+  // A press anywhere but the find bar takes the focus from it: typing goes
+  // to the program again, the matches stay marked.
+  if kind == window.MOUSE_DOWN and ui.finding and ui.find_focus
+      and not render.on_bar(r, bar(ui), tabs, width, float.to_int(window.event_x() * scale), float.to_int(window.event_y() * scale)) then {
+    ui.find_focus = false
+    ui.dirty = true
+  }
   if ui.renaming and (kind == window.TEXT or kind == window.KEY) then {
     rename_key(cur, ui, kind, window.event_code(), window.event_mods())
     Stay
-  } else if ui.finding and (kind == window.TEXT or kind == window.KEY) and find_owns(kind, window.event_code(), window.event_mods()) then {
+  } else if ui.finding and ui.find_focus and (kind == window.TEXT or kind == window.KEY) and find_owns(kind, window.event_code(), window.event_mods()) then {
     find_key(cur, ui, kind, window.event_code(), window.event_mods())!
     Stay
   } else if kind == window.TEXT or kind == window.KEY then {
@@ -664,13 +690,16 @@ effect fn handle(mut cur: Tab, mut ui: Ui, kind: Int, r: render.Renderer, scale:
       cur.back = 0
       Stay
     } else if command and lower == 0x66 then {
-      // Cmd+F: the find bar, with the last search again from the bottom.
+      // Cmd+F: the find bar, focused, its last query selected — typing
+      // replaces it — and searched again from the bottom.
       ui.finding = true
-      set_query(cur, ui, ui.find.query, true)
+      ui.find_focus = true
+      ui.field = field.select_all(ui.field)
+      set_query(cur, ui, field.text(ui.field), true)
       ui.dirty = true
       Stay
     } else if (command or command_shift) and lower == 0x67 and ui.find.query != "" then {
-      // Cmd+G / Cmd+Shift+G with the bar closed: the last search goes on.
+      // Cmd+G / Cmd+Shift+G from the terminal: the last search goes on.
       ui.finding = true
       find_step(cur, ui, if command_shift then 1 else -1)
       Stay
@@ -736,6 +765,24 @@ effect fn handle(mut cur: Tab, mut ui: Ui, kind: Int, r: render.Renderer, scale:
         ui.dirty = true
       }
     }
+    Stay
+  } else if kind == window.MOUSE_DOWN and ui.finding and window.event_code() == 0
+      and render.on_bar(r, bar(ui), tabs, width, float.to_int(window.event_x() * scale), float.to_int(window.event_y() * scale)) then {
+    // A press on the find bar focuses it and puts the caret there (Shift:
+    // selects to there); a drag selects.
+    let at = render.field_index_at(r, bar(ui), tabs, width, float.to_int(window.event_x() * scale))
+    ui.field = field.move_to(ui.field, at, int.band(window.event_mods(), window.MOD_SHIFT) != 0)
+    ui.find_focus = true
+    ui.field_drag = true
+    ui.dirty = true
+    Stay
+  } else if ui.field_drag and (kind == window.MOUSE_MOVE or kind == window.MOUSE_UP) then {
+    let at = render.field_index_at(r, bar(ui), tabs, width, float.to_int(window.event_x() * scale))
+    if at != ui.field.caret then {
+      ui.field = field.move_to(ui.field, at, true)
+      ui.dirty = true
+    }
+    if kind == window.MOUSE_UP then ui.field_drag = false
     Stay
   } else if (kind == window.MOUSE_DOWN or kind == window.MOUSE_UP or kind == window.MOUSE_MOVE) and app_mouse(t, ui, r, scale, tabs, kind) then {
     // The program asked for the mouse: presses, releases
@@ -828,44 +875,90 @@ fn app_mouse(t: terminal.Terminal, ui: Ui, r: render.Renderer, scale: Float, tab
   (wanted and not on_bar and not ui.dragging) or (kind == window.MOUSE_UP and ui.app_button >= 0)
 }
 
-/// Whether an input goes to the open find bar: typing, and keys without Cmd —
-/// the program gets nothing while it is open — and Cmd+G, Cmd+V, Cmd+F,
-/// Cmd+Backspace. Other Cmd shortcuts (tabs, copy) work as ever.
+/// The find bar as drawn.
+fn bar(ui: Ui) -> render.Bar = render.Bar { find: ui.find, field: ui.field, focused: ui.find_focus }
+
+fn bar_of(ui: Ui) -> Option[render.Bar] = if ui.finding then some(bar(ui)) else none
+
+/// Whether an input goes to the focused find bar: every key without Cmd —
+/// the program gets nothing while the bar has the focus — and the Cmd keys
+/// of a text field (A, C, X, V, arrows, Backspace) and of finding (F, G).
+/// Other Cmd shortcuts (tabs, font size) work as ever.
 fn find_owns(kind: Int, code: Int, mods: Int) -> Bool = {
   let lower = if code >= 0x41 and code <= 0x5A then code + 32 else code
   let cmd = int.band(mods, window.MOD_SUPER) != 0
   not cmd
-    or (kind == window.TEXT and (lower == 0x67 or lower == 0x76 or lower == 0x66))
-    or (kind == window.KEY and code == window.KEY_BACKSPACE)
+    or (kind == window.TEXT and (lower == 0x61 or lower == 0x63 or lower == 0x78 or lower == 0x76 or lower == 0x66 or lower == 0x67))
+    or (kind == window.KEY and (code == window.KEY_BACKSPACE or code == window.KEY_DELETE
+      or code == window.KEY_LEFT or code == window.KEY_RIGHT))
 }
 
-/// An input to the find bar: typing searches as it goes, Backspace takes a
-/// character off (Cmd+Backspace all), Enter or Up goes to the match above,
-/// Shift+Enter or Down the one below (Cmd+G and Cmd+Shift+G too), Cmd+V
-/// pastes, Escape closes the bar.
+/// An input to the focused find bar. Its field edits as a Mac text field
+/// does — Cmd+A, C, X, V; arrows, Option by word, Cmd or Home / End to the
+/// ends, Shift selecting; Backspace and Delete, Option by word, Cmd to the
+/// start — and searches as it changes. Enter or Up goes to the match above,
+/// Shift+Enter or Down the one below (Cmd+G and Cmd+Shift+G too); Escape
+/// closes the bar.
 effect fn find_key(mut cur: Tab, mut ui: Ui, kind: Int, code: Int, mods: Int) -> Unit = {
   let lower = if code >= 0x41 and code <= 0x5A then code + 32 else code
   let cmd = int.band(mods, window.MOD_SUPER) != 0
   let shift = int.band(mods, window.MOD_SHIFT) != 0
-  let q = ui.find.query
-  if kind == window.KEY and code == window.KEY_ESCAPE then {
+  let alt = int.band(mods, window.MOD_ALT) != 0
+  let f = ui.field
+  let key = kind == window.KEY
+  let cmd_text = kind == window.TEXT and cmd
+  if key and code == window.KEY_ESCAPE then {
     ui.finding = false
+    ui.find_focus = false
     let nothing: List[Int] = []
     ui.preedit = nothing
     ui.dirty = true
-  } else if (kind == window.KEY and code == window.KEY_ENTER) or (kind == window.TEXT and cmd and lower == 0x67) then
+  } else if (key and code == window.KEY_ENTER) or (cmd_text and lower == 0x67) then
     find_step(cur, ui, if shift then 1 else -1)
-  else if kind == window.KEY and (code == window.KEY_UP or code == window.KEY_DOWN) then
+  else if key and (code == window.KEY_UP or code == window.KEY_DOWN) then
     find_step(cur, ui, if code == window.KEY_UP then -1 else 1)
-  else if kind == window.KEY and code == window.KEY_BACKSPACE then
-    set_query(cur, ui, if cmd then "" else string.take(q, int.max(0, string.len(q) - 1)), false)
-  else if kind == window.TEXT and cmd and lower == 0x76 then {
+  else if (cmd_text and (lower == 0x61 or lower == 0x66)) then {
+    ui.field = field.select_all(f)
+    ui.dirty = true
+  } else if cmd_text and lower == 0x63 then {
+    // Copy: the field's selection, else the terminal's.
+    if field.has_selection(f) then copy(field.selected(f))!
+    else match cur.sel {
+      some(s) => copy(view.selected_text(cur.t, s))!,
+      none => (),
+    }
+  } else if cmd_text and lower == 0x78 then {
+    if field.has_selection(f) then {
+      copy(field.selected(f))!
+      edit_field(cur, ui, field.insert(f, ""))
+    }
+  } else if cmd_text and lower == 0x76 then {
     // The first line of the clipboard: a search stays within a line.
-    let pasted = list.first(string.lines(clipboard()!)) ?? ""
-    set_query(cur, ui, q + pasted, false)
-  } else if kind == window.TEXT and int.band(mods, window.MOD_SUPER + window.MOD_CTRL) == 0 then
-    set_query(cur, ui, q + string.from_codepoint(code), false)
+    edit_field(cur, ui, field.insert(f, list.first(string.lines(clipboard()!)) ?? ""))
+  } else if key and (code == window.KEY_LEFT or code == window.KEY_RIGHT) then {
+    let dir = if code == window.KEY_LEFT then -1 else 1
+    ui.field = if cmd then field.move_to(f, if dir < 0 then 0 else list.len(f.chars), shift)
+      else if alt then field.move_to(f, field.word_edge(f, f.caret, dir), shift)
+      else field.step(f, dir, shift)
+    ui.dirty = true
+  } else if key and (code == window.KEY_HOME or code == window.KEY_END) then {
+    ui.field = field.move_to(f, if code == window.KEY_HOME then 0 else list.len(f.chars), shift)
+    ui.dirty = true
+  } else if key and code == window.KEY_BACKSPACE then
+    edit_field(cur, ui, field.delete_to(f, if cmd then 0 else if alt then field.word_edge(f, f.caret, -1) else f.caret - 1))
+  else if key and code == window.KEY_DELETE then
+    edit_field(cur, ui, field.delete_to(f, if alt then field.word_edge(f, f.caret, 1) else f.caret + 1))
+  else if kind == window.TEXT and int.band(mods, window.MOD_SUPER + window.MOD_CTRL) == 0 then
+    edit_field(cur, ui, field.insert(f, string.from_codepoint(code)))
   else ()
+}
+
+/// The field edited to `g`, searched again when its text changed.
+fn edit_field(mut cur: Tab, mut ui: Ui, g: field.Field) -> Unit = {
+  let changed = field.text(g) != field.text(ui.field)
+  ui.field = g
+  if changed then set_query(cur, ui, field.text(g), false)
+  ui.dirty = true
 }
 
 /// Search for `query`: from the bottom when `fresh`, else narrowing where
