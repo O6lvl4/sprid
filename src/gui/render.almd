@@ -116,6 +116,19 @@ fn new(device: Int, faces: fonts.Faces, size_px: Int, pad_x: Int, pad_y: Int, ce
 }
 
 /// Columns and rows that fit a `width` x `height` drawable.
+/// Cell width and height in pixels for `faces` at `size_px`: what `new`
+/// works out, without a GPU, so a window can be sized to a grid before it
+/// opens.
+fn cell_size(faces: fonts.Faces, size_px: Int, cell_height: Float) -> (Int, Int) = {
+  let f = faces.regular[0]
+  let size = int.to_float(size_px)
+  let upem = int.to_float(f.units_per_em)
+  let m = sfnt.pick(faces.regular, 0x4D)
+  let w = int.max(1, float.to_int(float.round(int.to_float(sfnt.advance(faces.regular[m.0], m.1)) * size / upem)))
+  let natural = (int.to_float(f.ascent) - int.to_float(f.descent)) * size / upem
+  (w, int.max(1, float.to_int(float.ceil(natural * cell_height))))
+}
+
 /// Columns and rows that fit a `width` x `height` drawable with `tabs` tabs
 /// open (the tab bar shows from two on).
 fn grid_size(r: Renderer, width: Int, height: Int, tabs: Int) -> (Int, Int) =

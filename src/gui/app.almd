@@ -66,14 +66,26 @@ type Ui = {
   dirty: Bool,
 }
 
+/// How the window starts: a command for the first tab instead of the login
+/// shell (the window closes when it exits), and the grid to size the window
+/// to (0: the default window). `capture` draws one frame to a PNG instead.
+type Options = { command: Option[String], cols: Int, rows: Int, capture: Option[String] }
+
 /// What an input asks of the tabs.
 type Act = | Stay | NewTab | CloseTab | NextTab | PrevTab | GoTo(Int)
 
-effect fn run(capture: Option[String]) -> Unit = {
-  guard window.open("sprid", 960, 620) else println("sprid: could not open a window")
-  window.set_ime(true)
+effect fn run(opts: Options) -> Unit = {
+  let capture = opts.capture
   let faces = fonts.find()!
   guard list.len(faces.regular) > 0 else println("sprid: no font found")
+  // Sized to a grid, the window is measured before it opens, for a Retina
+  // display (the scale is only known once it is open).
+  let (win_w, win_h) = if opts.cols > 0 and opts.rows > 0 then {
+    let (cw, ch) = render.cell_size(faces, float.to_int(float.round(FONT_SIZE * 2.0)), CELL_HEIGHT)
+    ((opts.cols * cw) / 2 + 2 * float.to_int(PAD_X) + 1, (opts.rows * ch) / 2 + 2 * float.to_int(PAD_Y) + 1)
+  } else (960, 620)
+  guard window.open("sprid", win_w, win_h) else println("sprid: could not open a window")
+  window.set_ime(true)
   let scale = window.scale_factor()
   let device = 1
   var r = render.new(device, faces, float.to_int(float.round(FONT_SIZE * scale)),
@@ -87,7 +99,10 @@ effect fn run(capture: Option[String]) -> Unit = {
     none => if sys.login_shell() != "" then sys.login_shell() else "/bin/zsh",
   }
   let login = "exec ${shell} -l"
-  let first = match capture { some(_) => env.get("SPRID_CAPTURE_CMD") ?? login, none => login }
+  let first = match opts.command {
+    some(c) => c,
+    none => match capture { some(_) => env.get("SPRID_CAPTURE_CMD") ?? login, none => login },
+  }
   let start_dir = if sys.cwd() == "/" or sys.cwd() == "" then env.get("HOME") ?? "" else ""
 
   var tabs: List[Tab] = []
@@ -379,7 +394,13 @@ effect fn handle(mut cur: Tab, mut ui: Ui, kind: Int, r: render.Renderer, scale:
     let command = kind == window.TEXT and mods == window.MOD_SUPER
     let command_shift = mods == window.MOD_SUPER + window.MOD_SHIFT
     let page = kind == window.KEY and mods == window.MOD_SHIFT and (code == window.KEY_PAGE_UP or code == window.KEY_PAGE_DOWN)
-    if command and (code == 0x74 or code == 0x54) then NewTab
+    // Ctrl+Tab / Ctrl+Shift+Tab switch tabs, as in browsers and Terminal.app;
+    // Tab and Shift+Tab alone stay the program's (completion, Claude Code's
+    // mode cycling).
+    let ctrl_tab = kind == window.KEY and code == window.KEY_TAB
+    if ctrl_tab and mods == window.MOD_CTRL then NextTab
+    else if ctrl_tab and mods == window.MOD_CTRL + window.MOD_SHIFT then PrevTab
+    else if command and (code == 0x74 or code == 0x54) then NewTab
     else if command and (code == 0x77 or code == 0x57) then CloseTab
     else if command and code >= 0x31 and code <= 0x39 then GoTo(code - 0x31)
     else if command_shift and ((kind == window.TEXT and code == 0x5D) or (kind == window.KEY and code == window.KEY_RIGHT)) then NextTab

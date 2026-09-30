@@ -21,12 +21,36 @@ let ROWS = 30
 effect fn main() -> Unit = {
   let args = process.args()
   match list.get(args, 1) ?? "" {
-    "" => app.run(none)!,
-    "capture" => app.run(list.get(args, 2))!,
+    "capture" => app.run(app.Options { command: none, cols: 0, rows: 0, capture: list.get(args, 2) })!,
     "run" => run(list.join(list.drop(args, 2), " "))!,
     "bench" => bench(int.parse(list.get(args, 2) ?? "512") ?? 512)!,
-    _ => println("usage: sprid | sprid capture <png> | sprid run <command> | sprid bench [MB]"),
+    first => if first == "" or string.starts_with(first, "-") then app.run(window_options(list.drop(args, 1)))!
+             else println("usage: sprid [--cols=N --rows=N] [-e command...] | sprid capture <png> | sprid run <command> | sprid bench [MB]"),
   }
+}
+
+/// `--cols=N --rows=N -e command...`, as Ghostty takes them: everything after
+/// `-e` is the command.
+fn window_options(args: List[String]) -> app.Options = {
+  var opts = app.Options { command: none, cols: 0, rows: 0, capture: none }
+  var i = 0
+  var done = false
+  while not done and i < list.len(args) {
+    let a = args[i]
+    if a == "-e" then {
+      opts = { ...opts, command: some(list.join(list.drop(args, i + 1), " ")) }
+      done = true
+    } else if string.starts_with(a, "--cols=") then opts = { ...opts, cols: int.parse(string.drop(a, 7)) ?? 0 }
+    else if string.starts_with(a, "--rows=") then opts = { ...opts, rows: int.parse(string.drop(a, 7)) ?? 0 }
+    i = i + 1
+  }
+  opts
+}
+
+test "window options read like Ghostty's" {
+  let o = window_options(["--cols=100", "--rows=30", "-e", "cat", "big file"])
+  assert_eq((o.cols, o.rows, o.command), (100, 30, some("cat big file")))
+  assert_eq(window_options([]).command, none)
 }
 
 effect fn run(command: String) -> Unit = {
