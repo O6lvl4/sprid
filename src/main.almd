@@ -1,8 +1,8 @@
-// taibhse, headless.
+// sprid, headless.
 //
-//   taibhse run <command>     run <command> on a PTY, then print the screen
-//   taibhse bench [MB]        stream MB of Claude-Code-like output through a
-//                             terminal and report memory as it goes
+//   sprid run <command>     run <command> on a PTY, then print the screen
+//   sprid bench [MB]        stream MB of Claude-Code-like output through a
+//                           terminal and report memory as it goes
 //
 // The window comes later; everything here drives the same terminal core.
 
@@ -21,7 +21,7 @@ effect fn main() -> Unit = {
   match list.get(args, 1) ?? "" {
     "run" => run(list.join(list.drop(args, 2), " "))!,
     "bench" => bench(int.parse(list.get(args, 2) ?? "512") ?? 512)!,
-    _ => println("usage: taibhse run <command> | taibhse bench [MB]"),
+    _ => println("usage: sprid run <command> | sprid bench [MB]"),
   }
 }
 

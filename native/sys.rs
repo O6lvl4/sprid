@@ -1,4 +1,4 @@
-//! Process facts for taibhse's benchmarks. Backs `src/sys.almd`.
+//! Process facts for sprid's benchmarks. Backs `src/sys.almd`.
 
 /// Physical memory this process uses now, in bytes: the phys_footprint
 /// macOS reports in Activity Monitor (resident memory elsewhere).

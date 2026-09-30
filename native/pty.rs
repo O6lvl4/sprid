@@ -1,4 +1,4 @@
-//! PTY host for taibhse: the only part of the terminal that talks to the OS.
+//! PTY host for sprid: the only part of the terminal that talks to the OS.
 //!
 //! Backs `src/pty.almd`. Everything above byte I/O on the master fd — parsing,
 //! screen state, scrollback — is Almide.

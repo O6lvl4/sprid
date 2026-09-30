@@ -1,5 +1,5 @@
 [package]
-name = "taibhse"
+name = "sprid"
 version = "0.0.1"
 description = "A terminal emulator written in Almide"
 

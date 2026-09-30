@@ -1,6 +1,6 @@
-# taibhse
+# sprid
 
-> Irish: *taibhse* — ghost.
+> Irish: *sprid* — spirit, ghost.
 
 A terminal emulator written in [Almide](https://github.com/almide/almide),
 after [Ghostty](https://ghostty.org). The parser, the screen, the scrollback
@@ -18,7 +18,7 @@ the standard size to hold graphemes was mistaken for a pooled page once
 reused, so it was never unmapped. Claude Code's output (styled lines full of
 emoji and combining marks, scrolling for hours) triggers exactly that path.
 
-taibhse's scrollback is built so that this class of bug cannot happen, and
+sprid's scrollback is built so that this class of bug cannot happen, and
 so that its memory is a number you can check, not a hope:
 
 - **Nothing is pooled or reused.** A scrollback block is a plain `Bytes`,
@@ -35,8 +35,8 @@ See `src/scrollback.almd`.
 ## Status: M1 — the core, headless
 
 ```
-taibhse run <command>    run <command> on a PTY, print the final screen
-taibhse bench [MB]       stream Claude-Code-like output, report memory
+sprid run <command>    run <command> on a PTY, print the final screen
+sprid bench [MB]       stream Claude-Code-like output, report memory
 ```
 
 `bench 256` on an M-series Mac (10 MB scrollback budget):
@@ -67,7 +67,7 @@ covered by `src/*_test.almd`.
 | **M1 core** | Parser, screen and bounded scrollback pass their tests; real programs run on a PTY headless |
 | **M2 speed** | A byte-level fast path for printable runs; ≥ 200 MB/s on `bench` |
 | **M3 window** | A native window through snaidhm: glyph atlas, cell rendering, keyboard and IME, resize with reflow |
-| **M4 daily driver** | A week of Claude Code sessions in taibhse: no crash, footprint flat, measured against Ghostty |
+| **M4 daily driver** | A week of Claude Code sessions in sprid: no crash, footprint flat, measured against Ghostty |
 
 ## Requirements
 
