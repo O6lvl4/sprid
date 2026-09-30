@@ -69,6 +69,8 @@ What works:
   arrow keys, or wheel reports if they asked for the mouse), Shift+PageUp /
   PageDown by pages. The view stays put while new output arrives below.
 - **Selection**: drag to select, across scrollback and screen; Cmd+C copies.
+- **Colour emoji** from Apple Color Emoji: a wide character the grid face
+  has no glyph for is drawn from the font's images, fitted to its two cells.
 - **Tabs**: Cmd+T opens one in the current tab's directory, Cmd+W closes,
   Cmd+1-9, Ctrl+Tab / Ctrl+Shift+Tab or Cmd+Shift+[ ] switch, and so does a
   click on the tab bar. A tab is titled by its program's title, else its
@@ -128,8 +130,7 @@ pair, CSI parameters in fixed buffers), a PTY read no longer allocates and
 zeroes 64 KB per 1 KB it returns, and the window sleeps on its PTYs and
 events at once instead of polling (snaidhm's `wait_fds`).
 
-Not yet: colour emoji (snaidhm reads outlines, not
-bitmaps), the window title, a config
+Not yet: emoji sequences (ZWJ, skin tones, flags), the window title, a config
 file, splits.
 
 ## Milestones

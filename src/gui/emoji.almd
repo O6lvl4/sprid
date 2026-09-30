@@ -1,0 +1,6 @@
+// Colour emoji — @extern(rust) declarations, backed by native/emoji.rs
+
+/// Emoji `cp` fitted into a `w` x `h` box: width and height (u32 LE), then
+/// RGBA rows; empty when there is no colour image for it.
+@extern(rust, "crate::emoji", "bitmap")
+fn bitmap(cp: Int, w: Int, h: Int) -> Bytes = _

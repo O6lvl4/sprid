@@ -8,3 +8,4 @@ snaidhm = { git = "https://github.com/almide-graphics/snaidhm.git" }
 
 [native-deps]
 libc = "0.2"
+png = "0.17"

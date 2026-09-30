@@ -137,6 +137,9 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
   // A key's echo shows as soon as it is drawn, not a display refresh or two
   // later.
   gpu.set_low_latency(true)
+  // What a window being resized uncovers, until it is drawn for its size.
+  let (bg_r, bg_g, bg_b) = render.rgb_floats(render.DEFAULT_BG)
+  window.set_background(bg_r, bg_g, bg_b)
   let scale = window.scale_factor()
   let device = 1
   var r = render.new(device, faces, float.to_int(float.round(FONT_SIZE * scale)),
@@ -212,10 +215,14 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
     var kind = window.next_event()
     while kind != window.NONE {
       var act = Stay
+      // Counted before the active tab is taken out of the list: with it out,
+      // two tabs looked like one — no tab bar to click, and every click
+      // below it placed a tab bar's height too low.
+      let open = list.len(tabs)
       match take(tabs, active) {
         some(tb) => {
           var cur = tb
-          act = handle(cur, ui, kind, r, scale, list.len(tabs), width)!
+          act = handle(cur, ui, kind, r, scale, open, width)!
           list.push(tabs, cur)
           tabs = list.swap(tabs, active, list.len(tabs) - 1)
         },
@@ -310,7 +317,7 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
             render.draw(r, cur.t, cur.back, cur.sel, ui.preedit, width, height, titles, active)
             frames = frames + 1
             draw_ms = draw_ms + sys.now_ms() - t0
-            let gy = render.grid_top(r, list.len(tabs))
+            let gy = render.grid_top(r, list.len(titles))
             window.set_ime_area(
               int.to_float(r.pad_x + cur.t.x * r.cell_w) / scale, int.to_float(gy + cur.t.y * r.cell_h) / scale,
               int.to_float(r.cell_w) / scale, int.to_float(r.cell_h) / scale)
