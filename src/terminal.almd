@@ -252,11 +252,14 @@ fn scroll_up(mut t: Terminal, n: Int) -> Unit = {
   if t.margin_top == 0 and t.margin_bottom == t.rows - 1 then {
     for _ in 0..<count {
       if not t.alt then {
+        let p = phys(t, 0)
+        let wrapped = bytes.read_u8(t.wrapped, p) == 1
         let off = row_off(t, 0)
-        let row = bytes.slice(t.grid, off, off + t.cols * cell.SIZE)
-        let wrapped = bytes.read_u8(t.wrapped, phys(t, 0)) == 1
-        let record = scrollback.encode_row(row, t.cols, wrapped, row_extras(t, 0))
-        scrollback.push(t.sb, record)
+        let cols = t.cols
+        // Only this row's marks: handing over the screen's whole map would
+        // copy it for every line.
+        let marks = row_extras(t, 0)
+        scrollback.push_cells(t.sb, t.grid, off, cols, wrapped, marks, 0)
       }
       t.top = (t.top + 1) % t.rows
       erase_row(t, t.rows - 1)
@@ -441,21 +444,19 @@ fn put(mut t: Terminal, x: Int, cp: Int, w: Int) -> Unit = {
   clear_wide_at(t, x)
   if w == 2 then clear_wide_at(t, x + 1)
   let o = cell_off(t, x, t.y)
+  write_cell(t, o, cp, w)
+  if w == 2 then write_cell(t, o + cell.SIZE, 0, 0)
+}
+
+/// Write a whole cell at byte `o` with the pen's colours and attributes, no
+/// flags. Three stores instead of six: fg and bg are adjacent (bytes 4..12)
+/// and so are attrs, width and flags (12..16).
+fn write_cell(mut t: Terminal, o: Int, cp: Int, w: Int) -> Unit = {
+  let colors = int.bor(t.fg, int.bshl(t.bg, 32))
+  let tail = int.bor(t.attrs, int.bshl(w, 16))
   bytes.set_u32_le(t.grid, o + cell.OFF_CP, cp)
-  bytes.set_u32_le(t.grid, o + cell.OFF_FG, t.fg)
-  bytes.set_u32_le(t.grid, o + cell.OFF_BG, t.bg)
-  bytes.set_u16_le(t.grid, o + cell.OFF_ATTRS, t.attrs)
-  bytes.set_u8(t.grid, o + cell.OFF_WIDTH, w)
-  bytes.set_u8(t.grid, o + cell.OFF_FLAGS, 0)
-  if w == 2 then {
-    let o2 = o + cell.SIZE
-    bytes.set_u32_le(t.grid, o2 + cell.OFF_CP, 0)
-    bytes.set_u32_le(t.grid, o2 + cell.OFF_FG, t.fg)
-    bytes.set_u32_le(t.grid, o2 + cell.OFF_BG, t.bg)
-    bytes.set_u16_le(t.grid, o2 + cell.OFF_ATTRS, t.attrs)
-    bytes.set_u8(t.grid, o2 + cell.OFF_WIDTH, 0)
-    bytes.set_u8(t.grid, o2 + cell.OFF_FLAGS, 0)
-  }
+  bytes.set_i64_le(t.grid, o + cell.OFF_FG, colors)
+  bytes.set_u32_le(t.grid, o + cell.OFF_ATTRS, tail)
 }
 
 /// If column x holds half of a wide char, blank the other half.
@@ -505,9 +506,74 @@ fn feed(mut t: Terminal, data: Bytes) -> Unit = {
   let n = bytes.len(data)
   var i = 0
   while i < n {
-    step(t, bytes.read_u8(data, i))
-    i = i + 1
+    let b = bytes.read_u8(data, i)
+    // Printable ASCII in the ground state — most of any output — skips the
+    // state machine, the width lookup and the combining-mark path.
+    if b >= 0x20 and b < 0x7F and t.state == GROUND and t.utf8_need == 0 and not t.dec_graphics and not t.insert then {
+      print_ascii(t, b)
+      i = print_ascii_run(t, data, i + 1, n)
+    } else {
+      step(t, b)
+      i = i + 1
+    }
   }
+}
+
+/// After `print_ascii`: the printable ASCII bytes that follow at `i`, while
+/// they fit on the cursor's row, written with the cell offset carried along
+/// instead of recomputed. Returns where it stopped.
+fn print_ascii_run(mut t: Terminal, data: Bytes, i: Int, n: Int) -> Int = {
+  if t.pending_wrap then i
+  else {
+    var j = i
+    var x = t.x
+    var o = cell_off(t, x, t.y)
+    let colors = int.bor(t.fg, int.bshl(t.bg, 32))
+    let tail = int.bor(t.attrs, int.bshl(1, 16))
+    var go = true
+    // The row's last column is left to `print_ascii`, which owns the
+    // pending-wrap state.
+    while go and j < n and x < t.cols - 1 {
+      let b = bytes.read_u8(data, j)
+      // Stop at anything else, and at a wide char's half (`put` splits it).
+      if b >= 0x20 and b < 0x7F and bytes.read_u8(t.grid, o + cell.OFF_WIDTH) == 1 then {
+        bytes.set_u32_le(t.grid, o + cell.OFF_CP, b)
+        bytes.set_i64_le(t.grid, o + cell.OFF_FG, colors)
+        bytes.set_u32_le(t.grid, o + cell.OFF_ATTRS, tail)
+        o = o + cell.SIZE
+        x = x + 1
+        j = j + 1
+      } else go = false
+    }
+    if j > i then {
+      t.x = x
+      t.last_x = x - 1
+      t.last_cp = bytes.read_u8(data, j - 1)
+    }
+    j
+  }
+}
+
+/// `print` of a printable ASCII byte with the character set and insert mode
+/// off: one cell wide, never combining.
+fn print_ascii(mut t: Terminal, b: Int) -> Unit = {
+  if t.pending_wrap then {
+    if t.autowrap then {
+      mark_wrapped(t)
+      t.x = 0
+      index(t)
+    }
+    t.pending_wrap = false
+  }
+  let o = cell_off(t, t.x, t.y)
+  // Only a wide char's half needs more than overwriting the cell.
+  if bytes.read_u8(t.grid, o + cell.OFF_WIDTH) != 1 then put(t, t.x, b, 1)
+  else write_cell(t, o, b, 1)
+  t.last_x = t.x
+  t.last_y = t.y
+  t.last_cp = b
+  if t.x + 1 >= t.cols then t.pending_wrap = true
+  else t.x = t.x + 1
 }
 
 fn feed_string(mut t: Terminal, s: String) -> Unit = feed(t, bytes.from_string(s))

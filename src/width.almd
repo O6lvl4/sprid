@@ -7,6 +7,8 @@
 // from the UCD is on the roadmap; until then a codepoint outside every range
 // is width 1.
 
+import bytes
+
 let ZERO_WIDTH = [
   (0x0300, 0x036F), (0x0483, 0x0489), (0x0591, 0x05BD), (0x0610, 0x061A),
   (0x064B, 0x065F), (0x0E31, 0x0E31), (0x0E34, 0x0E3A), (0x0E47, 0x0E4E),
@@ -41,6 +43,28 @@ let WIDE = [
   (0x1F947, 0x1F9FF), (0x1FA70, 0x1FAFF), (0x20000, 0x2FFFD), (0x30000, 0x3FFFD),
 ]
 
+/// Widths of the Basic Multilingual Plane, one byte per code point, built on
+/// first use: the ranges above as a 64 KB table, so the hot path is one load.
+let BMP = bmp_table()
+
+fn bmp_table() -> Bytes = {
+  var table = bytes.new(65536)
+  bytes.fill(table, 1)
+  for r in WIDE {
+    let (lo, hi) = r
+    for cp in lo...int.min(hi, 0xFFFF) {
+      bytes.set_u8(table, cp, 2)
+    }
+  }
+  for r in ZERO_WIDTH {
+    let (lo, hi) = r
+    for cp in lo...int.min(hi, 0xFFFF) {
+      bytes.set_u8(table, cp, 0)
+    }
+  }
+  table
+}
+
 fn in_ranges(cp: Int, ranges: List[(Int, Int)]) -> Bool =
   list.any(ranges, (r) => {
     let (lo, hi) = r
@@ -51,8 +75,8 @@ fn in_ranges(cp: Int, ranges: List[(Int, Int)]) -> Bool =
 /// executes them instead of printing.
 fn of(cp: Int) -> Int =
   if cp < 0x0300 then 1
+  else if cp < 0x10000 then bytes.read_u8(BMP, cp)
   else if in_ranges(cp, ZERO_WIDTH) then 0
-  else if cp < 0x1100 then 1
   else if in_ranges(cp, WIDE) then 2
   else 1
 

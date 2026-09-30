@@ -59,6 +59,8 @@ fn chunk(i: Int) -> Bytes = {
 }
 
 effect fn bench(mb: Int) -> Unit = {
+  // The input is made up front, so what is timed is the terminal.
+  let chunks = list.map(0..<16, (i) => chunk(i))
   var t = terminal.new(COLS, ROWS)
   let start = sys.now_ms()
   let base = sys.footprint()
@@ -68,7 +70,7 @@ effect fn bench(mb: Int) -> Unit = {
   var i = 0
   var next_report = 0
   while fed < mb * 1000000 {
-    let c = chunk(i)
+    let c = chunks[i % 16]
     terminal.feed(t, c)
     fed = fed + bytes.len(c)
     i = i + 1

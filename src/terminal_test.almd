@@ -221,3 +221,16 @@ test "resizing after the ring has turned keeps row order" {
   terminal.feed_string(t, "\r\n4\r\n5")
   assert_eq(terminal.screen_text(t), "3\n4\n5")
 }
+
+test "an ASCII run stops at a wide char and splits it" {
+  let t = run(8, 2, "ab日本\x1b[1;1Habcd")
+  assert_eq(terminal.screen_text(t), "abcd本")
+  assert_eq(t.x, 4)
+}
+
+test "an ASCII run ends on the last column and wraps on the next byte" {
+  var t = run(5, 3, "abcde")
+  assert_eq((t.x, t.pending_wrap), (4, true))
+  terminal.feed_string(t, "fg")
+  assert_eq(terminal.screen_text(t), "abcde\nfg")
+}
