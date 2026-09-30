@@ -66,14 +66,17 @@ What works:
 
 Measured on an M-series Mac:
 
-| | sprid | Ghostty 1.2.3 |
-|---|---|---|
-| Footprint, idle, one window | 74 MB | 684 MB (504 MB of it GPU surfaces) |
-| Footprint after 256 MB of Claude-Code-like output | flat (`bench`) | grows ([the leak](https://mitchellh.com/writing/ghostty-memory-leak-fix)) |
-| `cat` of 20 MB in the window | ~5 MB/s | GB/s |
-| CPU, idle | ~2 % | ~0 % |
+| | sprid |
+|---|---|
+| Footprint, idle, one window | 74 MB |
+| Footprint while 256 MB of Claude-Code-like output streams through (`bench`) | flat, scrollback held at its 10 MB budget |
+| `cat` of 20 MB in the window | ~5 MB/s |
+| CPU, idle | ~2 % |
 
-The last two rows are M2 and M4.
+For scale, the Ghostty 1.2.3 this was written next to measured 684 MB with
+eight terminals open, 504 MB of it GPU surfaces, and grows over a long Claude
+Code session. That is not a like-for-like comparison, and throughput was not
+compared at all; sprid's throughput and idle CPU are M2 and M4.
 
 Not yet: reflow on resize, colour emoji (snaidhm reads outlines, not
 bitmaps), mouse clicks reported to programs, the window title, a config file,
