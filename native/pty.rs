@@ -11,6 +11,8 @@ thread_local! {
     /// Master fds whose child side has closed: a read hit the end.
     static ENDED: RefCell<HashSet<i32>> = RefCell::new(HashSet::new());
     static SCRATCH: RefCell<Vec<u8>> = RefCell::new(vec![0u8; 65536]);
+    /// The pid of the program each master fd was started with (the shell).
+    static STARTED: RefCell<std::collections::HashMap<i32, i32>> = RefCell::new(std::collections::HashMap::new());
 }
 
 /// Start `program` (run through `/bin/sh -c`) on a new PTY of `cols` x `rows`,
@@ -39,6 +41,7 @@ pub fn spawn(program: &str, cwd: &str, cols: i64, rows: i64) -> i64 {
             libc::_exit(127);
         }
     }
+    STARTED.with(|m| m.borrow_mut().insert(master, pid));
     master as i64
 }
 
@@ -98,6 +101,7 @@ pub fn resize(fd: i64, cols: i64, rows: i64) -> bool {
 /// window closes.
 pub fn close(fd: i64) {
     ENDED.with(|e| e.borrow_mut().remove(&(fd as i32)));
+    STARTED.with(|m| m.borrow_mut().remove(&(fd as i32)));
     unsafe { libc::close(fd as i32) };
 }
 
@@ -130,4 +134,45 @@ pub fn cwd(fd: i64) -> String {
         if pgid <= 0 { return String::new(); }
         std::fs::read_link(format!("/proc/{pgid}/cwd")).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()
     }
+}
+
+/// The name of a program the PTY's first program — the shell — is running
+/// (a command, Claude Code), or "" when it runs none: it waits at its
+/// prompt, or `fd` is unknown. What closing the tab would end without asking.
+/// Asked of the shell's children rather than the terminal's foreground
+/// group, which is only the command's when the shell does job control.
+pub fn busy(fd: i64) -> String {
+    let Some(shell) = STARTED.with(|m| m.borrow().get(&(fd as i32)).copied()) else { return String::new() };
+    match children(shell).first() {
+        Some(&child) => name_of(child).unwrap_or_else(|| "a program".to_string()),
+        None => String::new(),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn children(pid: i32) -> Vec<i32> {
+    let mut buf = vec![0i32; 64];
+    let n = unsafe { libc::proc_listchildpids(pid, buf.as_mut_ptr() as *mut _, (buf.len() * 4) as i32) };
+    buf.truncate(n.max(0) as usize);
+    buf.retain(|&p| p > 0);
+    buf
+}
+
+#[cfg(not(target_os = "macos"))]
+fn children(pid: i32) -> Vec<i32> {
+    std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
+        .map(|s| s.split_whitespace().filter_map(|p| p.parse().ok()).collect())
+        .unwrap_or_default()
+}
+
+#[cfg(target_os = "macos")]
+fn name_of(pid: i32) -> Option<String> {
+    let mut buf = [0u8; 256];
+    let n = unsafe { libc::proc_name(pid, buf.as_mut_ptr() as *mut _, buf.len() as u32) };
+    (n > 0).then(|| String::from_utf8_lossy(&buf[..n as usize]).into_owned())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn name_of(pid: i32) -> Option<String> {
+    std::fs::read_to_string(format!("/proc/{pid}/comm")).ok().map(|s| s.trim().to_string())
 }

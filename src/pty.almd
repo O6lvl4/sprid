@@ -36,3 +36,8 @@ fn reap() -> Unit = _
 /// unknown.
 @extern(rust, "crate::pty", "cwd")
 fn cwd(fd: Int) -> String = _
+
+/// The name of the program in front on `fd` when it isn't the one the PTY
+/// was started with (a command the shell runs); "" at the shell's prompt.
+@extern(rust, "crate::pty", "busy")
+fn busy(fd: Int) -> String = _

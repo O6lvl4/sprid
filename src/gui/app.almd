@@ -18,6 +18,7 @@ import snaidhm.native.window as window
 import snaidhm.native.frame as frame
 import snaidhm.text as text
 import snaidhm.web.gpu as gpu
+import self.gui.dialog
 import self.gui.fonts
 import self.gui.render
 import self.keys
@@ -164,6 +165,8 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
   }
 
   let home = env.get("HOME") ?? ""
+  // Questions in Japanese on a Japanese system.
+  let ja = string.starts_with(env.get("LANG") ?? "", "ja")
   var ui = Ui { preedit: [], wheel_acc: 0.0, dragging: false, anchor_line: 0, anchor_col: 0, dirty: true,
                 renaming: false, draft: "", click_ms: 0, click_tab: -1, home: home,
                 app_button: -1, report_col: -1, report_row: -1 }
@@ -190,6 +193,11 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
     // With no time to wait, just take the window's events: arming the fd
     // watcher on every turn of a streaming loop costs more than it saves.
     alive = if timeout == 0 then window.pump() else window.wait_fds(list.map(tabs, (tb) => tb.fd), timeout)
+    // The window's close button: asked first when a program is running.
+    if not alive and list.len(tabs) > 0 and capture == none and not may_close_window(tabs, ja) then {
+      window.keep_open()
+      alive = true
+    }
     wakes = wakes + 1
     if debug and sys.now_ms() - wake_report >= 2000 then {
       eprintln("sprid: ${int.to_string(wakes)} wakes in 2 s (dirty ${if ui.dirty then "yes" else "no"}, timeout ${int.to_string(timeout)})")
@@ -241,7 +249,7 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
           }
           ui.dirty = true
         },
-        CloseTab => {
+        CloseTab => if may_close_tab(tabs, active, ja) then {
           close_tab(tabs, active)
           active = int.min(active, list.len(tabs) - 1)
           relayout(tabs, r, width, height)
@@ -356,6 +364,24 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
 }
 
 // ── Tabs ──────────────────────────────────────────────────────────────────
+
+/// Whether tab `i` may close: at once when its shell waits at the prompt,
+/// else when the user says so — closing ends what runs in it.
+fn may_close_tab(tabs: List[Tab], i: Int, ja: Bool) -> Bool = {
+  let running = pty.busy(fd_of(tabs, i))
+  running == "" or (if ja then dialog.confirm("このタブを閉じますか？", "「${running}」が実行中です。閉じると終了します。", "閉じる", "キャンセル")
+    else dialog.confirm("Close this tab?", "${running} is still running in it, and will be ended.", "Close", "Cancel"))
+}
+
+/// Whether the window may close: at once when every shell waits at its
+/// prompt, else when the user says so.
+fn may_close_window(tabs: List[Tab], ja: Bool) -> Bool = {
+  let running = list.map(tabs, (tb) => pty.busy(tb.fd)) |> list.filter((n) => n != "")
+  let n = list.len(running)
+  let names = list.join(list.take(running, 3), ", ") + (if n > 3 then ", …" else "")
+  n == 0 or (if ja then dialog.confirm("ウィンドウを閉じますか？", "${int.to_string(n)} 個のタブでプログラムが実行中です（${names}）。閉じると終了します。", "閉じる", "キャンセル")
+    else dialog.confirm("Close the window?", "Programs are running in ${int.to_string(n)} tab${if n > 1 then "s" else ""} (${names}), and will be ended.", "Close", "Cancel"))
+}
 
 /// Reflow every tab's scrollback to the size the window settled at.
 fn settle_all(mut tabs: List[Tab]) -> Unit = {

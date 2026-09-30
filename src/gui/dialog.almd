@@ -1,0 +1,6 @@
+// Questions in the system's dialog — @extern(rust), backed by native/dialog.rs
+
+/// Ask: `message`, `detail` under it, buttons `yes` (default) and `no`.
+/// True for `yes`.
+@extern(rust, "crate::dialog", "confirm")
+fn confirm(message: String, detail: String, yes: String, no: String) -> Bool = _
