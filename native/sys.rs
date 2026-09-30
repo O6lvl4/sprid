@@ -104,3 +104,16 @@ fn system_locale() -> Option<String> {
 
 #[cfg(not(target_os = "macos"))]
 fn system_locale() -> Option<String> { None }
+
+/// Start another sprid — a window of its own — in `cwd` (the inherited
+/// directory when empty); `false` when it can't be started. It is reaped
+/// with the shells (`pty::reap` waits for any child), and outlives this one.
+pub fn open_window(cwd: &str) -> bool {
+    let Ok(exe) = std::env::current_exe() else { return false };
+    let mut cmd = std::process::Command::new(exe);
+    if !cwd.is_empty() {
+        cmd.current_dir(cwd);
+    }
+    use std::process::Stdio;
+    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().is_ok()
+}

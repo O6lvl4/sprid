@@ -33,6 +33,9 @@ let FONT_SIZE = 14.5
 let PAD_X = 12.0
 let PAD_Y = 8.0
 let CELL_HEIGHT = 1.15
+/// Cmd+Minus and Cmd+Plus go no further than these, points.
+let MIN_FONT_SIZE = 6.0
+let MAX_FONT_SIZE = 72.0
 
 /// Least time between two frames, ms: short while the program answers keys —
 /// a shell echoes a key and then redraws the line in colour a few ms later,
@@ -93,7 +96,8 @@ type Ui = {
 type Options = { command: Option[String], cols: Int, rows: Int, capture: Option[String] }
 
 /// What an input asks of the tabs.
-type Act = | Stay | NewTab | CloseTab | NextTab | PrevTab | GoTo(Int)
+/// `Zoom` changes the font size by that many points, or with 0 resets it.
+type Act = | Stay | NewTab | CloseTab | NextTab | PrevTab | GoTo(Int) | NewWindow | CloseWindow | Zoom(Int)
 
 effect fn run(opts: Options) -> Unit = {
   // Before anything starts a program: the shell, pbcopy.
@@ -148,6 +152,7 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
     float.to_int(PAD_X * scale), float.to_int(PAD_Y * scale), CELL_HEIGHT)
   var width = window.width()
   var height = window.height()
+  var font_size = FONT_SIZE
 
   let (cols, rows) = render.grid_size(r, width, height, 1)
   if (cols, rows) != expected then { let _ = pty.resize(first_fd, cols, rows) } else ()
@@ -267,6 +272,24 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
         GoTo(i) => if i < list.len(tabs) and i != active then {
           active = i
           ui.dirty = true
+        },
+        NewWindow => {
+          let _ = sys.open_window(cwd_of(tabs, active, home))
+        },
+        CloseWindow => if may_close_window(tabs, ja) then alive = false,
+        Zoom(step) => {
+          let size = if step == 0 then FONT_SIZE
+            else float.clamp(font_size + int.to_float(step), MIN_FONT_SIZE, MAX_FONT_SIZE)
+          if size != font_size then {
+            font_size = size
+            r = render.with_size(r, float.to_int(float.round(font_size * scale)),
+              float.to_int(PAD_X * scale), float.to_int(PAD_Y * scale), CELL_HEIGHT)
+            // As for a resize: the screen now, scrollback once the size
+            // holds, so holding Cmd+Plus stays quick.
+            relayout_live(tabs, r, width, height)
+            resized_at = sys.now_ms()
+            ui.dirty = true
+          }
         },
         Stay => (),
       }
@@ -552,6 +575,11 @@ effect fn handle(mut cur: Tab, mut ui: Ui, kind: Int, r: render.Renderer, scale:
     let command = kind == window.TEXT and mods == window.MOD_SUPER
     let command_shift = mods == window.MOD_SUPER + window.MOD_SHIFT
     let page = kind == window.KEY and mods == window.MOD_SHIFT and (code == window.KEY_PAGE_UP or code == window.KEY_PAGE_DOWN)
+    // Cmd with a key that types nothing: Enter, the arrows, Home, End, ...
+    let command_key = kind == window.KEY and mods == window.MOD_SUPER
+    // Letters as typed without Shift or Caps Lock.
+    let lower = if code >= 0x41 and code <= 0x5A then code + 32 else code
+    let edit = keys.mac_edit(kind, code, mods)
     // Ctrl+Tab / Ctrl+Shift+Tab switch tabs, as in browsers and Terminal.app;
     // Tab and Shift+Tab alone stay the program's (completion, Claude Code's
     // mode cycling).
@@ -563,7 +591,50 @@ effect fn handle(mut cur: Tab, mut ui: Ui, kind: Int, r: render.Renderer, scale:
     else if command and code >= 0x31 and code <= 0x39 then GoTo(code - 0x31)
     else if command_shift and ((kind == window.TEXT and code == 0x5D) or (kind == window.KEY and code == window.KEY_RIGHT)) then NextTab
     else if command_shift and ((kind == window.TEXT and code == 0x5B) or (kind == window.KEY and code == window.KEY_LEFT)) then PrevTab
-    else if command and (code == 0x6B or code == 0x4B) then {
+    else if command and lower == 0x6E then NewWindow
+    else if command_shift and kind == window.TEXT and lower == 0x77 then CloseWindow
+    // Font size: Cmd+Plus — Cmd+= on a US keyboard, Cmd+; on a Japanese one,
+    // with or without Shift — Cmd+Minus, and Cmd+0 back to the default.
+    else if (command or command_shift) and (code == 0x3D or code == 0x2B or code == 0x3B) then Zoom(1)
+    else if command and code == 0x2D then Zoom(-1)
+    else if command and code == 0x30 then Zoom(0)
+    else if command and lower == 0x6D then {
+      window.minimize()
+      Stay
+    } else if (command_key and code == window.KEY_ENTER)
+        or (kind == window.TEXT and mods == window.MOD_SUPER + window.MOD_CTRL and lower == 0x66) then {
+      // Cmd+Enter (as Ghostty) or Cmd+Ctrl+F (as every Mac app).
+      window.toggle_fullscreen()
+      Stay
+    } else if command and lower == 0x61 then {
+      // Cmd+A: everything, scrollback and screen, down to the cursor's line —
+      // below it the screen is empty — or on the alternate screen all of it.
+      terminal.settle(cur.t)
+      let screen = view.screen_line(cur.t)
+      cur.sel = some(view.Selection { anchor_line: screen - view.max_back(cur.t), anchor_col: 0,
+                                      head_line: screen + (if cur.t.alt then cur.t.rows - 1 else cur.t.y), head_col: cur.t.cols - 1 })
+      ui.dirty = true
+      Stay
+    } else if command_key and (code == window.KEY_HOME or code == window.KEY_END or code == window.KEY_PAGE_UP
+        or code == window.KEY_PAGE_DOWN or code == window.KEY_UP or code == window.KEY_DOWN) then {
+      // Scrolling: Cmd+Home / End to the top and the bottom, Cmd+PageUp /
+      // PageDown by pages, Cmd+Up / Down by lines.
+      let back = if code == window.KEY_HOME then view.max_back(cur.t)
+        else if code == window.KEY_END then 0
+        else if code == window.KEY_PAGE_UP then cur.back + t.rows - 1
+        else if code == window.KEY_PAGE_DOWN then cur.back - t.rows + 1
+        else if code == window.KEY_UP then cur.back + 1
+        else cur.back - 1
+      if back > cur.back then terminal.settle(cur.t)
+      cur.back = int.clamp(back, 0, view.max_back(cur.t))
+      ui.dirty = true
+      Stay
+    } else if edit != "" then {
+      let _ = pty.write(cur.fd, edit)
+      if cur.back != 0 then ui.dirty = true
+      cur.back = 0
+      Stay
+    } else if command and (code == 0x6B or code == 0x4B) then {
       // Cmd+K: clear. Scrollback always; the screen too when the shell waits
       // at its prompt — it is sent Ctrl+L, and draws the prompt, with what was
       // typed, at the top. A program running keeps its screen: clearing it

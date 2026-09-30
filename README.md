@@ -68,7 +68,15 @@ What works:
 - **Scrollback**: the wheel scrolls back through it (full-screen programs get
   arrow keys, or wheel reports if they asked for the mouse), Shift+PageUp /
   PageDown by pages. The view stays put while new output arrives below.
-- **Selection**: drag to select, across scrollback and screen; Cmd+C copies.
+- **Selection**: drag to select, across scrollback and screen; Cmd+A selects
+  it all, Cmd+C copies.
+- **Mac keys**: Cmd+Left / Right to the start and end of the line,
+  Cmd+Backspace deletes to its start, Option+Left / Right move by word (as
+  Terminal.app, iTerm2 and Ghostty send them). Cmd+Home / End, Cmd+PageUp /
+  PageDown and Cmd+Up / Down scroll. Cmd+Plus / Minus / 0 size the font
+  (Cmd+; on a Japanese keyboard). Cmd+N opens a new window in the current
+  tab's directory, Cmd+Shift+W closes it, Cmd+M minimizes, Cmd+Enter or
+  Cmd+Ctrl+F goes full screen.
 - **Clear** (Cmd+K): scrollback goes; at the shell's prompt the screen too
   (the shell is sent Ctrl+L and redraws its prompt at the top). A program
   running keeps its screen.

@@ -18,3 +18,7 @@ fn read_file(path: String) -> Bytes = _
 /// Set LANG to a UTF-8 locale when no locale is set (see native/sys.rs).
 @extern(rust, "crate::sys", "ensure_utf8_locale")
 fn ensure_utf8_locale() -> Unit = _
+
+/// Start another sprid, a new window, in `cwd` (see native/sys.rs).
+@extern(rust, "crate::sys", "open_window")
+fn open_window(cwd: String) -> Bool = _

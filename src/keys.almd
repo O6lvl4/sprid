@@ -122,6 +122,20 @@ fn key(code: Int, mods: Int, app_cursor: Bool) -> String = {
   else ""
 }
 
+/// The Mac's text-editing keys, as the shell's line editor knows them — what
+/// Terminal.app, iTerm2 and Ghostty send: Cmd+Left / Right to the start and
+/// end of the line (Ctrl+A, Ctrl+E), Cmd+Backspace deletes to its start
+/// (Ctrl+U), Option+Left / Right move by word (ESC b, ESC f). "" for any
+/// other input.
+fn mac_edit(kind: Int, code: Int, mods: Int) -> String =
+  if kind != KEY then ""
+  else if mods == MOD_SUPER and code == KEY_LEFT then "\x01"
+  else if mods == MOD_SUPER and code == KEY_RIGHT then "\x05"
+  else if mods == MOD_SUPER and code == KEY_BACKSPACE then "\x15"
+  else if mods == MOD_ALT and code == KEY_LEFT then "\x1bb"
+  else if mods == MOD_ALT and code == KEY_RIGHT then "\x1bf"
+  else ""
+
 /// Pasted text: newlines become CR, as typed Enter would, and with
 /// bracketed paste (mode 2004) the program is told where it starts and ends.
 /// Stray paste-end markers inside are dropped so text can't close the
@@ -185,4 +199,15 @@ test "kitty disambiguation tells modified keys apart" {
   assert_eq(encode_with(KEY, KEY_TAB, MOD_SHIFT, false, 1), "\x1b[9;2u")
   assert_eq(encode_with(KEY, KEY_UP, 0, false, 1), "\x1b[A")
   assert_eq(encode_with(KEY, KEY_ENTER, MOD_SHIFT, false, 0), "\r")
+}
+
+test "mac editing keys" {
+  assert_eq(mac_edit(KEY, KEY_LEFT, MOD_SUPER), "\x01")
+  assert_eq(mac_edit(KEY, KEY_RIGHT, MOD_SUPER), "\x05")
+  assert_eq(mac_edit(KEY, KEY_BACKSPACE, MOD_SUPER), "\x15")
+  assert_eq(mac_edit(KEY, KEY_LEFT, MOD_ALT), "\x1bb")
+  assert_eq(mac_edit(KEY, KEY_RIGHT, MOD_ALT), "\x1bf")
+  // Shift+Option+Left selects in some editors: left to the program.
+  assert_eq(mac_edit(KEY, KEY_LEFT, MOD_ALT + MOD_SHIFT), "")
+  assert_eq(mac_edit(TEXT, 0x61, MOD_SUPER), "")
 }

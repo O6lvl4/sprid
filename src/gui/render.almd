@@ -96,29 +96,21 @@ fn palette256() -> List[Int] = {
 /// A renderer drawing `faces` at `size_px` pixels per em, the grid inset by
 /// `pad_x` x `pad_y` pixels.
 fn new(device: Int, faces: fonts.Faces, size_px: Int, pad_x: Int, pad_y: Int, cell_height: Float) -> Renderer = {
-  let layer = text.new_buffer_layer(device, [faces.regular])
-  let size = int.to_float(size_px)
-  let cell_w = int.max(1, float.to_int(float.round(text.advance_px(layer, 0, sfnt.glyph_id(faces.regular, 0x4D), size))))
-  let ascent = text.ascent(layer, size)
-  let natural = ascent + text.descent(layer, size)
-  let cell_h = int.max(1, float.to_int(float.ceil(natural * cell_height)))
-  // Extra line height goes half above, half below.
-  let baseline = float.to_int(float.round(ascent + (int.to_float(cell_h) - natural) / 2.0))
-  Renderer {
+  let r = Renderer {
     device: device,
-    layer: layer,
+    layer: text.new_buffer_layer(device, [faces.regular]),
     bold_index: if faces.bold_path == "" then -2 else -1,
     bold_path: faces.bold_path,
     fallback_paths: faces.fallback_paths,
     fallback_indices: [],
     fallbacks_tried: 0,
-    size_px: size_px,
-    cell_w: cell_w,
-    cell_h: cell_h,
-    baseline: baseline,
-    pad_x: pad_x,
-    pad_y: pad_y,
-    line_w: int.max(1, size_px / 14),
+    size_px: 0,
+    cell_w: 1,
+    cell_h: 1,
+    baseline: 0,
+    pad_x: 0,
+    pad_y: 0,
+    line_w: 1,
     palette: palette256(),
     glyphs: [:],
     emojis: [:],
@@ -126,6 +118,38 @@ fn new(device: Int, faces: fonts.Faces, size_px: Int, pad_x: Int, pad_y: Int, ce
     vtx: 0,
     capacity: 0,
     count: 0,
+  }
+  with_size(r, size_px, pad_x, pad_y, cell_height)
+}
+
+/// `r` drawing at `size_px` pixels per em, inset by `pad_x` x `pad_y`: the
+/// cell measured anew, and what was cached for the old cell dropped. The
+/// layer, its fonts and its atlas stay — glyphs are cached by size, so going
+/// back to a size finds them still there.
+fn with_size(r: Renderer, size_px: Int, pad_x: Int, pad_y: Int, cell_height: Float) -> Renderer = {
+  let size = int.to_float(size_px)
+  let grid = r.layer.fonts[0]
+  let cell_w = int.max(1, float.to_int(float.round(text.advance_px(r.layer, 0, sfnt.glyph_id(grid, 0x4D), size))))
+  let ascent = text.ascent(r.layer, size)
+  let natural = ascent + text.descent(r.layer, size)
+  let cell_h = int.max(1, float.to_int(float.ceil(natural * cell_height)))
+  // Extra line height goes half above, half below.
+  let baseline = float.to_int(float.round(ascent + (int.to_float(cell_h) - natural) / 2.0))
+  let glyphs: Map[Int, Int] = [:]
+  let emojis: Map[Int, Int] = [:]
+  let sprites: Map[Int, List[sprite.Piece]] = [:]
+  {
+    ...r,
+    size_px: size_px,
+    cell_w: cell_w,
+    cell_h: cell_h,
+    baseline: baseline,
+    pad_x: pad_x,
+    pad_y: pad_y,
+    line_w: int.max(1, size_px / 14),
+    glyphs: glyphs,
+    emojis: emojis,
+    sprites: sprites,
   }
 }
 
