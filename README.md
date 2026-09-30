@@ -44,6 +44,18 @@ Anyway", or clear the quarantine flag:
 xattr -dr com.apple.quarantine /Applications/Sprid.app
 ```
 
+### Linux
+
+No release build yet; build it from source (see Requirements). It runs on
+X11 — built, tested and driven on Ubuntu 24.04 (arm64) under Xvfb with Mesa's
+lavapipe — and should on Wayland, which is not tried yet. `scripts/linux/`
+holds that setup: `docker build -t sprid-linux scripts/linux`, then
+`scripts/linux/check.sh`. For the clipboard it uses wl-copy / wl-paste under
+Wayland, else xclip or xsel; for symbols such as ⏺, Noto Sans Symbols 2
+(`fonts-noto-core` on Debian and Ubuntu). Not there yet: colour emoji, and
+the question before closing a tab or window with a program running (it
+closes without asking).
+
 ## Status: M3 — a window you can use
 
 To build it yourself as a Mac app: `scripts/make-app.sh --install` builds `Sprid.app` (icon from

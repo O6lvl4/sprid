@@ -13,7 +13,6 @@
 
 import bytes
 import env
-import process
 import snaidhm.native.window as window
 import snaidhm.native.frame as frame
 import snaidhm.text as text
@@ -149,7 +148,7 @@ type Options = { command: Option[String], cols: Int, rows: Int, capture: Option[
 type Act = | Stay | NewTab | CloseTab | NextTab | PrevTab | GoTo(Int) | NewWindow | CloseWindow | Zoom(Int)
 
 effect fn run(opts: Options) -> Unit = {
-  // Before anything starts a program: the shell, pbcopy.
+  // Before anything starts a program: the shell, the clipboard's tools.
   sys.ensure_utf8_locale()
   run_fonts(opts)!
 }
@@ -1265,11 +1264,7 @@ fn cell_at(r: render.Renderer, t: terminal.Terminal, scale: Float, tabs: Int) ->
 }
 
 effect fn copy(s: String) -> Unit = {
-  let _ = process.exec_with_stdin("pbcopy", [], s)
+  let _ = sys.clipboard_set(s)
 }
 
-effect fn clipboard() -> String =
-  match process.exec("pbpaste", []) {
-    ok(s) => s,
-    err(_) => "",
-  }
+effect fn clipboard() -> String = sys.clipboard_get()

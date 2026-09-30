@@ -19,6 +19,7 @@ type Faces = { regular: sfnt.Font, bold_path: String, fallback_paths: List[Strin
 /// Monospace faces, in order of preference, each with its bold.
 let MONO = [
   ("~/Library/Fonts/UDEVGothic35NFLG-Regular.ttf", "~/Library/Fonts/UDEVGothic35NFLG-Bold.ttf"),
+  ("~/.local/share/fonts/UDEVGothic35NFLG-Regular.ttf", "~/.local/share/fonts/UDEVGothic35NFLG-Bold.ttf"),
   ("/System/Library/Fonts/SFNSMono.ttf", ""),
   ("/System/Library/Fonts/Menlo.ttc", ""),
   ("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf"),
@@ -27,7 +28,9 @@ let MONO = [
 
 /// Where the grid face has no glyph: Japanese (with the rest of CJK), then
 /// symbols — Menlo has the dingbats CLIs draw (✻ ✔ ✘), STIX Two
-/// Math the media symbols (⏺), Apple Symbols most of the rest.
+/// Math the media symbols (⏺), Apple Symbols most of the rest; on Linux
+/// DejaVu Sans the dingbats and Noto Sans Symbols 2 the media symbols
+/// (Debian and Ubuntu paths, then Arch's).
 let FALLBACK = [
   "/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc",
   "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
@@ -36,6 +39,11 @@ let FALLBACK = [
   "/System/Library/Fonts/Supplemental/STIXTwoMath.otf",
   "/System/Library/Fonts/Apple Symbols.ttf",
   "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+  "/usr/share/fonts/TTF/DejaVuSans.ttf",
+  "/usr/share/fonts/truetype/noto/NotoSansSymbols2-Regular.ttf",
+  "/usr/share/fonts/noto/NotoSansSymbols2-Regular.ttf",
+  "/usr/share/fonts/truetype/noto/NotoSansSymbols-Regular.ttf",
+  "/usr/share/fonts/noto/NotoSansSymbols-Regular.ttf",
 ]
 
 effect fn expand(path: String) -> String =

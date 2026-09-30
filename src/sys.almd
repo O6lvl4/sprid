@@ -19,6 +19,14 @@ fn read_file(path: String) -> Bytes = _
 @extern(rust, "crate::sys", "ensure_utf8_locale")
 fn ensure_utf8_locale() -> Unit = _
 
+/// Put text on the system clipboard, `false` when there is no way to; and
+/// read it (see native/sys.rs).
+@extern(rust, "crate::sys", "clipboard_set")
+fn clipboard_set(text: String) -> Bool = _
+
+@extern(rust, "crate::sys", "clipboard_get")
+fn clipboard_get() -> String = _
+
 /// Start another sprid, a new window, in `cwd` (see native/sys.rs).
 @extern(rust, "crate::sys", "open_window")
 fn open_window(cwd: String) -> Bool = _
