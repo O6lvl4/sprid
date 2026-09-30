@@ -94,11 +94,9 @@ tabs and splits.
 ## Requirements
 
 Almide with the fix for [almide#3049](https://github.com/almide/almide/issues/3049)
-([almide#3056](https://github.com/almide/almide/pull/3056)), and snaidhm with
-modifier keys on input (branch `terminal-input`, checked out next to this
-repository: `almide.toml` points at `../snaidhm`). Without it, calls such as
-`erase_cells(t, t.y, t.x, t.cols)` silently pass the wrong arguments and the
-tests fail.
+([almide#3061](https://github.com/almide/almide/pull/3061), in review). Without
+it, calls such as `erase_cells(t, t.y, t.x, t.cols)` silently pass the wrong
+arguments and the tests fail. snaidhm comes from its `main` branch.
 
 Open compiler issues this project works around:
 [#3045](https://github.com/almide/almide/issues/3045) (a `Bytes` parameter on
