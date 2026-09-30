@@ -1,11 +1,20 @@
-// The faces sprid draws with: a monospace face for the grid, and faces to
-// fall back on for what it lacks. `SPRID_FONT` (a path) goes first when set.
+// The faces sprid draws with: a monospace face for the grid, its bold, and
+// faces to fall back on for what it lacks. `SPRID_FONT` (a path) goes first
+// when set.
+//
+// Only the grid face is read at start. The bold is read when bold text first
+// appears, and a fallback when a character first needs it: a face is held in
+// memory whole, and the fallbacks alone come to about 12 MB that most
+// sessions never touch.
 
+import bytes
 import env
 import fs
 import snaidhm.sfnt as sfnt
+import self.sys
 
-type Faces = { regular: List[sfnt.Font], bold: List[sfnt.Font] }
+/// The grid face, where its bold is, and where the fallbacks are, in order.
+type Faces = { regular: sfnt.Font, bold_path: String, fallback_paths: List[String] }
 
 /// Monospace faces, in order of preference, each with its bold.
 let MONO = [
@@ -32,35 +41,37 @@ let FALLBACK = [
 effect fn expand(path: String) -> String =
   if string.starts_with(path, "~/") then (env.get("HOME") ?? "") + string.drop(path, 1) else path
 
-effect fn load(path: String) -> Option[sfnt.Font] =
+/// Face 0 of the font file at `path`, or none.
+fn load(path: String) -> Option[sfnt.Font] =
   if path == "" then none
-  else match fs.read_bytes_raw(expand(path)!) {
-    ok(data) => sfnt.load(data, 0)?,
-    err(_) => none,
+  else {
+    let data = sys.read_file(path)
+    if bytes.len(data) == 0 then none else sfnt.load(data, 0)?
   }
 
-/// The first monospace face (and its bold) this system has.
-effect fn mono(i: Int) -> (Option[sfnt.Font], Option[sfnt.Font]) =
-  if i >= list.len(MONO) then (none, none)
+/// The first monospace face this system has, with the path of its bold.
+effect fn mono(i: Int) -> Option[(sfnt.Font, String)] =
+  if i >= list.len(MONO) then none
   else {
     let (regular, bold) = MONO[i]
-    match load(regular)! {
-      some(f) => (some(f), load(bold)!),
+    match load(expand(regular)!) {
+      some(f) => some((f, if bold == "" then "" else expand(bold)!)),
       none => mono(i + 1)!,
     }
   }
 
-effect fn find() -> Faces = {
-  let custom = match env.get("SPRID_FONT") { some(p) => load(p)!, none => none }
-  let (regular, bold) = match custom { some(f) => (some(f), none), none => mono(0)! }
-  var fallback: List[sfnt.Font] = []
-  for path in FALLBACK {
-    match load(path)! {
-      some(f) => list.push(fallback, f),
-      none => (),
-    }
+effect fn find() -> Option[Faces] = {
+  let custom = match env.get("SPRID_FONT") {
+    some(p) => match load(p) { some(f) => some((f, "")), none => none },
+    none => none,
   }
-  let first: List[sfnt.Font] = match regular { some(f) => [f], none => [] }
-  let first_bold: List[sfnt.Font] = match bold { some(f) => [f], none => first }
-  Faces { regular: first + fallback, bold: first_bold + fallback }
+  let grid = match custom { some(c) => some(c), none => mono(0)! }
+  var fallbacks: List[String] = []
+  for path in FALLBACK {
+    if fs.exists(path) then list.push(fallbacks, path)
+  }
+  match grid {
+    some((f, bold)) => some(Faces { regular: f, bold_path: bold, fallback_paths: fallbacks }),
+    none => none,
+  }
 }

@@ -69,19 +69,35 @@ What works:
 - **Synchronized output** (mode 2026), which Claude Code uses, holds the
   frame until the update is complete.
 
-Measured on an M-series Mac:
+### Against Ghostty
 
-| | sprid |
-|---|---|
-| Footprint, idle, one window | 74 MB |
-| Footprint while 256 MB of Claude-Code-like output streams through (`bench`) | flat, scrollback held at its 10 MB budget |
-| `cat` of 20 MB in the window | ~5 MB/s |
-| CPU, idle | ~2 % |
+`scripts/bench_vs.py` runs sprid and Ghostty 1.3.1 (the current release,
+with its memory leak fixed) the same way: started as apps (`open -n -a`),
+same font (UDEV Gothic 35NFLG 14.5), same grid (100 x 30), same 10 MB
+scrollback, same script, timed by the script itself. Three sessions on an
+M-series Mac, each a median of 3-5 runs; where the sessions disagree, the
+range is given.
 
-For scale, the Ghostty 1.2.3 this was written next to measured 684 MB with
-eight terminals open, 504 MB of it GPU surfaces, and grows over a long Claude
-Code session. That is not a like-for-like comparison, and throughput was not
-compared at all; sprid's throughput and idle CPU are M2 and M4.
+| | sprid | Ghostty 1.3.1 |
+|---|---|---|
+| Start to first command | 0.26-0.34 s | 0.28-0.33 s |
+| `cat` 21 MB of Claude-Code-like output | 0.17-0.27 s (80-130 MB/s) | 0.27-0.42 s (50-80 MB/s) |
+| Peak footprint during that `cat` | 188-190 MB | 131-132 MB |
+| CPU, idle (10-30 s after start) | 0.00 % | 0.00-0.05 %, once 1.2 % |
+| Footprint, idle | 52-53 MB | 63 MB, once 114 MB |
+
+sprid is ahead on throughput and idle memory, level on start and idle CPU,
+and behind on memory while output streams: about 40 MB more of GPU memory
+in use, which follows from drawing (it is gone when frames aren't drawn) and
+not from uploads or frame rate (neither changed it). That is the next thing
+to find.
+
+How it got here: the parser is 5x what it was (rows scrolled off are encoded
+straight into scrollback, a width table, ASCII runs, one store per field
+pair, CSI parameters in fixed buffers), a PTY read no longer allocates and
+zeroes 64 KB per 1 KB it returns, the window sleeps on its PTYs and events at
+once instead of polling (snaidhm's `wait_fds`), and only the grid face is
+read at start — bold and fallbacks when first needed.
 
 Not yet: reflow on resize, colour emoji (snaidhm reads outlines, not
 bitmaps), mouse clicks reported to programs, the window title, a config file,
@@ -93,8 +109,8 @@ tabs and splits.
 |---|---|
 | **M1 core** | ✅ Parser, screen and bounded scrollback pass their tests; real programs run on a PTY headless |
 | **M3 window** | ✅ A native window through snaidhm: glyph cache, cell rendering, keyboard and IME, scrollback, selection, resize |
-| **M2 speed** | A byte-level fast path for printable runs; ≥ 200 MB/s on `bench` |
-| **M4 daily driver** | Idle CPU ~0 (the PTY wakes the event loop instead of polling it), reflow, config; a week of Claude Code sessions in sprid with the footprint flat |
+| **M2 speed** | A byte-level fast path for printable runs; ≥ 200 MB/s on `bench` (now ~95) |
+| **M4 daily driver** | ✅ idle CPU 0; reflow, config; a week of Claude Code sessions in sprid with the footprint flat |
 
 ## Requirements
 

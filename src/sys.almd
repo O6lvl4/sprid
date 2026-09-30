@@ -11,3 +11,6 @@ fn login_shell() -> String = _
 
 @extern(rust, "crate::sys", "cwd")
 fn cwd() -> String = _
+
+@extern(rust, "crate::sys", "read_file")
+fn read_file(path: String) -> Bytes = _

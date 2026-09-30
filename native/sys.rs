@@ -43,3 +43,10 @@ pub fn login_shell() -> String {
 pub fn cwd() -> String {
     std::env::current_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()
 }
+
+/// The bytes of the file at `path`; empty when it can't be read. For fonts
+/// loaded the moment a character first needs one, from code that isn't an
+/// effect.
+pub fn read_file(path: &str) -> crate::AlmideRcCow<Vec<u8>> {
+    crate::AlmideRcCow::new(std::fs::read(path).unwrap_or_default())
+}

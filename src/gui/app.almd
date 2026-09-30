@@ -2,9 +2,9 @@
 //
 // One loop on the main thread (macOS wants its event loop there): pump the
 // window's events, turn keys into bytes for the active tab's PTY, read what
-// every tab's program wrote, and draw the active tab when it changed.
-// Waiting on all the PTYs at once with a short timeout is what paces the
-// loop.
+// every tab's program wrote, and draw the active tab when it changed. The
+// loop sleeps on the window and every PTY at once (snaidhm's `wait_fds`), so
+// it runs only when there is something to do.
 //
 // Tabs live in a list. A tab is worked on by taking it out (swap it to the
 // end and pop it) and pushing it back: indexing would copy it, and with it
@@ -31,8 +31,6 @@ let PAD_X = 12.0
 let PAD_Y = 8.0
 let CELL_HEIGHT = 1.15
 
-/// Longest a frame waits for the PTYs when nothing is pending, ms.
-let IDLE_WAIT = 8
 /// Least time between two frames, ms: the display's rate while the program
 /// answers keys, a lower one while its output streams in. Taking a frame
 /// waits for the display (vsync, ~16 ms), time the parser could have used.
@@ -74,10 +72,13 @@ type Options = { command: Option[String], cols: Int, rows: Int, capture: Option[
 /// What an input asks of the tabs.
 type Act = | Stay | NewTab | CloseTab | NextTab | PrevTab | GoTo(Int)
 
-effect fn run(opts: Options) -> Unit = {
+effect fn run(opts: Options) -> Unit = match fonts.find()! {
+  some(faces) => run_with(opts, faces)!,
+  none => println("sprid: no font found"),
+}
+
+effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
   let capture = opts.capture
-  let faces = fonts.find()!
-  guard list.len(faces.regular) > 0 else println("sprid: no font found")
   // Sized to a grid, the window is measured before it opens, for a Retina
   // display (the scale is only known once it is open).
   let (win_w, win_h) = if opts.cols > 0 and opts.rows > 0 then {
@@ -131,8 +132,24 @@ effect fn run(opts: Options) -> Unit = {
   let debug = env.get("SPRID_DEBUG") != none
   var frames = 0
   var draw_ms = 0
+  var wakes = 0
+  var wake_report = 0
   while alive {
-    alive = window.pump()
+    // Sleep until input, output on any tab, or the next frame is due: with
+    // nothing to draw that is indefinitely, so an idle window costs nothing.
+    let now = sys.now_ms()
+    let frame_wait = int.max(0, last_frame + (if streaming then STREAM_FRAME_MS else FRAME_MS) - now)
+    let idle = if capture == none then -1 else 50
+    let timeout = if ui.dirty then int.max(frame_wait, sync_wait(tabs, active, now)) else idle
+    // With no time to wait, just take the window's events: arming the fd
+    // watcher on every turn of a streaming loop costs more than it saves.
+    alive = if timeout == 0 then window.pump() else window.wait_fds(list.map(tabs, (tb) => tb.fd), timeout)
+    wakes = wakes + 1
+    if debug and sys.now_ms() - wake_report >= 2000 then {
+      eprintln("sprid: ${int.to_string(wakes)} wakes in 2 s (dirty ${if ui.dirty then "yes" else "no"}, timeout ${int.to_string(timeout)})")
+      wakes = 0
+      wake_report = sys.now_ms()
+    }
     if window.resized() then {
       width = window.width()
       height = window.height()
@@ -191,8 +208,7 @@ effect fn run(opts: Options) -> Unit = {
     }
     if list.len(tabs) == 0 then alive = false
 
-    // Every tab's output, the active tab's first and with the longer budget.
-    if not ui.dirty then pty.wait(list.map(tabs, (tb) => tb.fd), IDLE_WAIT)
+    // Every tab's output, the active tab's with the longer budget.
     streaming = false
     for i in 0..<list.len(tabs) {
       match take(tabs, i) {
@@ -290,6 +306,13 @@ fn take(mut tabs: List[Tab], i: Int) -> Option[Tab] = {
   guard i >= 0 and i < list.len(tabs) else none
   tabs = list.swap(tabs, i, list.len(tabs) - 1)
   list.pop(tabs)
+}
+
+/// How long the active tab's open synchronized update may still hold the
+/// frame, ms (0 when none is open).
+fn sync_wait(tabs: List[Tab], active: Int, now: Int) -> Int = match list.get(tabs, active) {
+  some(tb) => if tb.sync_since >= 0 and tb.t.sync_output then int.max(0, tb.sync_since + SYNC_LIMIT - now) else 0,
+  none => 0,
 }
 
 fn fd_of(tabs: List[Tab], i: Int) -> Int = match list.get(tabs, i) {

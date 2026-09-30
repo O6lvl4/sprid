@@ -95,8 +95,12 @@ type Terminal = {
   sb: scrollback.Scrollback,
   // Parser.
   state: Int,
-  params: List[Int],
-  colons: List[Bool],
+  // CSI parameters so far: `n_params` of them, as i32 in `params` (-1 for an
+  // empty one) and a byte each in `colons` (1: introduced by ':', a
+  // sub-parameter). Fixed buffers, so a sequence allocates nothing.
+  params: Bytes,
+  colons: Bytes,
+  n_params: Int,
   param: Int,
   colon: Bool,
   private: Int,
@@ -158,8 +162,9 @@ fn with_scrollback(cols: Int, rows: Int, limit: Int) -> Terminal = {
     bells: 0,
     sb: scrollback.new(limit),
     state: GROUND,
-    params: [],
-    colons: [],
+    params: bytes.new(MAX_PARAMS * 4),
+    colons: bytes.new(MAX_PARAMS),
+    n_params: 0,
     param: -1,
     colon: false,
     private: 0,
@@ -238,9 +243,11 @@ fn copy_row(mut t: Terminal, from: Int, to: Int) -> Unit = {
 /// Combining marks of row y, keyed by column, for the scrollback record.
 fn row_extras(t: Terminal, y: Int) -> Map[Int, String] = {
   var extras: Map[Int, String] = [:]
+  let base = row_off(t, y)
+  let first = phys(t, y) * t.cols
   for x in 0..<t.cols {
-    if int.band(bytes.read_u8(t.grid, cell_off(t, x, y) + cell.OFF_FLAGS), cell.FLAG_GRAPHEME) != 0 then
-      map.insert(extras, x, map.get_or(t.graphemes, cell_index(t, x, y), ""))
+    if int.band(bytes.read_u8(t.grid, base + x * cell.SIZE + cell.OFF_FLAGS), cell.FLAG_GRAPHEME) != 0 then
+      map.insert(extras, x, map.get_or(t.graphemes, first + x, ""))
   }
   extras
 }
@@ -645,10 +652,7 @@ fn escape(mut t: Terminal, b: Int) -> Unit = {
     match b {
       0x5B => { // [
         t.state = CSI_ENTRY
-        let no_params: List[Int] = []
-        let no_colons: List[Bool] = []
-        t.params = no_params
-        t.colons = no_colons
+        t.n_params = 0
         t.param = -1
         t.colon = false
         t.private = 0
@@ -716,9 +720,13 @@ fn csi(mut t: Terminal, b: Int) -> Unit = {
 /// End the parameter being read. `colons[i]` says parameter i was introduced
 /// by ':' — a sub-parameter of the one before it.
 fn push_param(mut t: Terminal) -> Unit = {
-  if list.len(t.params) < MAX_PARAMS then {
-    t.params = t.params + [t.param]
-    t.colons = t.colons + [t.colon]
+  if t.n_params < MAX_PARAMS then {
+    let at = t.n_params
+    let value = t.param
+    let colon = if t.colon then 1 else 0
+    bytes.set_i32_le(t.params, at * 4, value)
+    bytes.set_u8(t.colons, at, colon)
+    t.n_params = at + 1
   }
   t.param = -1
   t.colon = false
@@ -726,12 +734,18 @@ fn push_param(mut t: Terminal) -> Unit = {
 
 /// Parameter i, or `default` when missing or 0.
 fn arg(t: Terminal, i: Int, default: Int) -> Int = {
-  let v = list.get(t.params, i) ?? -1
+  let v = param_at(t, i)
   if v <= 0 then default else v
 }
 
 /// Parameter i, or 0 when missing.
-fn arg0(t: Terminal, i: Int) -> Int = int.max(list.get(t.params, i) ?? 0, 0)
+fn arg0(t: Terminal, i: Int) -> Int = int.max(param_at(t, i), 0)
+
+/// Parameter i as read (-1 when empty or missing).
+fn param_at(t: Terminal, i: Int) -> Int = if i >= 0 and i < t.n_params then bytes.read_i32_le(t.params, i * 4) else -1
+
+/// Whether parameter i was introduced by ':'.
+fn colon_at(t: Terminal, i: Int) -> Bool = i < t.n_params and bytes.read_u8(t.colons, i) == 1
 
 fn csi_dispatch(mut t: Terminal, final: Int) -> Unit = {
   if t.private == 0 and t.intermediate == 0 then csi_plain(t, final)
@@ -835,13 +849,13 @@ fn erase_line(mut t: Terminal, mode: Int) -> Unit = {
 // ── SGR ───────────────────────────────────────────────────────────────────
 
 fn sgr(mut t: Terminal) -> Unit = {
-  let n = list.len(t.params)
+  let n = t.n_params
   var i = 0
   while i < n {
-    let p = int.max(t.params[i], 0)
+    let p = int.max(param_at(t, i), 0)
     // Parameters that are sub-parameters of this one (introduced by ':').
     var subs = 0
-    while i + subs + 1 < n and t.colons[i + subs + 1] {
+    while i + subs + 1 < n and colon_at(t, i + subs + 1) {
       subs = subs + 1
     }
     if p == 38 or p == 48 or p == 58 then {
@@ -849,7 +863,7 @@ fn sgr(mut t: Terminal) -> Unit = {
       if p == 38 then t.fg = color else if p == 48 then t.bg = color
       i = i + 1 + (if subs > 0 then subs else used)
     } else {
-      sgr_one(t, p, if subs > 0 then int.max(t.params[i + 1], 0) else -1)
+      sgr_one(t, p, if subs > 0 then int.max(param_at(t, i + 1), 0) else -1)
       i = i + 1 + subs
     }
   }
@@ -912,7 +926,8 @@ fn set_attr(mut t: Terminal, bit: Int, on: Bool) -> Unit = {
 // ── Modes ─────────────────────────────────────────────────────────────────
 
 fn set_private_modes(mut t: Terminal, on: Bool) -> Unit = {
-  for p in t.params {
+  for i in 0..<t.n_params {
+    let p = param_at(t, i)
     match p {
       1 => { t.app_cursor = on },
       6 => {

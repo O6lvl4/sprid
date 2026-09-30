@@ -10,6 +10,7 @@ use std::collections::HashSet;
 thread_local! {
     /// Master fds whose child side has closed: a read hit the end.
     static ENDED: RefCell<HashSet<i32>> = RefCell::new(HashSet::new());
+    static SCRATCH: RefCell<Vec<u8>> = RefCell::new(vec![0u8; 65536]);
 }
 
 /// Start `program` (run through `/bin/sh -c`) on a new PTY of `cols` x `rows`,
@@ -47,15 +48,21 @@ pub fn read(fd: i64, timeout_ms: i64) -> AlmideRcCow<Vec<u8>> {
     let mut pfd = libc::pollfd { fd: fd as i32, events: libc::POLLIN, revents: 0 };
     let n = unsafe { libc::poll(&mut pfd, 1, timeout_ms as i32) };
     if n <= 0 { return AlmideRcCow::new(Vec::new()); }
-    let mut buf = vec![0u8; 65536];
-    let r = unsafe { libc::read(fd as i32, buf.as_mut_ptr() as *mut _, buf.len()) };
-    if r <= 0 {
-        ENDED.with(|e| e.borrow_mut().insert(fd as i32));
-        buf.clear();
-    } else {
-        buf.truncate(r as usize);
+    // One scratch buffer for every read; what comes back is a copy of just
+    // the bytes read. A fresh 64 KB per call, zeroed, cost more than the
+    // parsing when macOS hands over a PTY 1 KB at a time.
+    let out = SCRATCH.with(|b| {
+        let mut buf = b.borrow_mut();
+        let r = unsafe { libc::read(fd as i32, buf.as_mut_ptr() as *mut _, buf.len()) };
+        if r <= 0 { None } else { Some(buf[..r as usize].to_vec()) }
+    });
+    match out {
+        Some(v) => AlmideRcCow::new(v),
+        None => {
+            ENDED.with(|e| e.borrow_mut().insert(fd as i32));
+            AlmideRcCow::new(Vec::new())
+        }
     }
-    AlmideRcCow::new(buf)
 }
 
 /// Wait up to `timeout_ms` until any of `fds` has output (or has ended).
