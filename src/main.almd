@@ -3,7 +3,7 @@
 //   sprid                   open a window running your shell
 //   sprid capture <png>     draw one screen of SPRID_CAPTURE_CMD, save it
 //   sprid run <command>     run <command> on a PTY, then print the screen
-//   sprid bench [MB]        stream MB of Claude-Code-like output through a
+//   sprid bench [MB]        stream MB of styled, emoji-heavy output through a
 //                           terminal and report memory as it goes
 //
 
@@ -29,7 +29,7 @@ effect fn main() -> Unit = {
   }
 }
 
-/// `--cols=N --rows=N -e command...`, as Ghostty takes them: everything after
+/// `--cols=N --rows=N -e command...`: everything after
 /// `-e` is the command.
 fn window_options(args: List[String]) -> app.Options = {
   var opts = app.Options { command: none, cols: 0, rows: 0, capture: none }
@@ -47,7 +47,7 @@ fn window_options(args: List[String]) -> app.Options = {
   opts
 }
 
-test "window options read like Ghostty's" {
+test "window options: grid size, then the command after -e" {
   let o = window_options(["--cols=100", "--rows=30", "-e", "cat", "big file"])
   assert_eq((o.cols, o.rows, o.command), (100, 30, some("cat big file")))
   assert_eq(window_options([]).command, none)
@@ -68,9 +68,9 @@ effect fn run(command: String) -> Unit = {
   println("── ${int.to_string(scrollback.line_count(t.sb))} lines in scrollback, ${int.to_string(scrollback.bytes_used(t.sb))} bytes")
 }
 
-/// One chunk of output shaped like a Claude Code session: styled bullets,
-/// wide chars, emoji ZWJ sequences, combining marks, direct colors, box
-/// drawing — the content that made Ghostty <= 1.2 leak.
+/// One chunk of output shaped like a long interactive CLI session: styled
+/// bullets, wide chars, emoji ZWJ sequences, combining marks, direct colors,
+/// box drawing — the content that strains scrollback most.
 fn chunk(i: Int) -> Bytes = {
   var s = ""
   for j in 0..<64 {

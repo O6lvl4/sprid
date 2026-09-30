@@ -29,7 +29,7 @@ import self.sys
 import self.terminal
 import self.view
 
-/// Font size in points, as Ghostty counts them: logical pixels.
+/// Font size in points, counted as logical pixels.
 let FONT_SIZE = 14.5
 let PAD_X = 12.0
 let PAD_Y = 8.0
@@ -125,7 +125,7 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
     ((opts.cols * cw) / 2 + pad_x / 2 + 1, (opts.rows * ch) / 2 + pad_y / 2 + 1)
   else (960, 620)
   // Started from Finder there is no $SHELL and the directory is /: take the
-  // shell from the password database and start at home, as Ghostty does.
+  // shell from the password database and start at home.
   let shell = match env.get("SHELL") {
     some(s) => s,
     none => if sys.login_shell() != "" then sys.login_shell() else "/bin/zsh",
@@ -609,9 +609,9 @@ effect fn handle(mut cur: Tab, mut ui: Ui, kind: Int, r: render.Renderer, scale:
     // Letters as typed without Shift or Caps Lock.
     let lower = if code >= 0x41 and code <= 0x5A then code + 32 else code
     let edit = keys.mac_edit(kind, code, mods)
-    // Ctrl+Tab / Ctrl+Shift+Tab switch tabs, as in browsers and Terminal.app;
-    // Tab and Shift+Tab alone stay the program's (completion, Claude Code's
-    // mode cycling).
+    // Ctrl+Tab / Ctrl+Shift+Tab switch tabs, as in browsers;
+    // Tab and Shift+Tab alone stay the program's (completion, a CLI's mode
+    // cycling).
     let ctrl_tab = kind == window.KEY and code == window.KEY_TAB
     if ctrl_tab and mods == window.MOD_CTRL then NextTab
     else if ctrl_tab and mods == window.MOD_CTRL + window.MOD_SHIFT then PrevTab
@@ -632,7 +632,7 @@ effect fn handle(mut cur: Tab, mut ui: Ui, kind: Int, r: render.Renderer, scale:
       Stay
     } else if (command_key and code == window.KEY_ENTER)
         or (kind == window.TEXT and mods == window.MOD_SUPER + window.MOD_CTRL and lower == 0x66) then {
-      // Cmd+Enter (as Ghostty) or Cmd+Ctrl+F (as every Mac app).
+      // Cmd+Enter or Cmd+Ctrl+F (as every Mac app).
       window.toggle_fullscreen()
       Stay
     } else if command and lower == 0x61 then {
@@ -738,7 +738,7 @@ effect fn handle(mut cur: Tab, mut ui: Ui, kind: Int, r: render.Renderer, scale:
     }
     Stay
   } else if (kind == window.MOUSE_DOWN or kind == window.MOUSE_UP or kind == window.MOUSE_MOVE) and app_mouse(t, ui, r, scale, tabs, kind) then {
-    // The program asked for the mouse (Claude Code does): presses, releases
+    // The program asked for the mouse: presses, releases
     // and motion are its, as SGR reports. Shift held keeps them the
     // window's, for selecting text as anywhere else.
     let (col, row) = cell_at(r, t, scale, tabs)

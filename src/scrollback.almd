@@ -4,10 +4,10 @@
 // line records and appended to fixed-size blocks. When the blocks outgrow the
 // budget, the oldest block is dropped whole.
 //
-// Why this shape: Ghostty <= 1.2 leaked memory in exactly this component. Its
-// scrollback reused "pages" from a pool, and a page grown past the standard
-// size to hold graphemes was, once reused, mistaken for a pooled page and
-// never unmapped. Here nothing is pooled or reused:
+// Why this shape: scrollback is where a terminal's memory quietly grows.
+// Pages reused from a pool, pages grown past their standard size to hold
+// graphemes, side tables kept in step with the lines — mistake one for
+// another and memory is never given back. Here nothing is pooled or reused:
 //
 //   * a line record owns everything it needs — text, combining marks, styles —
 //     inline, so there is no side table to fall out of sync with it;

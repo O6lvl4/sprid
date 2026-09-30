@@ -44,7 +44,7 @@ let VERSION = "0.1"
 /// what lets a program tell Shift+Enter from Enter.
 let KITTY_SUPPORTED = 1
 
-/// Default scrollback budget: 10 MB, the same as Ghostty's default.
+/// Default scrollback budget: 10 MB.
 let DEFAULT_SCROLLBACK = 10000000
 
 type Saved = { x: Int, y: Int, fg: Int, bg: Int, attrs: Int, origin: Bool, pending_wrap: Bool, dec_graphics: Bool }

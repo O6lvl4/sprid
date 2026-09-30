@@ -1,20 +1,18 @@
-"""sprid against Ghostty, same conditions.
+"""sprid's start, throughput, memory and idle cost, measured as an app.
 
-Both are started the way Finder starts them (`open -n -a`), with the same
-font, grid (100 x 30) and scrollback budget (10 MB), running the same script.
+sprid is started the way Finder starts it (`open -n -a`), with a fixed font,
+grid (100 x 30) and scrollback budget (10 MB), running a fixed script.
 Timing comes from the script itself: it stamps a marker file when its work
-is done, so neither terminal's way of quitting (Ghostty keeps its hidden
-quick-terminal window, and so its process, after the last window closes)
-enters the numbers. A run is over once the marker is stamped AND the
-terminal's window is on screen (scripts/window_shown.c): a terminal may start
-its program before its window, and is not ready until it shows. After each
-run the terminal is terminated.
+is done, so the way the app quits does not enter the numbers. A run is over
+once the marker is stamped AND the window is on screen
+(scripts/window_shown.c): the program starts before the window, and sprid is
+not ready until it shows. After each run sprid is terminated.
 
 Measured, median of RUNS:
 
   startup    launch until the window shows and a script that only stamps the
              marker has run
-  cat        launch until `cat` of a Claude-Code-like file is done (and the
+  cat        launch until `cat` of a styled, emoji-heavy file is done (and the
              window shows), minus startup: what taking all of it in added
   peak       the largest phys_footprint the process has had by the time
              `cat` is done, as the kernel records it (phys_footprint_peak):
@@ -22,7 +20,7 @@ Measured, median of RUNS:
   idle cpu   CPU time used from 10 s to 30 s with nothing running, as a %
   idle mem   phys_footprint at 30 s
 
-  python3 scripts/bench_vs.py SPRID_APP GHOSTTY_APP [DATA_FILE]
+  python3 scripts/bench.py SPRID_APP [DATA_FILE]
 """
 
 import os
@@ -57,28 +55,14 @@ def script(name: str, body: str) -> str:
     return path
 
 
-def args_for(app: str, command: str) -> list[str]:
-    if "Ghostty" in app:
-        # `--command`, not `-e`: Ghostty 1.3 asks before running an `-e`
-        # command it was handed through `open`.
-        return [
-            "--config-default-files=false",
-            f"--font-family={FONT}",
-            f"--font-size={SIZE}",
-            "--window-width=100",
-            "--window-height=30",
-            "--scrollback-limit=10000000",
-            "--confirm-close-surface=false",
-            "--window-save-state=never",
-            f"--command={command}",
-        ]
+def args_for(command: str) -> list[str]:
     return ["--cols=100", "--rows=30", "-e", command]
 
 
 def exe_of(app: str) -> str:
     macos = os.path.join(app, "Contents", "MacOS")
     names = [n for n in os.listdir(macos) if not n.startswith(".")]
-    return os.path.join(macos, "ghostty" if "ghostty" in names else names[0])
+    return os.path.join(macos, names[0])
 
 
 def pid_of(exe: str, timeout: float = 15.0) -> int:
@@ -135,7 +119,7 @@ def run(app: str, command: str, watch_memory: bool = False, timeout: float = 300
     if os.path.exists(MARKER):
         os.remove(MARKER)
     t0 = time.time()
-    subprocess.Popen(["open", "-n", "-a", app, "--args"] + args_for(app, command))
+    subprocess.Popen(["open", "-n", "-a", app, "--args"] + args_for(command))
     pid = pid_of(exe_of(app))
     shown = subprocess.Popen([SHOWN, str(pid)], stdout=subprocess.PIPE, text=True)
     end = t0 + timeout
@@ -190,27 +174,18 @@ def measure(app: str, data: str) -> dict:
 
 
 def main() -> None:
-    sprid, ghostty = sys.argv[1], sys.argv[2]
+    sprid = sys.argv[1]
     build_helper()
-    data = sys.argv[3] if len(sys.argv) > 3 else "/tmp/sprid-bench.txt"
-    results = {}
-    for name, app in (("sprid", sprid), ("Ghostty", ghostty)):
-        print(f"measuring {name} ...", file=sys.stderr)
-        results[name] = measure(app, data)
-    s, g = results["sprid"], results["Ghostty"]
-    print(f"| | sprid | Ghostty {version(ghostty)} |")
-    print("|---|---|---|")
-    print(f"| startup | {s['startup']:.2f} s | {g['startup']:.2f} s |")
-    print(f"| cat {os.path.getsize(data) / 1e6:.0f} MB | {s['cat']:.2f} s ({s['mbps']:.0f} MB/s) | {g['cat']:.2f} s ({g['mbps']:.0f} MB/s) |")
-    print(f"| peak footprint during cat | {s['peak']:.0f} MB | {g['peak']:.0f} MB |")
-    print(f"| idle CPU | {s['idle_cpu']:.2f} % | {g['idle_cpu']:.2f} % |")
-    print(f"| idle footprint | {s['idle_mem']:.0f} MB | {g['idle_mem']:.0f} MB |")
-
-
-def version(app: str) -> str:
-    out = subprocess.run([exe_of(app), "--version"], capture_output=True, text=True).stdout
-    m = re.search(r"Ghostty ([\d.]+)", out)
-    return m.group(1) if m else ""
+    data = sys.argv[2] if len(sys.argv) > 2 else "/tmp/sprid-bench.txt"
+    print("measuring sprid ...", file=sys.stderr)
+    s = measure(sprid, data)
+    print("| | sprid |")
+    print("|---|---|")
+    print(f"| startup | {s['startup']:.2f} s |")
+    print(f"| cat {os.path.getsize(data) / 1e6:.0f} MB | {s['cat']:.2f} s ({s['mbps']:.0f} MB/s) |")
+    print(f"| peak footprint during cat | {s['peak']:.0f} MB |")
+    print(f"| idle CPU | {s['idle_cpu']:.2f} % |")
+    print(f"| idle footprint | {s['idle_mem']:.0f} MB |")
 
 
 if __name__ == "__main__":

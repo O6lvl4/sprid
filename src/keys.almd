@@ -123,7 +123,7 @@ fn key(code: Int, mods: Int, app_cursor: Bool) -> String = {
 }
 
 /// The Mac's text-editing keys, as the shell's line editor knows them — what
-/// Terminal.app, iTerm2 and Ghostty send: Cmd+Left / Right to the start and
+/// macOS terminals commonly send: Cmd+Left / Right to the start and
 /// end of the line (Ctrl+A, Ctrl+E), Cmd+Backspace deletes to its start
 /// (Ctrl+U), Option+Left / Right move by word (ESC b, ESC f). "" for any
 /// other input.

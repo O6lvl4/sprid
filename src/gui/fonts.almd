@@ -26,7 +26,7 @@ let MONO = [
 ]
 
 /// Where the grid face has no glyph: Japanese (with the rest of CJK), then
-/// symbols — Menlo has the dingbats Claude Code draws (✻ ✔ ✘), STIX Two
+/// symbols — Menlo has the dingbats CLIs draw (✻ ✔ ✘), STIX Two
 /// Math the media symbols (⏺), Apple Symbols most of the rest.
 let FALLBACK = [
   "/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc",

@@ -56,7 +56,7 @@ pub fn read_file(path: &str) -> crate::AlmideRcCow<Vec<u8>> {
 /// gets no LANG: the shell then runs in the C locale, counts `❯` as 3 columns
 /// and garbles every non-ASCII name. The locale is the system's (`ja_JP`,
 /// say) in UTF-8 when the system has that one, else `en_US.UTF-8`; LANG, LC_ALL
-/// or LC_CTYPE already set are left alone, as Terminal.app and Ghostty do.
+/// or LC_CTYPE already set are left alone.
 pub fn ensure_utf8_locale() {
     let set = |k: &str| std::env::var(k).map_or(false, |v| !v.is_empty());
     if set("LC_ALL") || set("LC_CTYPE") || set("LANG") {

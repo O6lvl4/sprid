@@ -2,21 +2,19 @@
 
 > Irish: *sprid* — spirit, ghost.
 
-A terminal emulator written in [Almide](https://github.com/almide/almide),
-after [Ghostty](https://ghostty.org). The parser, the screen, the scrollback
-are Almide; the only Rust is a thin host for the PTY syscalls
-(`native/pty.rs`), the same way [snaidhm](https://github.com/almide-graphics/snaidhm)
+A terminal emulator written in [Almide](https://github.com/almide/almide).
+The parser, the screen, the scrollback are Almide; the only Rust is a thin
+host for the PTY syscalls (`native/pty.rs`), the same way [snaidhm](https://github.com/almide-graphics/snaidhm)
 hosts the window and the GPU.
 
 ## Why
 
-Ghostty ≤ 1.2 leaked memory when it ran Claude Code for long: one user
-reached 37 GB after 10 days
-([the write-up](https://mitchellh.com/writing/ghostty-memory-leak-fix)). The
-leak was in scrollback. Pages were reused from a pool, and a page grown past
-the standard size to hold graphemes was mistaken for a pooled page once
-reused, so it was never unmapped. Claude Code's output (styled lines full of
-emoji and combining marks, scrolling for hours) triggers exactly that path.
+A terminal left running an interactive CLI for days — styled lines full of
+emoji and combining marks, scrolling for hours — puts all of that through
+scrollback. It is where memory quietly grows: pages reused from a pool,
+pages grown past their standard size to hold graphemes, side tables that
+must stay in step with the lines they describe. Any one of them mistaken
+for another, and memory is never given back.
 
 sprid's scrollback is built so that this class of bug cannot happen, and
 so that its memory is a number you can check, not a hope:
@@ -42,7 +40,7 @@ database and opens at home.
 ```
 sprid                    open a window running your login shell
 sprid run <command>      run <command> on a PTY headless, print the screen
-sprid bench [MB]         stream Claude-Code-like output, report memory
+sprid bench [MB]         stream styled, emoji-heavy output, report memory
 sprid capture <png>      draw one screen of $SPRID_CAPTURE_CMD and save it
 ```
 
@@ -55,13 +53,13 @@ What works:
 
 - **Text**: UDEV Gothic 35NFLG when installed (SF Mono, Menlo, DejaVu Sans Mono
   otherwise; `SPRID_FONT=<path>` to choose), falling back to Hiragino for
-  Japanese and to Menlo / STIX Two Math / Apple Symbols for the symbols
-  Claude Code draws (⏺ ✻ ✔). Bold, faint, underline, strikethrough, inverse,
+  Japanese and to Menlo / STIX Two Math / Apple Symbols for symbols such as
+  ⏺ ✻ ✔. Bold, faint, underline, strikethrough, inverse,
   256 and direct colour, wide chars, combining marks. Theme: Tokyo Night Storm.
 - **Input**: keys with Ctrl / Option-as-Alt / Shift in xterm's encoding,
   DECCKM, function keys, the macOS input method (Japanese composition is drawn
   at the cursor), Cmd+V paste with bracketed paste.
-- **Claude Code**: the kitty keyboard protocol's disambiguation, so
+- **Interactive CLIs**: the kitty keyboard protocol's disambiguation, so
   Shift+Enter starts a new line in the prompt; mouse presses, drags and
   motion reported to a program that asks (SGR), with Shift held for
   selecting; XTVERSION and the dark colour scheme answered.
@@ -72,7 +70,7 @@ What works:
   it all, Cmd+C copies.
 - **Mac keys**: Cmd+Left / Right to the start and end of the line,
   Cmd+Backspace deletes to its start, Option+Left / Right move by word (as
-  Terminal.app, iTerm2 and Ghostty send them). Cmd+Home / End, Cmd+PageUp /
+  other macOS terminals send them). Cmd+Home / End, Cmd+PageUp /
   PageDown and Cmd+Up / Down scroll. Cmd+Plus / Minus / 0 size the font
   (Cmd+; on a Japanese keyboard). Cmd+N opens a new window in the current
   tab's directory, Cmd+Shift+W closes it, Cmd+M minimizes, Cmd+Enter or
@@ -87,34 +85,32 @@ What works:
   click on the tab bar. A tab is titled by its program's title, else its
   directory; double-click it to name it (Enter keeps, Escape drops, an empty
   name goes back to the automatic title). Closing a tab whose shell is running a
-  program (Claude Code, a build) asks first, as do closing the window and
+  program (an editor, a build) asks first, as do closing the window and
   quitting (Cmd+Q, the Dock) with any; a tab at its prompt closes at once.
 - **Resize**: the main screen reflows — lines a program wrapped, on screen
   and in scrollback, are wrapped again at the new width, wide characters
   whole, the cursor at its place in its line. While the window is dragged
   only the screen is reflowed; scrollback follows once the size holds. The
   alternate screen is cut or padded: its program redraws it.
-- **Synchronized output** (mode 2026), which Claude Code uses, holds the
+- **Synchronized output** (mode 2026) holds the
   frame until the update is complete.
 
-### Against Ghostty
+### Measured
 
-`scripts/bench_vs.py` runs sprid and Ghostty 1.3.1 (the current release,
-with its memory leak fixed) the same way: started as apps (`open -n -a`),
-same font (UDEV Gothic 35NFLG 14.5), same grid (100 x 30), same 10 MB
-scrollback, same script. A run ends when the script has stamped its marker
-file AND the terminal's window is on screen (`scripts/window_shown.c`), so a
-terminal that starts its program first is not ready before it shows. The
+`scripts/bench.py` runs sprid as an app (`open -n -a`) with UDEV Gothic
+35NFLG 14.5, a 100 x 30 grid, 10 MB of scrollback and a fixed script. A run ends when the script has stamped its marker
+file AND the window is on screen (`scripts/window_shown.c`), so starting
+the program first does not count as ready before the window shows. The
 peak is the kernel's own record (`phys_footprint_peak`), not a sample. Two
 sessions on an M-series Mac, each a median of 5 runs.
 
-| | sprid | Ghostty 1.3.1 |
-|---|---|---|
-| Start: window shown, first command run | 0.23-0.25 s | 0.35-0.37 s |
-| `cat` 21 MB of Claude-Code-like output | 0.25-0.26 s | 0.25-0.28 s |
-| Peak footprint by the end of that `cat` | 111-112 MB | 130-132 MB |
-| CPU, idle (10-30 s after start) | 0.05-0.10 % | 0.00-0.05 % |
-| Footprint, idle | 40 MB | 62 MB |
+| | sprid |
+|---|---|
+| Start: window shown, first command run | 0.23-0.25 s |
+| `cat` 21 MB of styled, emoji-heavy output | 0.25-0.26 s |
+| Peak footprint by the end of that `cat` | 111-112 MB |
+| CPU, idle (10-30 s after start) | 0.05-0.10 % |
+| Footprint, idle | 40 MB |
 
 Idle CPU is at the resolution of the measurement (one 10 ms tick in 20 s):
 sampled, every sprid thread is asleep. `cat` is level; the parser is next —
@@ -153,7 +149,7 @@ file, splits.
 | **M1 core** | ✅ Parser, screen and bounded scrollback pass their tests; real programs run on a PTY headless |
 | **M3 window** | ✅ A native window through snaidhm: glyph cache, cell rendering, keyboard and IME, scrollback, selection, resize |
 | **M2 speed** | A byte-level fast path for printable runs; ≥ 200 MB/s on `bench` (now ~95) |
-| **M4 daily driver** | ✅ idle CPU 0; reflow, config; a week of Claude Code sessions in sprid with the footprint flat |
+| **M4 daily driver** | ✅ idle CPU 0; reflow, config; a week of long-running CLI sessions in sprid with the footprint flat |
 
 ## Requirements
 

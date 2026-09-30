@@ -1,5 +1,5 @@
 // window_shown PID — wait until process PID has a window on screen, then
-// print the time (seconds since the epoch) and exit. For bench_vs.py:
+// print the time (seconds since the epoch) and exit. For bench.py:
 // a terminal has started when its window shows, not when its program runs.
 #include <CoreGraphics/CoreGraphics.h>
 #include <stdio.h>

@@ -137,7 +137,7 @@ pub fn cwd(fd: i64) -> String {
 }
 
 /// The name of a program the PTY's first program — the shell — is running
-/// (a command, Claude Code), or "" when it runs none: it waits at its
+/// (an editor, a build), or "" when it runs none: it waits at its
 /// prompt, or `fd` is unknown. What closing the tab would end without asking.
 /// Asked of the shell's children rather than the terminal's foreground
 /// group, which is only the command's when the shell does job control.

@@ -99,7 +99,7 @@ test "cjk, kana, hangul and emoji are two" {
   assert_eq(of(0x2705), 2)
 }
 
-test "symbols Claude Code draws stay one cell" {
+test "status symbols (⏺ ✻ ─) stay one cell" {
   assert_eq(of(0x23FA), 1)
   assert_eq(of(0x273B), 1)
   assert_eq(of(0x2500), 1)

@@ -1,10 +1,10 @@
 // Box drawing and block elements drawn as rectangles fitted to the cell.
 //
 // A font's glyphs for these are drawn at the font's own height, so with any
-// line spacing the logo Claude Code draws out of blocks (▐▛███▜▌) splits into
-// strips, and box lines break between rows. Like Ghostty, sprid draws them
-// itself: every piece is a rectangle in the cell's own pixels, and lines run
-// edge to edge, so neighbouring cells join exactly.
+// line spacing a logo drawn out of blocks (▐▛███▜▌) splits into strips, and
+// box lines break between rows. So sprid draws them itself: every piece is a
+// rectangle in the cell's own pixels, and lines run edge to edge, so
+// neighbouring cells join exactly.
 
 import math
 
