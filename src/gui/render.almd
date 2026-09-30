@@ -34,6 +34,10 @@ let DEFAULT_BG = 0x24283B
 let DEFAULT_FG = 0xC0CAF5
 let CURSOR = 0xC0CAF5
 let SELECTION = 0x364A82
+let TAB_BAR = 0x1F2335
+let TAB_DIM = 0x737AA2
+let TAB_RULE = 0x3B4261
+let ACCENT = 0x7AA2F7
 let ANSI = [
   0x1D202F, 0xF7768E, 0x9ECE6A, 0xE0AF68, 0x7AA2F7, 0xBB9AF7, 0x7DCFFF, 0xA9B1D6,
   0x414868, 0xF7768E, 0x9ECE6A, 0xE0AF68, 0x7AA2F7, 0xBB9AF7, 0x7DCFFF, 0xC0CAF5,
@@ -112,8 +116,19 @@ fn new(device: Int, faces: fonts.Faces, size_px: Int, pad_x: Int, pad_y: Int, ce
 }
 
 /// Columns and rows that fit a `width` x `height` drawable.
-fn grid_size(r: Renderer, width: Int, height: Int) -> (Int, Int) =
-  (int.max(1, (width - 2 * r.pad_x) / r.cell_w), int.max(1, (height - 2 * r.pad_y) / r.cell_h))
+/// Columns and rows that fit a `width` x `height` drawable with `tabs` tabs
+/// open (the tab bar shows from two on).
+fn grid_size(r: Renderer, width: Int, height: Int, tabs: Int) -> (Int, Int) =
+  (int.max(1, (width - 2 * r.pad_x) / r.cell_w), int.max(1, (height - grid_top(r, tabs) - r.pad_y) / r.cell_h))
+
+/// Height of the tab bar.
+fn bar_height(r: Renderer) -> Int = r.cell_h + r.pad_y
+
+/// Pixel row the grid starts at: below the tab bar when there is one.
+fn grid_top(r: Renderer, tabs: Int) -> Int = r.pad_y + (if tabs > 1 then bar_height(r) else 0)
+
+/// The tab under pixel `x` of the tab bar, for `tabs` tabs across `width`.
+fn tab_at(r: Renderer, x: Int, width: Int, tabs: Int) -> Int = int.clamp(x * tabs / int.max(1, width), 0, tabs - 1)
 
 /// 0xRRGGBB of a cell colour; `fallback` for the default colour.
 fn resolve(r: Renderer, color: Int, fallback: Int) -> Int = {
@@ -227,7 +242,9 @@ fn glyph_quad(r: Renderer, slot: Int, x: Int, y: Int, rgb: Int, alpha: Float, sx
 /// lines into scrollback, `sel` highlighted, and `preedit` — what the input
 /// method is composing — at the cursor. `width` x `height` is the drawable.
 fn draw(mut r: Renderer, t: terminal.Terminal, back: Int, sel: Option[view.Selection],
-        preedit: List[Int], width: Int, height: Int) -> Unit = {
+        preedit: List[Int], width: Int, height: Int, tabs: List[String], active: Int) -> Unit = {
+  let gy = grid_top(r, list.len(tabs))
+  let titles = if list.len(tabs) > 1 then list.map(tabs, (s) => text.code_points(s)) else []
   let top_line = view.top_line(t, back)
   let lines = list.map(0..<t.rows, (y) => view.line_at(t, top_line + y))
 
@@ -258,10 +275,17 @@ fn draw(mut r: Renderer, t: terminal.Terminal, back: Int, sel: Option[view.Selec
   for cp in preedit {
     let _ = glyph(r, cp, false)
   }
+  var title_chars = 0
+  for title in titles {
+    for cp in title {
+      let _ = glyph(r, cp, false)
+      title_chars = title_chars + 1
+    }
+  }
 
   // Room for the worst case: per cell a background, a glyph and two lines,
   // plus marks, the cursor, the scrollbar and the composition.
-  let quads = t.rows * t.cols * 4 + marks_total + 3 + list.len(preedit) * 3
+  let quads = t.rows * t.cols * 4 + marks_total + 3 + list.len(preedit) * 3 + title_chars + list.len(titles) * 3 + 1
   if quads * 6 > r.capacity then {
     r.capacity = quads * 6
     r.vtx = gpu.create_buffer(r.device, r.capacity * VERTEX_FLOATS * 4, int.bor(gpu.VERTEX, gpu.COPY_DST))
@@ -274,7 +298,7 @@ fn draw(mut r: Renderer, t: terminal.Terminal, back: Int, sel: Option[view.Selec
   gpu.begin_data()
   for y in 0..<t.rows {
     match lines[y] {
-      some(row) => { n = n + draw_row(r, row, top_line + y, sel, r.pad_y + y * r.cell_h, t.cols, sx, sy) },
+      some(row) => { n = n + draw_row(r, row, top_line + y, sel, gy + y * r.cell_h, t.cols, sx, sy) },
       none => (),
     }
   }
@@ -283,7 +307,7 @@ fn draw(mut r: Renderer, t: terminal.Terminal, back: Int, sel: Option[view.Selec
   let cursor_row = view.screen_line(t) + t.y - top_line
   if cursor_row >= 0 and cursor_row < t.rows then {
     let cx = r.pad_x + t.x * r.cell_w
-    let ctop = r.pad_y + cursor_row * r.cell_h
+    let ctop = gy + cursor_row * r.cell_h
     if list.len(preedit) > 0 then {
       var px = cx
       for cp in preedit {
@@ -308,13 +332,15 @@ fn draw(mut r: Renderer, t: terminal.Terminal, back: Int, sel: Option[view.Selec
   // Scrolled back: a thumb on the right edge shows where.
   if back > 0 then {
     let total = view.max_back(t) + t.rows
-    let track = height - 2 * r.pad_y
+    let track = height - gy - r.pad_y
     let thumb = int.max(r.cell_h, track * t.rows / total)
-    let y0 = r.pad_y + (track - thumb) * (view.max_back(t) - back) / int.max(1, view.max_back(t))
+    let y0 = gy + (track - thumb) * (view.max_back(t) - back) / int.max(1, view.max_back(t))
     let w = int.max(3, r.pad_x / 3)
     rect(r, width - w - 2, y0, width - 2, y0 + thumb, DEFAULT_FG, 0.35, sx, sy)
     n = n + 1
   }
+
+  if list.len(titles) > 1 then n = n + draw_tabs(r, titles, active, width, sx, sy)
 
   if n > 0 then gpu.flush_to_buffer(r.device, r.vtx)
   r.count = n * 6
@@ -330,6 +356,49 @@ fn draw(mut r: Renderer, t: terminal.Terminal, back: Int, sel: Option[view.Selec
   }
   gpu.end_pass(pass)
   gpu.finish_and_submit(r.device, encoder)
+}
+
+/// The tab bar: one tab per title, `active` raised to the terminal's
+/// background with an accent line, the others on a darker strip. Returns the
+/// quads it pushed.
+fn draw_tabs(mut r: Renderer, titles: List[List[Int]], active: Int, width: Int, sx: Float, sy: Float) -> Int = {
+  let h = bar_height(r)
+  let count = list.len(titles)
+  var n = 0
+  rect(r, 0, 0, width, h, TAB_BAR, 1.0, sx, sy)
+  n = n + 1
+  for i in 0..<count {
+    let x0 = i * width / count
+    let x1 = (i + 1) * width / count
+    if i == active then {
+      rect(r, x0, 0, x1, h, DEFAULT_BG, 1.0, sx, sy)
+      rect(r, x0, 0, x1, int.max(2, r.line_w), ACCENT, 1.0, sx, sy)
+      n = n + 2
+    } else if i > 0 and i != active + 1 then {
+      rect(r, x0, h / 4, x0 + int.max(1, r.line_w / 2), h - h / 4, TAB_RULE, 1.0, sx, sy)
+      n = n + 1
+    }
+    // The title, centred, cut to the tab with room to spare on each side.
+    let room = int.max(1, (x1 - x0) / r.cell_w - 2)
+    let title = titles[i]
+    let shown = if list.len(title) > room then list.take(title, int.max(1, room - 1)) + [0x2026] else title
+    var w = 0
+    for cp in shown {
+      w = w + r.cell_w * int.max(1, cell_width.of(cp))
+    }
+    var pen = x0 + (x1 - x0 - w) / 2
+    let baseline = (h - r.cell_h) / 2 + r.baseline
+    let color = if i == active then DEFAULT_FG else TAB_DIM
+    for cp in shown {
+      let slot = glyph(r, cp, false)
+      if slot >= 0 then {
+        glyph_quad(r, slot, pen, baseline, color, 1.0, sx, sy)
+        n = n + 1
+      }
+      pen = pen + r.cell_w * int.max(1, cell_width.of(cp))
+    }
+  }
+  n
 }
 
 /// Quads of one row at pixel row `top`: background runs, glyphs, marks and

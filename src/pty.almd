@@ -1,16 +1,33 @@
 // PTY — @extern(rust) declarations, backed by native/pty.rs
 
+/// Start `program` (through `/bin/sh -c`) on a new `cols` x `rows` PTY, in
+/// `cwd` unless it is empty. The master fd, or -1.
 @extern(rust, "crate::pty", "spawn")
-fn spawn(program: String, cols: Int, rows: Int) -> Int = _
+fn spawn(program: String, cwd: String, cols: Int, rows: Int) -> Int = _
 
+/// Output waiting on `fd`, after at most `timeout_ms`; empty on timeout and
+/// at the end (see `eof`).
 @extern(rust, "crate::pty", "read")
 fn read(fd: Int, timeout_ms: Int) -> Bytes = _
 
+/// Sleep until any of `fds` has output, at most `timeout_ms`.
+@extern(rust, "crate::pty", "wait")
+fn wait(fds: List[Int], timeout_ms: Int) -> Unit = _
+
+/// Whether the program on `fd` has closed its side.
 @extern(rust, "crate::pty", "eof")
-fn eof() -> Bool = _
+fn eof(fd: Int) -> Bool = _
 
 @extern(rust, "crate::pty", "write")
 fn write(fd: Int, data: String) -> Bool = _
 
 @extern(rust, "crate::pty", "resize")
 fn resize(fd: Int, cols: Int, rows: Int) -> Bool = _
+
+/// Close `fd`; its program gets SIGHUP.
+@extern(rust, "crate::pty", "close")
+fn close(fd: Int) -> Unit = _
+
+/// Collect exited children.
+@extern(rust, "crate::pty", "reap")
+fn reap() -> Unit = _

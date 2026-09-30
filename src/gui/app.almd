@@ -1,9 +1,15 @@
-// sprid in a window: a shell on a PTY, drawn with snaidhm.
+// sprid in a window: shells on PTYs, in tabs, drawn with snaidhm.
 //
 // One loop on the main thread (macOS wants its event loop there): pump the
-// window's events, turn keys into bytes for the PTY, read what the program
-// wrote, and draw when something changed. Reading the PTY with a short
-// timeout is what paces the loop.
+// window's events, turn keys into bytes for the active tab's PTY, read what
+// every tab's program wrote, and draw the active tab when it changed.
+// Waiting on all the PTYs at once with a short timeout is what paces the
+// loop.
+//
+// Tabs live in a list. A tab is worked on by taking it out (swap it to the
+// end and pop it) and pushing it back: indexing would copy it, and with it
+// every buffer the tab's terminal writes to next. `list.swap` returns the
+// swapped list; assigning it back keeps the tabs uniquely owned.
 
 import bytes
 import env
@@ -25,18 +31,43 @@ let PAD_X = 12.0
 let PAD_Y = 8.0
 let CELL_HEIGHT = 1.15
 
-/// Longest a frame waits for the PTY when nothing is pending, ms.
+/// Longest a frame waits for the PTYs when nothing is pending, ms.
 let IDLE_WAIT = 8
 /// Least time between two frames, ms: the display's rate while the program
 /// answers keys, a lower one while its output streams in. Taking a frame
 /// waits for the display (vsync, ~16 ms), time the parser could have used.
 let FRAME_MS = 16
 let STREAM_FRAME_MS = 50
-/// Longest spent draining the PTY before the window gets a turn, ms.
+/// Longest spent draining the active tab's PTY before the window gets a
+/// turn, ms; background tabs get the short budget.
 let DRAIN_MS = 12
 let STREAM_DRAIN_MS = 40
 /// Longest a synchronized update (mode 2026) may hold the screen, ms.
 let SYNC_LIMIT = 150
+
+/// One tab: a terminal, the PTY its program runs on, and how it is viewed.
+type Tab = {
+  t: terminal.Terminal,
+  fd: Int,
+  // Lines scrolled back into scrollback, 0 at the bottom.
+  back: Int,
+  sel: Option[view.Selection],
+  // When a synchronized update began, -1 when none is open.
+  sync_since: Int,
+}
+
+/// Window-wide input state.
+type Ui = {
+  preedit: List[Int],
+  wheel_acc: Float,
+  dragging: Bool,
+  anchor_line: Int,
+  anchor_col: Int,
+  dirty: Bool,
+}
+
+/// What an input asks of the tabs.
+type Act = | Stay | NewTab | CloseTab | NextTab | PrevTab | GoTo(Int)
 
 effect fn run(capture: Option[String]) -> Unit = {
   guard window.open("sprid", 960, 620) else println("sprid: could not open a window")
@@ -49,187 +80,385 @@ effect fn run(capture: Option[String]) -> Unit = {
     float.to_int(PAD_X * scale), float.to_int(PAD_Y * scale), CELL_HEIGHT)
   var width = window.width()
   var height = window.height()
-  let (cols, rows) = render.grid_size(r, width, height)
-  var t = terminal.new(cols, rows)
   let shell = env.get("SHELL") ?? "/bin/zsh"
-  let command = match capture { some(_) => env.get("SPRID_CAPTURE_CMD") ?? "exec ${shell} -l", none => "exec ${shell} -l" }
-  let fd = pty.spawn(command, cols, rows)
-  guard fd >= 0 else println("sprid: could not start ${shell}")
+  let login = "exec ${shell} -l"
+  let first = match capture { some(_) => env.get("SPRID_CAPTURE_CMD") ?? login, none => login }
 
-  var preedit: List[Int] = []
-  // Viewport: lines scrolled back into scrollback, 0 at the bottom.
-  var back = 0
-  var wheel_acc = 0.0
-  var sel: Option[view.Selection] = none
-  var dragging = false
-  var anchor_line = 0
-  var anchor_col = 0
-  var dirty = true
+  var tabs: List[Tab] = []
+  var active = 0
+  match open_tab(r, width, height, 1, first, "") {
+    some(tb) => list.push(tabs, tb),
+    none => (),
+  }
+  guard list.len(tabs) > 0 else println("sprid: could not start ${shell}")
+  // For captures of the tab bar: more tabs running the login shell.
+  let extra = match capture { some(_) => int.parse(env.get("SPRID_CAPTURE_TABS") ?? "1") ?? 1, none => 1 }
+  for _ in 1..<extra {
+    match open_tab(r, width, height, list.len(tabs) + 1, login, "") {
+      some(tb) => {
+        list.push(tabs, tb)
+        relayout(tabs, r, width, height)
+      },
+      none => (),
+    }
+  }
+
+  var ui = Ui { preedit: [], wheel_acc: 0.0, dragging: false, anchor_line: 0, anchor_col: 0, dirty: true }
   var alive = true
   var last_frame = 0
-  var sync_since = -1
+  var streaming = false
   let debug = env.get("SPRID_DEBUG") != none
   var frames = 0
   var draw_ms = 0
-  var streaming = false
-  var pump_ms = 0
-  var feed_ms = 0
-  var reads = 0
-  var read_bytes = 0
   while alive {
-    let p0 = sys.now_ms()
     alive = window.pump()
-    pump_ms = pump_ms + sys.now_ms() - p0
     if window.resized() then {
       width = window.width()
       height = window.height()
-      let (c, rw) = render.grid_size(r, width, height)
-      terminal.resize(t, c, rw)
-      let _ = pty.resize(fd, c, rw)
-      dirty = true
+      relayout(tabs, r, width, height)
+      ui.dirty = true
     }
 
+    // Input goes to the active tab; what it asks of the tabs is done after
+    // the tab is back in the list.
     var kind = window.next_event()
     while kind != window.NONE {
-      if kind == window.TEXT or kind == window.KEY then {
-        let mods = window.event_mods()
-        let code = window.event_code()
-        let command = kind == window.TEXT and mods == window.MOD_SUPER
-        let page = kind == window.KEY and mods == window.MOD_SHIFT and (code == window.KEY_PAGE_UP or code == window.KEY_PAGE_DOWN)
-        if command and (code == 0x63 or code == 0x43) then {
-          // Cmd+C: the selection to the clipboard.
-          match sel {
-            some(s) => copy(view.selected_text(t, s))!,
+      var act = Stay
+      match take(tabs, active) {
+        some(tb) => {
+          var cur = tb
+          act = handle(cur, ui, kind, r, scale, list.len(tabs), width)!
+          list.push(tabs, cur)
+          tabs = list.swap(tabs, active, list.len(tabs) - 1)
+        },
+        none => (),
+      }
+      match act {
+        NewTab => {
+          let cwd = cwd_of(tabs, active)
+          match open_tab(r, width, height, list.len(tabs) + 1, login, cwd) {
+            some(tb) => {
+              list.push(tabs, tb)
+              active = list.len(tabs) - 1
+              relayout(tabs, r, width, height)
+            },
             none => (),
           }
-        } else if page then {
-          let step = if code == window.KEY_PAGE_UP then t.rows - 1 else 1 - t.rows
-          back = int.clamp(back + step, 0, view.max_back(t))
-          dirty = true
-        } else {
-          let out = if command and (code == 0x76 or code == 0x56) then keys.paste(clipboard()!, t.bracketed_paste)
-                    else keys.encode(kind, code, mods, t.app_cursor)
-          if out != "" then {
-            let _ = pty.write(fd, out)
-            // Typing brings the viewport back to the prompt.
-            if back != 0 then dirty = true
-            back = 0
-          }
-        }
-      } else if kind == window.WHEEL then {
-        wheel_acc = wheel_acc + window.event_dy()
-        let line_px = int.to_float(r.cell_h) / scale
-        let lines = float.to_int(wheel_acc / line_px)
-        wheel_acc = wheel_acc - int.to_float(lines) * line_px
-        if lines != 0 then {
-          let (col, row) = cell_at(r, t, scale)
-          if t.mouse_mode != 0 and t.mouse_sgr then {
-            // The program asked for the mouse: tell it about the wheel.
-            let button = if lines < 0 then 64 else 65
-            for _ in 0..<int.abs(lines) {
-              let _ = pty.write(fd, "\x1b[<${int.to_string(button)};${int.to_string(col + 1)};${int.to_string(row + 1)}M")
-            }
-          } else if t.alt then {
-            // A full-screen program without the mouse scrolls by arrow keys.
-            let key = keys.encode(keys.KEY, if lines < 0 then keys.KEY_UP else keys.KEY_DOWN, 0, t.app_cursor)
-            for _ in 0..<int.abs(lines) {
-              let _ = pty.write(fd, key)
-            }
-          } else {
-            back = int.clamp(back - lines, 0, view.max_back(t))
-            dirty = true
-          }
-        }
-      } else if kind == window.MOUSE_DOWN and window.event_code() == 0 then {
-        let (col, row) = cell_at(r, t, scale)
-        anchor_line = view.top_line(t, back) + row
-        anchor_col = col
-        dragging = true
-        if sel != none then dirty = true
-        sel = none
-      } else if kind == window.MOUSE_MOVE and dragging then {
-        let (col, row) = cell_at(r, t, scale)
-        sel = some(view.Selection { anchor_line: anchor_line, anchor_col: anchor_col, head_line: view.top_line(t, back) + row, head_col: col })
-        dirty = true
-      } else if kind == window.MOUSE_UP then {
-        dragging = false
-      } else if kind == window.COMPOSE then {
-        preedit = text.code_points(window.event_text())
-        dirty = true
+          ui.dirty = true
+        },
+        CloseTab => {
+          close_tab(tabs, active)
+          active = int.min(active, list.len(tabs) - 1)
+          relayout(tabs, r, width, height)
+          ui.dirty = true
+        },
+        NextTab => {
+          active = (active + 1) % list.len(tabs)
+          ui.dirty = true
+        },
+        PrevTab => {
+          active = (active + list.len(tabs) - 1) % list.len(tabs)
+          ui.dirty = true
+        },
+        GoTo(i) => if i < list.len(tabs) and i != active then {
+          active = i
+          ui.dirty = true
+        },
+        Stay => (),
       }
-      kind = window.next_event()
+      kind = if list.len(tabs) == 0 then window.NONE else window.next_event()
     }
+    if list.len(tabs) == 0 then alive = false
 
-    // Take everything the program has written, up to DRAIN_MS of work, so a
-    // burst becomes one frame instead of one per read.
-    let drain_until = sys.now_ms() + (if streaming then STREAM_DRAIN_MS else DRAIN_MS)
-    var data = pty.read(fd, if dirty then 0 else IDLE_WAIT)
-    // Still streaming if the last drain stopped at its deadline, not at the
-    // end of the output.
+    // Every tab's output, the active tab's first and with the longer budget.
+    if not ui.dirty then pty.wait(list.map(tabs, (tb) => tb.fd), IDLE_WAIT)
     streaming = false
-    let screen_before = view.screen_line(t)
-    while bytes.len(data) > 0 {
-      reads = reads + 1
-      read_bytes = read_bytes + bytes.len(data)
-      let f0 = sys.now_ms()
-      terminal.feed(t, data)
-      feed_ms = feed_ms + sys.now_ms() - f0
-      dirty = true
-      // Wait a moment for more: a writer refills the PTY 1 KB at a time,
-      // and giving up in the gap costs a whole turn of the loop.
-      data = if sys.now_ms() < drain_until then pty.read(fd, 1) else {
-        streaming = true
-        bytes.new(0)
+    for i in 0..<list.len(tabs) {
+      match take(tabs, i) {
+        some(tb) => {
+          var cur = tb
+          let (got, more) = drain(cur, if i == active then STREAM_DRAIN_MS else DRAIN_MS)
+          if i == active then {
+            if got then ui.dirty = true
+            if more then streaming = true
+          }
+          let replies = terminal.take_replies(cur.t)
+          if replies != "" then {
+            let _ = pty.write(cur.fd, replies)
+          }
+          list.push(tabs, cur)
+          tabs = list.swap(tabs, i, list.len(tabs) - 1)
+        },
+        none => (),
       }
     }
-    // Scrolled back, the viewport stays on the lines it shows while new ones
-    // arrive below.
-    if back > 0 then back = int.min(back + view.screen_line(t) - screen_before, view.max_back(t))
-    let replies = terminal.take_replies(t)
-    if replies != "" then {
-      let _ = pty.write(fd, replies)
-    }
-    if pty.eof() then alive = false
-    let clock = sys.now_ms()
 
-    // Mode 2026: the program is mid-update; show it when it says it is done,
-    // or after SYNC_LIMIT if it never does.
-    if t.sync_output then {
-      if sync_since < 0 then sync_since = clock
-    } else sync_since = -1
-    let held = sync_since >= 0 and clock - sync_since < SYNC_LIMIT
-    if dirty and not held and clock - last_frame >= (if streaming then STREAM_FRAME_MS else FRAME_MS) then {
-      let t0 = sys.now_ms()
-      render.draw(r, t, back, sel, preedit, width, height)
-      frames = frames + 1
-      draw_ms = draw_ms + sys.now_ms() - t0
-      if debug and frames % 60 == 0 then eprintln("sprid: ${int.to_string(frames)} frames, ${int.to_string(draw_ms / frames)} ms per draw")
-      window.set_ime_area(
-        int.to_float(r.pad_x + t.x * r.cell_w) / scale, int.to_float(r.pad_y + t.y * r.cell_h) / scale,
-        int.to_float(r.cell_w) / scale, int.to_float(r.cell_h) / scale)
-      last_frame = clock
-      dirty = false
+    // Tabs whose program has exited close; the window closes with the last.
+    var i = 0
+    while i < list.len(tabs) {
+      if pty.eof(fd_of(tabs, i)) and capture == none then {
+        close_tab(tabs, i)
+        if active >= i and active > 0 then active = active - 1
+        relayout(tabs, r, width, height)
+        ui.dirty = true
+      } else i = i + 1
+    }
+    pty.reap()
+    if list.len(tabs) == 0 then alive = false
+
+    let clock = sys.now_ms()
+    if alive and ui.dirty and clock - last_frame >= (if streaming then STREAM_FRAME_MS else FRAME_MS) then {
+      let titles = list.map(tabs, (tb) => title_of(tb.t))
+      match take(tabs, active) {
+        some(tb) => {
+          var cur = tb
+          // Mode 2026: the program is mid-update; show it when it says it is
+          // done, or after SYNC_LIMIT if it never does.
+          if cur.t.sync_output then {
+            if cur.sync_since < 0 then cur.sync_since = clock
+          } else cur.sync_since = -1
+          let held = cur.sync_since >= 0 and clock - cur.sync_since < SYNC_LIMIT
+          if not held then {
+            let t0 = sys.now_ms()
+            render.draw(r, cur.t, cur.back, cur.sel, ui.preedit, width, height, titles, active)
+            frames = frames + 1
+            draw_ms = draw_ms + sys.now_ms() - t0
+            let gy = render.grid_top(r, list.len(tabs))
+            window.set_ime_area(
+              int.to_float(r.pad_x + cur.t.x * r.cell_w) / scale, int.to_float(gy + cur.t.y * r.cell_h) / scale,
+              int.to_float(r.cell_w) / scale, int.to_float(r.cell_h) / scale)
+            last_frame = clock
+            ui.dirty = false
+          }
+          list.push(tabs, cur)
+          tabs = list.swap(tabs, active, list.len(tabs) - 1)
+        },
+        none => (),
+      }
     }
 
     match capture {
-      some(path) => if pty.eof() or clock > (int.parse(env.get("SPRID_CAPTURE_MS") ?? "3000") ?? 3000) then {
-        back = int.clamp(int.parse(env.get("SPRID_CAPTURE_BACK") ?? "0") ?? 0, 0, view.max_back(t))
-        sel = if back > 0 then some(view.Selection { anchor_line: view.top_line(t, back) + 2, anchor_col: 4, head_line: view.top_line(t, back) + 4, head_col: 10 }) else none
-        if debug then eprintln("sprid: ${int.to_string(frames)} frames, draw ${int.to_string(draw_ms)} ms, pump ${int.to_string(pump_ms)} ms, feed ${int.to_string(feed_ms)} ms, ${int.to_string(reads)} reads averaging ${int.to_string(read_bytes / int.max(reads, 1))} bytes")
-        render.draw(r, t, back, sel, preedit, width, height)
+      some(path) => if (list.len(tabs) > 0 and pty.eof(fd_of(tabs, 0))) or clock > (int.parse(env.get("SPRID_CAPTURE_MS") ?? "3000") ?? 3000) then {
+        if debug then eprintln("sprid: ${int.to_string(frames)} frames, draw ${int.to_string(draw_ms)} ms")
+        let titles = list.map(tabs, (tb) => title_of(tb.t))
+        match take(tabs, active) {
+          some(tb) => {
+            var cur = tb
+            cur.back = int.clamp(int.parse(env.get("SPRID_CAPTURE_BACK") ?? "0") ?? 0, 0, view.max_back(cur.t))
+            render.draw(r, cur.t, cur.back, cur.sel, ui.preedit, width, height, titles, active)
+            list.push(tabs, cur)
+          },
+          none => (),
+        }
         println(if frame.save_png(path) then "saved ${path}" else "capture failed")
         alive = false
       },
       none => (),
     }
   }
+  for tb in tabs {
+    pty.close(tb.fd)
+  }
+}
+
+// ── Tabs ──────────────────────────────────────────────────────────────────
+
+/// Tab `i`, taken out of `tabs`: the last tab moves into its place until the
+/// caller pushes it back and swaps it home.
+fn take(mut tabs: List[Tab], i: Int) -> Option[Tab] = {
+  guard i >= 0 and i < list.len(tabs) else none
+  tabs = list.swap(tabs, i, list.len(tabs) - 1)
+  list.pop(tabs)
+}
+
+fn fd_of(tabs: List[Tab], i: Int) -> Int = match list.get(tabs, i) {
+  some(tb) => tb.fd,
+  none => -1,
+}
+
+fn cwd_of(tabs: List[Tab], i: Int) -> String = match list.get(tabs, i) {
+  some(tb) => tb.t.cwd,
+  none => "",
+}
+
+/// A new tab running `command` in `cwd`, sized for `count` tabs.
+fn open_tab(r: render.Renderer, width: Int, height: Int, count: Int, command: String, cwd: String) -> Option[Tab] = {
+  let (cols, rows) = render.grid_size(r, width, height, count)
+  let fd = pty.spawn(command, cwd, cols, rows)
+  if fd < 0 then none
+  else some(Tab { t: terminal.new(cols, rows), fd: fd, back: 0, sel: none, sync_since: -1 })
+}
+
+/// Close tab `i` and its program, keeping the other tabs in order.
+fn close_tab(mut tabs: List[Tab], i: Int) -> Unit = {
+  let n = list.len(tabs)
+  if i >= 0 and i < n then {
+    var j = i
+    while j < n - 1 {
+      tabs = list.swap(tabs, j, j + 1)
+      j = j + 1
+    }
+    match list.pop(tabs) {
+      some(tb) => pty.close(tb.fd),
+      none => (),
+    }
+  }
+}
+
+/// Fit every tab to the window: the grid shrinks by the tab bar from two tabs
+/// on.
+fn relayout(mut tabs: List[Tab], r: render.Renderer, width: Int, height: Int) -> Unit = {
+  let (cols, rows) = render.grid_size(r, width, height, list.len(tabs))
+  for i in 0..<list.len(tabs) {
+    match take(tabs, i) {
+      some(tb) => {
+        var cur = tb
+        if cur.t.cols != cols or cur.t.rows != rows then {
+          terminal.resize(cur.t, cols, rows)
+          let _ = pty.resize(cur.fd, cols, rows)
+        }
+        list.push(tabs, cur)
+        tabs = list.swap(tabs, i, list.len(tabs) - 1)
+      },
+      none => (),
+    }
+  }
+}
+
+/// What a tab is called: the title its program set, else its directory's
+/// name, else the shell's.
+fn title_of(t: terminal.Terminal) -> String =
+  if t.title != "" then t.title
+  else if t.cwd != "" then {
+    let parts = string.split(t.cwd, "/") |> list.filter((p) => p != "")
+    list.last(parts) ?? "/"
+  } else "shell"
+
+// ── Output ────────────────────────────────────────────────────────────────
+
+/// Feed the tab everything its program has written, up to `budget_ms` of
+/// work: (whether there was any, whether it stopped at the budget with more
+/// still coming).
+fn drain(mut tb: Tab, budget_ms: Int) -> (Bool, Bool) = {
+  let until = sys.now_ms() + budget_ms
+  let screen_before = view.screen_line(tb.t)
+  var data = pty.read(tb.fd, 0)
+  var got = false
+  var more = false
+  while bytes.len(data) > 0 {
+    terminal.feed(tb.t, data)
+    got = true
+    // Wait a moment for more: a writer refills the PTY 1 KB at a time, and
+    // giving up in the gap costs a whole turn of the loop.
+    data = if sys.now_ms() < until then pty.read(tb.fd, 1) else {
+      more = true
+      bytes.new(0)
+    }
+  }
+  // Scrolled back, the viewport stays on the lines it shows while new ones
+  // arrive below.
+  if tb.back > 0 then tb.back = int.min(tb.back + view.screen_line(tb.t) - screen_before, view.max_back(tb.t))
+  (got, more)
+}
+
+// ── Input ─────────────────────────────────────────────────────────────────
+
+/// Apply input `kind` to the active tab `cur`; what it asks of the tabs is
+/// returned. `tabs` is how many are open, `width` the drawable's.
+effect fn handle(mut cur: Tab, mut ui: Ui, kind: Int, r: render.Renderer, scale: Float, tabs: Int, width: Int) -> Act = {
+  let t = cur.t
+  if kind == window.TEXT or kind == window.KEY then {
+    let mods = window.event_mods()
+    let code = window.event_code()
+    let command = kind == window.TEXT and mods == window.MOD_SUPER
+    let command_shift = mods == window.MOD_SUPER + window.MOD_SHIFT
+    let page = kind == window.KEY and mods == window.MOD_SHIFT and (code == window.KEY_PAGE_UP or code == window.KEY_PAGE_DOWN)
+    if command and (code == 0x74 or code == 0x54) then NewTab
+    else if command and (code == 0x77 or code == 0x57) then CloseTab
+    else if command and code >= 0x31 and code <= 0x39 then GoTo(code - 0x31)
+    else if command_shift and ((kind == window.TEXT and code == 0x5D) or (kind == window.KEY and code == window.KEY_RIGHT)) then NextTab
+    else if command_shift and ((kind == window.TEXT and code == 0x5B) or (kind == window.KEY and code == window.KEY_LEFT)) then PrevTab
+    else if command and (code == 0x63 or code == 0x43) then {
+      // Cmd+C: the selection to the clipboard.
+      match cur.sel {
+        some(s) => copy(view.selected_text(t, s))!,
+        none => (),
+      }
+      Stay
+    } else if page then {
+      let step = if code == window.KEY_PAGE_UP then t.rows - 1 else 1 - t.rows
+      cur.back = int.clamp(cur.back + step, 0, view.max_back(t))
+      ui.dirty = true
+      Stay
+    } else {
+      let out = if command and (code == 0x76 or code == 0x56) then keys.paste(clipboard()!, t.bracketed_paste)
+                else keys.encode(kind, code, mods, t.app_cursor)
+      if out != "" then {
+        let _ = pty.write(cur.fd, out)
+        // Typing brings the viewport back to the prompt.
+        if cur.back != 0 then ui.dirty = true
+        cur.back = 0
+      }
+      Stay
+    }
+  } else if kind == window.WHEEL then {
+    ui.wheel_acc = ui.wheel_acc + window.event_dy()
+    let line_px = int.to_float(r.cell_h) / scale
+    let lines = float.to_int(ui.wheel_acc / line_px)
+    ui.wheel_acc = ui.wheel_acc - int.to_float(lines) * line_px
+    if lines != 0 then {
+      let (col, row) = cell_at(r, t, scale, tabs)
+      if t.mouse_mode != 0 and t.mouse_sgr then {
+        // The program asked for the mouse: tell it about the wheel.
+        let button = if lines < 0 then 64 else 65
+        for _ in 0..<int.abs(lines) {
+          let _ = pty.write(cur.fd, "\x1b[<${int.to_string(button)};${int.to_string(col + 1)};${int.to_string(row + 1)}M")
+        }
+      } else if t.alt then {
+        // A full-screen program without the mouse scrolls by arrow keys.
+        let key = keys.encode(keys.KEY, if lines < 0 then keys.KEY_UP else keys.KEY_DOWN, 0, t.app_cursor)
+        for _ in 0..<int.abs(lines) {
+          let _ = pty.write(cur.fd, key)
+        }
+      } else {
+        cur.back = int.clamp(cur.back - lines, 0, view.max_back(t))
+        ui.dirty = true
+      }
+    }
+    Stay
+  } else if kind == window.MOUSE_DOWN and window.event_code() == 0 then {
+    let py = float.to_int(window.event_y() * scale)
+    if tabs > 1 and py < render.bar_height(r) then GoTo(render.tab_at(r, float.to_int(window.event_x() * scale), width, tabs))
+    else {
+      let (col, row) = cell_at(r, t, scale, tabs)
+      ui.anchor_line = view.top_line(t, cur.back) + row
+      ui.anchor_col = col
+      ui.dragging = true
+      if cur.sel != none then ui.dirty = true
+      cur.sel = none
+      Stay
+    }
+  } else if kind == window.MOUSE_MOVE and ui.dragging then {
+    let (col, row) = cell_at(r, t, scale, tabs)
+    cur.sel = some(view.Selection { anchor_line: ui.anchor_line, anchor_col: ui.anchor_col, head_line: view.top_line(t, cur.back) + row, head_col: col })
+    ui.dirty = true
+    Stay
+  } else if kind == window.MOUSE_UP then {
+    ui.dragging = false
+    Stay
+  } else if kind == window.COMPOSE then {
+    ui.preedit = text.code_points(window.event_text())
+    ui.dirty = true
+    Stay
+  } else Stay
 }
 
 /// The cell under the pointer: (column, row of the viewport).
-fn cell_at(r: render.Renderer, t: terminal.Terminal, scale: Float) -> (Int, Int) = {
+fn cell_at(r: render.Renderer, t: terminal.Terminal, scale: Float, tabs: Int) -> (Int, Int) = {
   let px = float.to_int(window.event_x() * scale)
   let py = float.to_int(window.event_y() * scale)
-  (int.clamp((px - r.pad_x) / r.cell_w, 0, t.cols - 1), int.clamp((py - r.pad_y) / r.cell_h, 0, t.rows - 1))
+  let gy = render.grid_top(r, tabs)
+  (int.clamp((px - r.pad_x) / r.cell_w, 0, t.cols - 1), int.clamp((py - gy) / r.cell_h, 0, t.rows - 1))
 }
 
 effect fn copy(s: String) -> Unit = {

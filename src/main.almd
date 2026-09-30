@@ -30,10 +30,10 @@ effect fn main() -> Unit = {
 }
 
 effect fn run(command: String) -> Unit = {
-  let fd = pty.spawn(command, COLS, ROWS)
+  let fd = pty.spawn(command, "", COLS, ROWS)
   guard fd >= 0 else println("could not start ${command}")
   var t = terminal.new(COLS, ROWS)
-  while not pty.eof() {
+  while not pty.eof(fd) {
     terminal.feed(t, pty.read(fd, 50))
     let replies = terminal.take_replies(t)
     if replies != "" then {

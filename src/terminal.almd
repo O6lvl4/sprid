@@ -88,6 +88,8 @@ type Terminal = {
   blank_bg: Int,
   // Outside world.
   title: String,
+  /// The program's working directory, as the shell reports it (OSC 7).
+  cwd: String,
   replies: String,
   bells: Int,
   sb: scrollback.Scrollback,
@@ -151,6 +153,7 @@ fn with_scrollback(cols: Int, rows: Int, limit: Int) -> Terminal = {
     blank: blank,
     blank_bg: 0,
     title: "",
+    cwd: "",
     replies: "",
     bells: 0,
     sb: scrollback.new(limit),
@@ -1021,6 +1024,7 @@ fn osc_dispatch(mut t: Terminal) -> Unit = {
   let parts = string.split(s, ";")
   let cmd = list.get(parts, 0) ?? ""
   if cmd == "0" or cmd == "2" then t.title = string.drop(s, string.len(cmd) + 1)
+  else if cmd == "7" then t.cwd = file_url_path(string.drop(s, 2))
   bytes.clear(t.osc)
 }
 
@@ -1090,6 +1094,36 @@ fn copy_screen(grid: Bytes, top: Int, wrapped: Bytes, graphemes: Map[Int, String
     }
   }
   Screen { grid: out, wrapped: out_wrapped, graphemes: out_graphemes }
+}
+
+/// The path of a `file://host/path` URL, percent-decoded; "" when it is not
+/// one.
+fn file_url_path(url: String) -> String = {
+  guard string.starts_with(url, "file://") else ""
+  let rest = string.drop(url, 7)
+  let path = match string.index_of(rest, "/") {
+    some(i) => string.drop(rest, i),
+    none => "",
+  }
+  let raw = bytes.from_string(path)
+  var out = bytes.new(0)
+  var i = 0
+  let n = bytes.len(raw)
+  while i < n {
+    let b = bytes.read_u8(raw, i)
+    let hex = if b == 0x25 and i + 2 < n then int.from_hex(bytes.read_string_at(raw, i + 1, 2)) else err("")
+    match hex {
+      ok(v) => {
+        bytes.push(out, v)
+        i = i + 3
+      },
+      err(_) => {
+        bytes.push(out, b)
+        i = i + 1
+      },
+    }
+  }
+  bytes.to_string_lossy(out)
 }
 
 // ── Reading the screen ────────────────────────────────────────────────────

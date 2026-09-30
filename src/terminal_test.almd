@@ -234,3 +234,8 @@ test "an ASCII run ends on the last column and wraps on the next byte" {
   terminal.feed_string(t, "fg")
   assert_eq(terminal.screen_text(t), "abcde\nfg")
 }
+
+test "the shell's working directory arrives by OSC 7" {
+  let t = run(10, 2, "\x1b]7;file://mac.local/Users/me/my%20dir\x07")
+  assert_eq(t.cwd, "/Users/me/my dir")
+}
