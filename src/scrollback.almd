@@ -85,6 +85,10 @@ fn push(mut sb: Scrollback, record: Bytes) -> Unit = {
   evict(sb)
 }
 
+/// The background and attributes bytes of a cell's second 8 (`cell.OFF_BG`
+/// on): all but width and flags.
+let STYLE_MASK = 0xFFFFFFFFFFFF
+
 /// Append the row at byte `off` of `grid` as a line record, encoded straight
 /// into the block being filled — the same record `encode_cells` makes, with
 /// no allocation per line. This is what every line scrolling off the screen
@@ -93,11 +97,13 @@ fn push_cells(mut sb: Scrollback, grid: Bytes, off: Int, cols: Int, wrapped: Boo
               graphemes: Map[Int, String], base: Int) -> Unit = {
   let used = used_cols_at(grid, off, cols)
   // Most a record can take: per cell a run header and 4 bytes of UTF-8, and
-  // up to 128 bytes of marks on a cell that has them.
-  var bound = 4 + 7
-  for x in 0..<used {
-    let flags = bytes.read_u8(grid, off + x * cell.SIZE + cell.OFF_FLAGS)
-    bound = bound + 18 + (if int.band(flags, cell.FLAG_GRAPHEME) != 0 then 128 else 0)
+  // up to 128 bytes of marks on a cell that has them — only a row with marks
+  // has such cells.
+  var bound = 4 + 7 + used * 18
+  if map.len(graphemes) > 0 then {
+    for x in 0..<used {
+      if int.band(bytes.read_u8(grid, off + x * cell.SIZE + cell.OFF_FLAGS), cell.FLAG_GRAPHEME) != 0 then bound = bound + 128
+    }
   }
   if bound > sb.block_size then push(sb, encode_cells(grid, off, cols, wrapped, graphemes, base))
   else {
@@ -112,25 +118,27 @@ fn push_cells(mut sb: Scrollback, grid: Bytes, off: Int, cols: Int, wrapped: Boo
     p = p + 3
     var x = 0
     while x < used {
+      // A cell's second half in one read: background, attributes, width and
+      // flags; a run is cells with the same foreground and the same first 6
+      // bytes of it.
       let o = off + x * cell.SIZE
       let fg = bytes.read_u32_le(grid, o + cell.OFF_FG)
-      let bg = bytes.read_u32_le(grid, o + cell.OFF_BG)
-      let attrs = bytes.read_u16_le(grid, o + cell.OFF_ATTRS)
+      let bg_attrs = int.band(bytes.read_i64_le(grid, o + cell.OFF_BG), STYLE_MASK)
       bytes.set_u32_le(sb.cur, p, fg)
-      bytes.set_u32_le(sb.cur, p + 4, bg)
-      bytes.set_u16_le(sb.cur, p + 8, attrs)
+      bytes.set_i64_le(sb.cur, p + 4, bg_attrs)
       let len_at = p + 10
       p = p + 14
       let text_start = p
       var more = true
       while more and x < used {
         let c = off + x * cell.SIZE
-        if bytes.read_u32_le(grid, c + cell.OFF_FG) == fg and bytes.read_u32_le(grid, c + cell.OFF_BG) == bg and bytes.read_u16_le(grid, c + cell.OFF_ATTRS) == attrs then {
-          let w = bytes.read_u8(grid, c + cell.OFF_WIDTH)
-          let cp = bytes.read_u32_le(grid, c + cell.OFF_CP)
-          if w != 0 then {
+        let tail = bytes.read_i64_le(grid, c + cell.OFF_BG)
+        if int.band(tail, STYLE_MASK) == bg_attrs and bytes.read_u32_le(grid, c + cell.OFF_FG) == fg then {
+          // Width and flags are the tail's top two bytes.
+          if int.band(int.bshr(tail, 48), 0xFF) != 0 then {
+            let cp = bytes.read_u32_le(grid, c + cell.OFF_CP)
             p = write_utf8(sb.cur, p, if cp == 0 then 32 else cp)
-            if int.band(bytes.read_u8(grid, c + cell.OFF_FLAGS), cell.FLAG_GRAPHEME) != 0 then {
+            if int.band(int.bshr(tail, 56), cell.FLAG_GRAPHEME) != 0 then {
               let marks = bytes.from_string(string.take(map.get_or(graphemes, base + x, ""), 32))
               let n = int.min(bytes.len(marks), 128)
               bytes.copy_from(sb.cur, marks, p, 0, n)
@@ -305,7 +313,9 @@ fn used_cols_at(grid: Bytes, off: Int, cols: Int) -> Int = {
   var blank = true
   while blank and n > 0 {
     let o = off + (n - 1) * cell.SIZE
-    if bytes.read_u32_le(grid, o + cell.OFF_CP) == 0 and bytes.read_u32_le(grid, o + cell.OFF_BG) == cell.COLOR_DEFAULT and bytes.read_u16_le(grid, o + cell.OFF_ATTRS) == 0 then {
+    // Blank: no character, and no background or attributes (the 6 bytes
+    // from `cell.OFF_BG`) — the default background is 0.
+    if bytes.read_u32_le(grid, o + cell.OFF_CP) == 0 and int.band(bytes.read_i64_le(grid, o + cell.OFF_BG), STYLE_MASK) == 0 then {
       n = n - 1
     } else {
       blank = false

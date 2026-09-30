@@ -245,7 +245,10 @@ fn row_extras(t: Terminal, y: Int) -> Map[Int, String] = {
   var extras: Map[Int, String] = [:]
   let base = row_off(t, y)
   let first = phys(t, y) * t.cols
-  for x in 0..<t.cols {
+  // With no marks on the screen — nearly always — there is nothing to look
+  // for.
+  let cols = if map.len(t.graphemes) == 0 then 0 else t.cols
+  for x in 0..<cols {
     if int.band(bytes.read_u8(t.grid, base + x * cell.SIZE + cell.OFF_FLAGS), cell.FLAG_GRAPHEME) != 0 then
       map.insert(extras, x, map.get_or(t.graphemes, first + x, ""))
   }
@@ -254,6 +257,19 @@ fn row_extras(t: Terminal, y: Int) -> Map[Int, String] = {
 
 // ── Scrolling ─────────────────────────────────────────────────────────────
 
+/// Drop the combining marks `marks` (from `row_extras`) of row `y`, which is
+/// leaving the screen: kept, they would outlive their cells, and a screen
+/// that once had marks would be searched for them on every line that scrolls
+/// off.
+fn forget_marks(mut t: Terminal, y: Int, marks: Map[Int, String]) -> Unit = {
+  if map.len(marks) > 0 then {
+    let first = phys(t, y) * t.cols
+    for x in map.keys(marks) {
+      map.delete(t.graphemes, first + x)
+    }
+  }
+}
+
 /// Scroll the lines of the margins up by `n`; lines leaving the top of the
 /// full main screen go to scrollback.
 fn scroll_up(mut t: Terminal, n: Int) -> Unit = {
@@ -261,16 +277,17 @@ fn scroll_up(mut t: Terminal, n: Int) -> Unit = {
   let count = int.min(n, height)
   if t.margin_top == 0 and t.margin_bottom == t.rows - 1 then {
     for _ in 0..<count {
+      // Only this row's marks: handing over the screen's whole map would
+      // copy it for every line.
+      let marks = row_extras(t, 0)
       if not t.alt then {
         let p = phys(t, 0)
         let wrapped = bytes.read_u8(t.wrapped, p) == 1
         let off = row_off(t, 0)
         let cols = t.cols
-        // Only this row's marks: handing over the screen's whole map would
-        // copy it for every line.
-        let marks = row_extras(t, 0)
         scrollback.push_cells(t.sb, t.grid, off, cols, wrapped, marks, 0)
       }
+      forget_marks(t, 0, marks)
       t.top = (t.top + 1) % t.rows
       erase_row(t, t.rows - 1)
     }
