@@ -81,6 +81,10 @@ type Terminal = {
   origin: Bool,
   insert: Bool,
   cursor_visible: Bool,
+  // The program has hidden the cursor and shown it again: it hides it
+  // while it redraws (full-screen programs do, a line editor does), so
+  // hidden it is mid-update (see `mid_update`).
+  cursor_pairs: Bool,
   cursor_shape: Int,
   app_cursor: Bool,
   app_keypad: Bool,
@@ -157,6 +161,7 @@ fn with_scrollback(cols: Int, rows: Int, limit: Int) -> Terminal = {
     origin: false,
     insert: false,
     cursor_visible: true,
+    cursor_pairs: false,
     cursor_shape: 0,
     app_cursor: false,
     app_keypad: false,
@@ -984,7 +989,10 @@ fn set_private_modes(mut t: Terminal, on: Bool) -> Unit = {
         move_to(t, 0, 0)
       },
       7 => { t.autowrap = on },
-      25 => { t.cursor_visible = on },
+      25 => {
+        if on and not t.cursor_visible then t.cursor_pairs = true
+        t.cursor_visible = on
+      },
       47 | 1047 => switch_screen(t, on, false),
       1049 => switch_screen(t, on, true),
       1000 | 1002 | 1003 => { t.mouse_mode = if on then p else 0 },
@@ -1024,6 +1032,13 @@ fn switch_screen(mut t: Terminal, on: Bool, with_cursor: Bool) -> Unit = {
     } else if with_cursor then restore_cursor(t, t.saved_main)
   }
 }
+
+/// Whether the program is part way through drawing a screen: inside a
+/// synchronized update (mode 2026), or — for a program that hides the
+/// cursor while it draws — with the cursor hidden. A program writes a large
+/// screen in pieces, sometimes tens of ms apart; drawn in between, the
+/// screen shows its top half new and its bottom half old.
+fn mid_update(t: Terminal) -> Bool = t.sync_output or (t.cursor_pairs and not t.cursor_visible)
 
 fn soft_reset(mut t: Terminal) -> Unit = {
   t.cursor_visible = true
@@ -1437,4 +1452,19 @@ fn take_replies(mut t: Terminal) -> String = {
   let r = t.replies
   t.replies = ""
   r
+}
+
+test "a program that hides the cursor while it draws is mid-update while it is hidden" {
+  var t = new(10, 3)
+  feed_string(t, "\x1b[?25lab")
+  // Hidden once, never shown: not known to pair them.
+  assert_eq(mid_update(t), false)
+  feed_string(t, "\x1b[?25h")
+  assert_eq(mid_update(t), false)
+  feed_string(t, "\x1b[?25lcd")
+  assert_eq(mid_update(t), true)
+  feed_string(t, "\x1b[?25h")
+  assert_eq(mid_update(t), false)
+  feed_string(t, "\x1b[?2026h")
+  assert_eq(mid_update(t), true)
 }

@@ -55,6 +55,8 @@ let STREAM_DRAIN_MS = 40
 let SETTLE_MS = 300
 /// Longest a synchronized update (mode 2026) may hold the screen, ms.
 let SYNC_LIMIT = 150
+/// Longest the screen waits while a program has hidden the cursor to draw, ms.
+let HIDDEN_LIMIT = 100
 
 /// One tab: a terminal, the PTY its program runs on, and how it is viewed.
 type Tab = {
@@ -389,12 +391,13 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
       match take(tabs, active) {
         some(tb) => {
           var cur = tb
-          // Mode 2026: the program is mid-update; show it when it says it is
-          // done, or after SYNC_LIMIT if it never does.
-          if cur.t.sync_output then {
+          // The program is mid-update (mode 2026, or its cursor hidden while
+          // it draws): show the screen when it is done, or after a limit if
+          // it never says so.
+          if terminal.mid_update(cur.t) then {
             if cur.sync_since < 0 then cur.sync_since = clock
           } else cur.sync_since = -1
-          let held = cur.sync_since >= 0 and clock - cur.sync_since < SYNC_LIMIT
+          let held = cur.sync_since >= 0 and clock - cur.sync_since < hold_limit(cur.t)
           if not held then {
             let t0 = sys.now_ms()
             render.draw(r, cur.t, cur.back, cur.shift, cur.sel, ui.preedit, width, height, titles, active,
@@ -527,10 +530,14 @@ fn take(mut tabs: List[Tab], i: Int) -> Option[Tab] = {
   list.pop(tabs)
 }
 
+/// Longest a screen is held for its program to finish drawing it, ms: a
+/// synchronized update is asked for, a hidden cursor only suggests one.
+fn hold_limit(t: terminal.Terminal) -> Int = if t.sync_output then SYNC_LIMIT else HIDDEN_LIMIT
+
 /// How long the active tab's open synchronized update may still hold the
 /// frame, ms (0 when none is open).
 fn sync_wait(tabs: List[Tab], active: Int, now: Int) -> Int = match list.get(tabs, active) {
-  some(tb) => if tb.sync_since >= 0 and tb.t.sync_output then int.max(0, tb.sync_since + SYNC_LIMIT - now) else 0,
+  some(tb) => if tb.sync_since >= 0 and terminal.mid_update(tb.t) then int.max(0, tb.sync_since + hold_limit(tb.t) - now) else 0,
   none => 0,
 }
 
