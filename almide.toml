@@ -3,5 +3,8 @@ name = "sprid"
 version = "0.0.1"
 description = "A terminal emulator written in Almide"
 
+[dependencies]
+snaidhm = { path = "../snaidhm" }
+
 [native-deps]
 libc = "0.2"

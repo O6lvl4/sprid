@@ -16,6 +16,11 @@ pub fn spawn(program: &str, cols: i64, rows: i64) -> i64 {
     let pid = unsafe { libc::forkpty(&mut master, std::ptr::null_mut(), std::ptr::null_mut(), &ws as *const _ as *mut _) };
     if pid < 0 { return -1; }
     if pid == 0 {
+        // What the child sees of its terminal: xterm's sequences, direct colour.
+        for (k, v) in [("TERM", "xterm-256color"), ("COLORTERM", "truecolor"), ("TERM_PROGRAM", "sprid")] {
+            std::env::set_var(k, v);
+        }
+        std::env::remove_var("TERMINFO");
         unsafe {
             let argv = [sh.as_ptr(), dash_c.as_ptr(), cmd.as_ptr(), std::ptr::null()];
             libc::execv(sh.as_ptr(), argv.as_ptr());

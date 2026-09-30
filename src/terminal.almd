@@ -958,6 +958,74 @@ fn osc_dispatch(mut t: Terminal) -> Unit = {
   bytes.clear(t.osc)
 }
 
+// ── Resizing ──────────────────────────────────────────────────────────────
+
+type Screen = { grid: Bytes, wrapped: Bytes, graphemes: Map[Int, String] }
+
+/// Change the screen to `cols` x `rows`. Content is cut or padded, not
+/// reflowed. When the screen gets shorter, the lines above the cursor that
+/// no longer fit move to scrollback, so the cursor's line stays on screen.
+fn resize(mut t: Terminal, cols: Int, rows: Int) -> Unit = {
+  if cols > 0 and rows > 0 and (cols != t.cols or rows != t.rows) then {
+    t.margin_top = 0
+    t.margin_bottom = t.rows - 1
+    while t.y >= rows {
+      scroll_up(t, 1)
+      t.y = t.y - 1
+    }
+    let active = copy_screen(t.grid, t.top, t.wrapped, t.graphemes, t.cols, t.rows, cols, rows)
+    let other = copy_screen(t.other_grid, t.other_top, t.other_wrapped, t.other_graphemes, t.cols, t.rows, cols, rows)
+    t.grid = active.grid
+    t.wrapped = active.wrapped
+    t.graphemes = active.graphemes
+    t.top = 0
+    t.other_grid = other.grid
+    t.other_wrapped = other.wrapped
+    t.other_graphemes = other.graphemes
+    t.other_top = 0
+    t.cols = cols
+    t.rows = rows
+    t.margin_top = 0
+    t.margin_bottom = rows - 1
+    t.tabs = default_tabs(cols)
+    t.blank = cell.blank_row(cols, t.bg)
+    t.blank_bg = t.bg
+    t.x = int.min(t.x, cols - 1)
+    t.y = int.min(t.y, rows - 1)
+    t.pending_wrap = false
+    t.last_x = -1
+    t.last_y = -1
+  }
+}
+
+/// The rows of a `cols` x `rows` ring grid starting at `top`, copied into a
+/// fresh `new_cols` x `new_rows` grid with row 0 first.
+fn copy_screen(grid: Bytes, top: Int, wrapped: Bytes, graphemes: Map[Int, String],
+               cols: Int, rows: Int, new_cols: Int, new_rows: Int) -> Screen = {
+  var out = bytes.repeat(cell.blank_row(new_cols, cell.COLOR_DEFAULT), new_rows)
+  var out_wrapped = bytes.new(new_rows)
+  var out_graphemes: Map[Int, String] = [:]
+  let keep_cols = int.min(cols, new_cols)
+  for y in 0..<int.min(rows, new_rows) {
+    let p = (top + y) % rows
+    let src = p * cols * cell.SIZE
+    let dst = y * new_cols * cell.SIZE
+    bytes.copy_from(out, grid, dst, src, keep_cols * cell.SIZE)
+    bytes.set_u8(out_wrapped, y, if new_cols >= cols then bytes.read_u8(wrapped, p) else 0)
+    // A wide char cut in half at the new edge becomes a blank.
+    let last = dst + (keep_cols - 1) * cell.SIZE
+    if keep_cols < cols and bytes.read_u8(out, last + cell.OFF_WIDTH) == 2 then {
+      bytes.set_u32_le(out, last + cell.OFF_CP, 0)
+      bytes.set_u8(out, last + cell.OFF_WIDTH, 1)
+    }
+    for x in 0..<keep_cols {
+      if int.band(bytes.read_u8(out, dst + x * cell.SIZE + cell.OFF_FLAGS), cell.FLAG_GRAPHEME) != 0 then
+        map.insert(out_graphemes, y * new_cols + x, map.get_or(graphemes, p * cols + x, ""))
+    }
+  }
+  Screen { grid: out, wrapped: out_wrapped, graphemes: out_graphemes }
+}
+
 // ── Reading the screen ────────────────────────────────────────────────────
 
 /// Row y as text, trailing blanks trimmed.

@@ -1,0 +1,157 @@
+// Keyboard input to the bytes a program on the PTY reads.
+//
+// Kinds, key codes and modifier bits are the window's (snaidhm's
+// native/window.almd): a TEXT input carries a code point, a KEY input a DOM
+// key code. The encodings are xterm's, which is what TERM=xterm-256color
+// promises.
+
+let TEXT = 5
+let KEY = 6
+
+let MOD_SHIFT = 1
+let MOD_CTRL = 2
+let MOD_ALT = 4
+let MOD_SUPER = 8
+
+let KEY_BACKSPACE = 8
+let KEY_TAB = 9
+let KEY_ENTER = 13
+let KEY_ESCAPE = 27
+let KEY_PAGE_UP = 33
+let KEY_PAGE_DOWN = 34
+let KEY_END = 35
+let KEY_HOME = 36
+let KEY_LEFT = 37
+let KEY_UP = 38
+let KEY_RIGHT = 39
+let KEY_DOWN = 40
+let KEY_INSERT = 45
+let KEY_DELETE = 46
+let KEY_F1 = 112
+
+/// Bytes for one input, or "" when it types nothing (Super shortcuts are the
+/// window's, not the program's). `app_cursor` is DECCKM: arrows and Home/End
+/// send SS3 instead of CSI.
+fn encode(kind: Int, code: Int, mods: Int, app_cursor: Bool) -> String =
+  if int.band(mods, MOD_SUPER) != 0 then ""
+  else if kind == TEXT then text(code, mods)
+  else if kind == KEY then key(code, mods, app_cursor)
+  else ""
+
+/// A typed character. Ctrl makes a control character of it; Alt (Option, as
+/// macos-option-as-alt) sends ESC before it.
+fn text(cp: Int, mods: Int) -> String = {
+  let base = if int.band(mods, MOD_CTRL) != 0 then control(cp) else string.from_codepoint(cp)
+  if int.band(mods, MOD_ALT) != 0 then "\x1b" + base else base
+}
+
+/// Ctrl+`cp`: letters and @[\]^_ map to 0x00..0x1F, Ctrl+Space and Ctrl+2 to
+/// NUL, Ctrl+/ to 0x1F, Ctrl+? to DEL; anything else is itself.
+fn control(cp: Int) -> String =
+  if cp >= 0x61 and cp <= 0x7A then string.from_codepoint(cp - 0x60)
+  else if cp >= 0x40 and cp <= 0x5F then string.from_codepoint(cp - 0x40)
+  else if cp == 0x20 or cp == 0x32 then string.from_codepoint(0)
+  else if cp == 0x2F then string.from_codepoint(0x1F)
+  else if cp == 0x3F then string.from_codepoint(0x7F)
+  else string.from_codepoint(cp)
+
+/// xterm's modifier parameter: 1 + Shift 1 + Alt 2 + Ctrl 4.
+fn modifier_param(mods: Int) -> Int =
+  1 + (if int.band(mods, MOD_SHIFT) != 0 then 1 else 0)
+    + (if int.band(mods, MOD_ALT) != 0 then 2 else 0)
+    + (if int.band(mods, MOD_CTRL) != 0 then 4 else 0)
+
+/// A cursor-style key: `CSI final` / `SS3 final`, or `CSI 1;m final` when
+/// modified.
+fn cursor_key(final: String, mods: Int, app_cursor: Bool) -> String = {
+  let m = modifier_param(mods)
+  if m > 1 then "\x1b[1;${int.to_string(m)}${final}"
+  else if app_cursor then "\x1bO${final}"
+  else "\x1b[${final}"
+}
+
+/// A tilde key: `CSI n ~`, or `CSI n;m ~` when modified.
+fn tilde_key(n: Int, mods: Int) -> String = {
+  let m = modifier_param(mods)
+  if m > 1 then "\x1b[${int.to_string(n)};${int.to_string(m)}~" else "\x1b[${int.to_string(n)}~"
+}
+
+fn key(code: Int, mods: Int, app_cursor: Bool) -> String = {
+  let alt = if int.band(mods, MOD_ALT) != 0 then "\x1b" else ""
+  if code == KEY_ENTER then alt + "\r"
+  else if code == KEY_BACKSPACE then alt + (if int.band(mods, MOD_CTRL) != 0 then "\x08" else "\x7f")
+  else if code == KEY_TAB then (if int.band(mods, MOD_SHIFT) != 0 then "\x1b[Z" else alt + "\t")
+  else if code == KEY_ESCAPE then alt + "\x1b"
+  else if code == KEY_UP then cursor_key("A", mods, app_cursor)
+  else if code == KEY_DOWN then cursor_key("B", mods, app_cursor)
+  else if code == KEY_RIGHT then cursor_key("C", mods, app_cursor)
+  else if code == KEY_LEFT then cursor_key("D", mods, app_cursor)
+  else if code == KEY_HOME then cursor_key("H", mods, app_cursor)
+  else if code == KEY_END then cursor_key("F", mods, app_cursor)
+  else if code == KEY_INSERT then tilde_key(2, mods)
+  else if code == KEY_DELETE then tilde_key(3, mods)
+  else if code == KEY_PAGE_UP then tilde_key(5, mods)
+  else if code == KEY_PAGE_DOWN then tilde_key(6, mods)
+  else if code >= KEY_F1 and code < KEY_F1 + 4 then {
+    // F1..F4 are SS3 P..S, or CSI 1;m P..S when modified.
+    let final = string.from_codepoint(0x50 + code - KEY_F1)
+    let m = modifier_param(mods)
+    if m > 1 then "\x1b[1;${int.to_string(m)}${final}" else "\x1bO${final}"
+  }
+  else if code >= KEY_F1 + 4 and code < KEY_F1 + 12 then
+    tilde_key(list.get([15, 17, 18, 19, 20, 21, 23, 24], code - KEY_F1 - 4) ?? 15, mods)
+  else ""
+}
+
+/// Pasted text: newlines become CR, as typed Enter would, and with
+/// bracketed paste (mode 2004) the program is told where it starts and ends.
+/// Stray paste-end markers inside are dropped so text can't close the
+/// bracket early.
+fn paste(s: String, bracketed: Bool) -> String = {
+  let body = s |> string.replace("\r\n", "\r") |> string.replace("\n", "\r")
+  if bracketed then "\x1b[200~" + string.replace(body, "\x1b[201~", "") + "\x1b[201~" else body
+}
+
+test "plain text is itself" {
+  assert_eq(encode(TEXT, 0x61, 0, false), "a")
+  assert_eq(encode(TEXT, 0x3042, 0, false), "あ")
+}
+
+test "ctrl makes control characters" {
+  assert_eq(encode(TEXT, 0x63, MOD_CTRL, false), "\x03")
+  assert_eq(encode(TEXT, 0x64, MOD_CTRL, false), "\x04")
+  assert_eq(encode(TEXT, 0x5B, MOD_CTRL, false), "\x1b")
+  assert_eq(encode(TEXT, 0x20, MOD_CTRL, false), string.from_codepoint(0))
+}
+
+test "alt prefixes ESC" {
+  assert_eq(encode(TEXT, 0x62, MOD_ALT, false), "\x1bb")
+  assert_eq(encode(KEY, KEY_BACKSPACE, MOD_ALT, false), "\x1b\x7f")
+}
+
+test "super is the window's" {
+  assert_eq(encode(TEXT, 0x76, MOD_SUPER, false), "")
+}
+
+test "arrows follow DECCKM and modifiers" {
+  assert_eq(encode(KEY, KEY_UP, 0, false), "\x1b[A")
+  assert_eq(encode(KEY, KEY_UP, 0, true), "\x1bOA")
+  assert_eq(encode(KEY, KEY_LEFT, MOD_CTRL, true), "\x1b[1;5D")
+  assert_eq(encode(KEY, KEY_RIGHT, MOD_SHIFT + MOD_ALT, false), "\x1b[1;4C")
+}
+
+test "editing and function keys" {
+  assert_eq(encode(KEY, KEY_ENTER, 0, false), "\r")
+  assert_eq(encode(KEY, KEY_BACKSPACE, 0, false), "\x7f")
+  assert_eq(encode(KEY, KEY_TAB, MOD_SHIFT, false), "\x1b[Z")
+  assert_eq(encode(KEY, KEY_DELETE, 0, false), "\x1b[3~")
+  assert_eq(encode(KEY, KEY_PAGE_DOWN, MOD_SHIFT, false), "\x1b[6;2~")
+  assert_eq(encode(KEY, KEY_F1, 0, false), "\x1bOP")
+  assert_eq(encode(KEY, KEY_F1 + 4, 0, false), "\x1b[15~")
+  assert_eq(encode(KEY, KEY_F1 + 11, 0, false), "\x1b[24~")
+}
+
+test "paste brackets and normalizes newlines" {
+  assert_eq(paste("a\nb\r\nc", false), "a\rb\rc")
+  assert_eq(paste("x\x1b[201~y", true), "\x1b[200~xy\x1b[201~")
+}

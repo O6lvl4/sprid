@@ -1,0 +1,360 @@
+// Drawing a terminal's screen into the window.
+//
+// Every visible thing is a quad of snaidhm's text pipeline — position, atlas
+// uv, colour — so one draw call covers a frame: background runs and
+// decorations sample the atlas's solid texel, glyphs their rasterized
+// coverage. Glyphs are rasterized once per face and size (snaidhm's glyph
+// cache) and looked up here by code point.
+//
+// A frame is built in two passes. The first makes sure every glyph on screen
+// is in the atlas; the second streams the quads to the GPU. They can't be
+// one: rasterizing a glyph uploads it through the same staging buffer
+// (`gpu.begin_data`) the quads are streamed through.
+//
+// Positions are physical pixels of the drawable, y down, mapped to normal
+// space as they are pushed.
+
+import bytes
+import snaidhm.web.gpu as gpu
+import snaidhm.sfnt as sfnt
+import snaidhm.text as text
+import self.cell
+import self.gui.fonts
+import self.terminal
+import self.width as cell_width
+
+/// Floats per vertex of the text pipeline: position 2, uv 2, colour 4.
+let VERTEX_FLOATS = 8
+
+/// Tokyo Night Storm.
+let DEFAULT_BG = 0x24283B
+let DEFAULT_FG = 0xC0CAF5
+let CURSOR = 0xC0CAF5
+let ANSI = [
+  0x1D202F, 0xF7768E, 0x9ECE6A, 0xE0AF68, 0x7AA2F7, 0xBB9AF7, 0x7DCFFF, 0xA9B1D6,
+  0x414868, 0xF7768E, 0x9ECE6A, 0xE0AF68, 0x7AA2F7, 0xBB9AF7, 0x7DCFFF, 0xC0CAF5,
+]
+
+type Renderer = {
+  device: Int,
+  layer: text.TextLayer,
+  n_regular: Int,
+  n_bold: Int,
+  size_px: Int,
+  cell_w: Int,
+  cell_h: Int,
+  baseline: Int,
+  pad_x: Int,
+  pad_y: Int,
+  line_w: Int,
+  palette: List[Int],
+  // (code point * 2 + bold) -> glyph cache slot, -1 for no glyph.
+  glyphs: Map[Int, Int],
+  vtx: Int,
+  capacity: Int,
+  count: Int,
+}
+
+/// The 256-colour palette: the 16 of the theme, the 6x6x6 cube, 24 greys.
+fn palette256() -> List[Int] = {
+  var p = ANSI
+  let steps = [0, 95, 135, 175, 215, 255]
+  for i in 0..<216 {
+    let r = steps[i / 36]
+    let g = steps[(i / 6) % 6]
+    let b = steps[i % 6]
+    list.push(p, r * 65536 + g * 256 + b)
+  }
+  for i in 0..<24 {
+    let v = 8 + i * 10
+    list.push(p, v * 65536 + v * 256 + v)
+  }
+  p
+}
+
+/// A renderer drawing `faces` at `size_px` pixels per em, the grid inset by
+/// `pad_x` x `pad_y` pixels.
+fn new(device: Int, faces: fonts.Faces, size_px: Int, pad_x: Int, pad_y: Int, cell_height: Float) -> Renderer = {
+  let layer = text.new_layer(device, faces.regular + faces.bold)
+  let size = int.to_float(size_px)
+  let m = sfnt.pick(faces.regular, 0x4D)
+  let cell_w = int.max(1, float.to_int(float.round(text.advance_px(layer, m.0, m.1, size))))
+  let ascent = text.ascent(layer, size)
+  let natural = ascent + text.descent(layer, size)
+  let cell_h = int.max(1, float.to_int(float.ceil(natural * cell_height)))
+  // Extra line height goes half above, half below.
+  let baseline = float.to_int(float.round(ascent + (int.to_float(cell_h) - natural) / 2.0))
+  Renderer {
+    device: device,
+    layer: layer,
+    n_regular: list.len(faces.regular),
+    n_bold: list.len(faces.bold),
+    size_px: size_px,
+    cell_w: cell_w,
+    cell_h: cell_h,
+    baseline: baseline,
+    pad_x: pad_x,
+    pad_y: pad_y,
+    line_w: int.max(1, size_px / 14),
+    palette: palette256(),
+    glyphs: [:],
+    vtx: 0,
+    capacity: 0,
+    count: 0,
+  }
+}
+
+/// Columns and rows that fit a `width` x `height` drawable.
+fn grid_size(r: Renderer, width: Int, height: Int) -> (Int, Int) =
+  (int.max(1, (width - 2 * r.pad_x) / r.cell_w), int.max(1, (height - 2 * r.pad_y) / r.cell_h))
+
+/// 0xRRGGBB of a cell colour; `fallback` for the default colour.
+fn resolve(r: Renderer, color: Int, fallback: Int) -> Int = {
+  let kind = int.bshr(color, 24)
+  if kind == 1 then r.palette[int.band(color, 0xFF)]
+  else if kind == 2 then int.band(color, 0xFFFFFF)
+  else fallback
+}
+
+// ── Glyphs ────────────────────────────────────────────────────────────────
+
+/// The glyph cache slot drawing `cp`, rasterizing it on first use; -1 when no
+/// face has it.
+fn glyph(mut r: Renderer, cp: Int, bold: Bool) -> Int = {
+  let k = cp * 2 + (if bold then 1 else 0)
+  match map.get(r.glyphs, k) {
+    some(slot) => slot,
+    none => {
+      let offset = if bold then r.n_regular else 0
+      let faces = list.slice(r.layer.fonts, offset, offset + (if bold then r.n_bold else r.n_regular))
+      let (fi, gid) = sfnt.pick(faces, cp)
+      let slot = if gid == 0 then -1 else {
+        let before = list.len(r.layer.rects)
+        let device = r.device
+        let size_px = r.size_px
+        r.layer = text.cached(device, r.layer, offset + fi, gid, size_px)
+        // The atlas filled up and started over: every slot we knew is gone.
+        if list.len(r.layer.rects) < before then map.clear(r.glyphs)
+        map.get(r.layer.keys, text.key(offset + fi, gid, size_px)) ?? -1
+      }
+      map.insert(r.glyphs, k, slot)
+      slot
+    }
+  }
+}
+
+// ── Quads ─────────────────────────────────────────────────────────────────
+
+/// Push one quad: pixels (x0, y0)-(x1, y1), atlas uv (u0, v0)-(u1, v1),
+/// colour 0xRRGGBB at `alpha`.
+fn quad(r: Renderer, x0: Float, y0: Float, x1: Float, y1: Float,
+        u0: Float, v0: Float, u1: Float, v1: Float, rgb: Int, alpha: Float,
+        sx: Float, sy: Float) -> Unit = {
+  let cr = int.to_float(int.band(int.bshr(rgb, 16), 0xFF)) / 255.0
+  let cg = int.to_float(int.band(int.bshr(rgb, 8), 0xFF)) / 255.0
+  let cb = int.to_float(int.band(rgb, 0xFF)) / 255.0
+  let nx0 = x0 * sx - 1.0
+  let nx1 = x1 * sx - 1.0
+  let ny0 = 1.0 - y0 * sy
+  let ny1 = 1.0 - y1 * sy
+  vertex(nx0, ny0, u0, v0, cr, cg, cb, alpha)
+  vertex(nx1, ny0, u1, v0, cr, cg, cb, alpha)
+  vertex(nx0, ny1, u0, v1, cr, cg, cb, alpha)
+  vertex(nx0, ny1, u0, v1, cr, cg, cb, alpha)
+  vertex(nx1, ny0, u1, v0, cr, cg, cb, alpha)
+  vertex(nx1, ny1, u1, v1, cr, cg, cb, alpha)
+}
+
+fn vertex(x: Float, y: Float, u: Float, v: Float, cr: Float, cg: Float, cb: Float, a: Float) -> Unit = {
+  gpu.push_f32(x)
+  gpu.push_f32(y)
+  gpu.push_f32(u)
+  gpu.push_f32(v)
+  gpu.push_f32(cr)
+  gpu.push_f32(cg)
+  gpu.push_f32(cb)
+  gpu.push_f32(a)
+}
+
+/// A filled rectangle, sampling the atlas's solid texel.
+fn rect(r: Renderer, x0: Int, y0: Int, x1: Int, y1: Int, rgb: Int, alpha: Float, sx: Float, sy: Float) -> Unit = {
+  let slot = map.get(r.layer.keys, text.SOLID) ?? 0
+  let atlas = int.to_float(text.ATLAS)
+  let u = (int.to_float(r.layer.rects[slot * 6]) + 0.5) / atlas
+  let v = (int.to_float(r.layer.rects[slot * 6 + 1]) + 0.5) / atlas
+  quad(r, int.to_float(x0), int.to_float(y0), int.to_float(x1), int.to_float(y1), u, v, u, v, rgb, alpha, sx, sy)
+}
+
+/// The glyph in `slot` with its pen at `x` on the baseline `y`.
+fn glyph_quad(r: Renderer, slot: Int, x: Int, y: Int, rgb: Int, alpha: Float, sx: Float, sy: Float) -> Unit = {
+  let o = slot * 6
+  let w = r.layer.rects[o + 2]
+  let h = r.layer.rects[o + 3]
+  if w > 0 and h > 0 then {
+    let left = x + r.layer.rects[o + 4]
+    let top = y - r.layer.rects[o + 5]
+    let atlas = int.to_float(text.ATLAS)
+    let ax = int.to_float(r.layer.rects[o])
+    let ay = int.to_float(r.layer.rects[o + 1])
+    quad(r, int.to_float(left), int.to_float(top), int.to_float(left + w), int.to_float(top + h),
+      ax / atlas, ay / atlas, (ax + int.to_float(w)) / atlas, (ay + int.to_float(h)) / atlas,
+      rgb, alpha, sx, sy)
+  }
+}
+
+// ── Frames ────────────────────────────────────────────────────────────────
+
+/// Draw `t` into the window's current frame, with `preedit` — what the input
+/// method is composing — at the cursor. `width` x `height` is the drawable.
+fn draw(mut r: Renderer, t: terminal.Terminal, preedit: List[Int], width: Int, height: Int) -> Unit = {
+  // Pass 1: every glyph on screen into the atlas.
+  r.layer = text.solid(r.device, r.layer)
+  for y in 0..<t.rows {
+    for x in 0..<t.cols {
+      let o = terminal.cell_off(t, x, y)
+      let cp = bytes.read_u32_le(t.grid, o + cell.OFF_CP)
+      if cp > 32 then {
+        let bold = int.band(bytes.read_u16_le(t.grid, o + cell.OFF_ATTRS), cell.ATTR_BOLD) != 0
+        let _ = glyph(r, cp, bold)
+        for mark in marks(t, x, y) {
+          let _ = glyph(r, mark, bold)
+        }
+      }
+    }
+  }
+  for cp in preedit {
+    let _ = glyph(r, cp, false)
+  }
+
+  // Room for the worst case: per cell a background, a glyph and two lines,
+  // plus the cursor and the composition.
+  let quads = t.rows * t.cols * 4 + 2 + list.len(preedit) * 3 + map.len(t.graphemes) * 8
+  if quads * 6 > r.capacity then {
+    r.capacity = quads * 6
+    r.vtx = gpu.create_buffer(r.device, r.capacity * VERTEX_FLOATS * 4, int.bor(gpu.VERTEX, gpu.COPY_DST))
+  }
+
+  // Pass 2: the quads.
+  let sx = 2.0 / int.to_float(width)
+  let sy = 2.0 / int.to_float(height)
+  var n = 0
+  gpu.begin_data()
+  for y in 0..<t.rows {
+    let top = r.pad_y + y * r.cell_h
+    // Backgrounds, a quad per run of one colour.
+    var x = 0
+    while x < t.cols {
+      let (fg, bg) = colors(r, t, x, y)
+      var end = x + 1
+      while end < t.cols and colors(r, t, end, y).1 == bg {
+        end = end + 1
+      }
+      if bg != DEFAULT_BG then {
+        rect(r, r.pad_x + x * r.cell_w, top, r.pad_x + end * r.cell_w, top + r.cell_h, bg, 1.0, sx, sy)
+        n = n + 1
+      }
+      x = end
+    }
+    // Glyphs and lines.
+    for cx in 0..<t.cols {
+      let o = terminal.cell_off(t, cx, y)
+      let cp = bytes.read_u32_le(t.grid, o + cell.OFF_CP)
+      let attrs = bytes.read_u16_le(t.grid, o + cell.OFF_ATTRS)
+      let (fg, bg) = colors(r, t, cx, y)
+      let alpha = if int.band(attrs, cell.ATTR_FAINT) != 0 then 0.6 else 1.0
+      let left = r.pad_x + cx * r.cell_w
+      if cp > 32 and int.band(attrs, cell.ATTR_HIDDEN) == 0 then {
+        let slot = glyph(r, cp, int.band(attrs, cell.ATTR_BOLD) != 0)
+        if slot >= 0 then {
+          glyph_quad(r, slot, left, top + r.baseline, fg, alpha, sx, sy)
+          n = n + 1
+        }
+        // Combining marks have no advance of their own: fonts draw them
+        // back from the pen, which stands after the base character.
+        let pen = left + r.cell_w * int.max(1, bytes.read_u8(t.grid, o + cell.OFF_WIDTH))
+        for mark in marks(t, cx, y) {
+          let ms = glyph(r, mark, int.band(attrs, cell.ATTR_BOLD) != 0)
+          if ms >= 0 then {
+            glyph_quad(r, ms, pen, top + r.baseline, fg, alpha, sx, sy)
+            n = n + 1
+          }
+        }
+      }
+      let w = if bytes.read_u8(t.grid, o + cell.OFF_WIDTH) == 2 then 2 * r.cell_w else r.cell_w
+      if int.band(attrs, cell.ATTR_UNDERLINE + cell.ATTR_DOUBLE_UNDERLINE) != 0 then {
+        let uy = top + r.baseline + r.line_w
+        rect(r, left, uy, left + w, uy + r.line_w, fg, alpha, sx, sy)
+        n = n + 1
+      }
+      if int.band(attrs, cell.ATTR_STRIKE) != 0 then {
+        let sy0 = top + r.baseline - r.size_px * 3 / 10
+        rect(r, left, sy0, left + w, sy0 + r.line_w, fg, alpha, sx, sy)
+        n = n + 1
+      }
+    }
+  }
+  // The composition, over the cursor, underlined.
+  let cursor_x = r.pad_x + t.x * r.cell_w
+  let cursor_top = r.pad_y + t.y * r.cell_h
+  if list.len(preedit) > 0 then {
+    var px = cursor_x
+    for cp in preedit {
+      let w = r.cell_w * int.max(1, cell_width.of(cp))
+      rect(r, px, cursor_top, px + w, cursor_top + r.cell_h, DEFAULT_BG, 1.0, sx, sy)
+      let slot = glyph(r, cp, false)
+      if slot >= 0 then glyph_quad(r, slot, px, cursor_top + r.baseline, DEFAULT_FG, 1.0, sx, sy)
+      let uy = cursor_top + r.baseline + r.line_w
+      rect(r, px, uy, px + w, uy + r.line_w, DEFAULT_FG, 1.0, sx, sy)
+      n = n + 3
+      px = px + w
+    }
+  } else if t.cursor_visible then {
+    let shape = t.cursor_shape
+    if shape == 1 or shape == 2 then rect(r, cursor_x, cursor_top, cursor_x + r.cell_w, cursor_top + r.cell_h, CURSOR, 0.5, sx, sy)
+    else if shape == 3 or shape == 4 then rect(r, cursor_x, cursor_top + r.cell_h - 2 * r.line_w, cursor_x + r.cell_w, cursor_top + r.cell_h, CURSOR, 1.0, sx, sy)
+    else rect(r, cursor_x, cursor_top, cursor_x + int.max(2, r.line_w * 2), cursor_top + r.cell_h, CURSOR, 1.0, sx, sy)
+    n = n + 1
+  }
+  if n > 0 then gpu.flush_to_buffer(r.device, r.vtx)
+  r.count = n * 6
+
+  let (br, bgg, bb) = rgb_floats(DEFAULT_BG)
+  let encoder = gpu.begin_encoder(r.device)
+  let pass = gpu.begin_render_pass(encoder, br, bgg, bb, 1.0)
+  if r.count > 0 then {
+    gpu.set_pipeline(pass, r.layer.pipeline)
+    gpu.set_bind_group(pass, 0, r.layer.bind_group)
+    gpu.set_vertex_buffer(pass, 0, r.vtx)
+    gpu.draw(pass, r.count)
+  }
+  gpu.end_pass(pass)
+  gpu.finish_and_submit(r.device, encoder)
+}
+
+/// The combining marks on cell (x, y) worth drawing (joiners and variation
+/// selectors only steer how the base is shown).
+fn marks(t: terminal.Terminal, x: Int, y: Int) -> List[Int] = {
+  let o = terminal.cell_off(t, x, y)
+  if int.band(bytes.read_u8(t.grid, o + cell.OFF_FLAGS), cell.FLAG_GRAPHEME) == 0 then []
+  else {
+    let extras = map.get_or(t.graphemes, terminal.cell_index(t, x, y), "")
+    text.code_points(extras) |> list.filter((cp) => cp != 0x200D and (cp < 0xFE00 or cp > 0xFE0F))
+  }
+}
+
+/// Foreground and background of cell (x, y) as 0xRRGGBB, inverse applied.
+fn colors(r: Renderer, t: terminal.Terminal, x: Int, y: Int) -> (Int, Int) = {
+  let o = terminal.cell_off(t, x, y)
+  let fg = resolve(r, bytes.read_u32_le(t.grid, o + cell.OFF_FG), DEFAULT_FG)
+  let bg = resolve(r, bytes.read_u32_le(t.grid, o + cell.OFF_BG), DEFAULT_BG)
+  let attrs = bytes.read_u16_le(t.grid, o + cell.OFF_ATTRS)
+  let (f, b) = if int.band(attrs, cell.ATTR_INVERSE) != 0 then (bg, fg) else (fg, bg)
+  if int.band(attrs, cell.ATTR_HIDDEN) != 0 then (b, b) else (f, b)
+}
+
+fn rgb_floats(rgb: Int) -> (Float, Float, Float) = (
+  int.to_float(int.band(int.bshr(rgb, 16), 0xFF)) / 255.0,
+  int.to_float(int.band(int.bshr(rgb, 8), 0xFF)) / 255.0,
+  int.to_float(int.band(rgb, 0xFF)) / 255.0,
+)
+

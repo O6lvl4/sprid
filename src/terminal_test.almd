@@ -188,3 +188,36 @@ test "scrollback memory stays inside its budget under endless output" {
   assert(t.sb.evicted_lines > 0)
   assert_eq(scrollback.line_count(t.sb) + t.sb.evicted_lines, 20000 - 23)
 }
+
+test "resizing wider keeps the content and the cursor" {
+  var t = run(5, 3, "ab\r\ncd")
+  terminal.resize(t, 8, 3)
+  assert_eq(terminal.screen_text(t), "ab\ncd")
+  assert_eq((t.cols, t.x, t.y), (8, 2, 1))
+  terminal.feed_string(t, "efghij")
+  assert_eq(terminal.screen_text(t), "ab\ncdefghij")
+}
+
+test "resizing shorter moves the lines above the cursor to scrollback" {
+  var t = run(10, 4, "1\r\n2\r\n3\r\n4")
+  terminal.resize(t, 10, 2)
+  assert_eq(terminal.screen_text(t), "3\n4")
+  assert_eq(scrollback.texts(t.sb), ["1", "2"])
+  assert_eq(t.y, 1)
+}
+
+test "resizing narrower cuts a wide char at the edge" {
+  var t = run(6, 2, "ab日本")
+  terminal.resize(t, 5, 2)
+  assert_eq(terminal.screen_text(t), "ab日")
+  terminal.resize(t, 3, 2)
+  assert_eq(terminal.screen_text(t), "ab")
+}
+
+test "resizing after the ring has turned keeps row order" {
+  var t = run(4, 2, "1\r\n2\r\n3")
+  terminal.resize(t, 4, 3)
+  assert_eq(terminal.screen_text(t), "2\n3")
+  terminal.feed_string(t, "\r\n4\r\n5")
+  assert_eq(terminal.screen_text(t), "3\n4\n5")
+}

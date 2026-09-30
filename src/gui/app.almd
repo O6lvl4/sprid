@@ -1,0 +1,165 @@
+// sprid in a window: a shell on a PTY, drawn with snaidhm.
+//
+// One loop on the main thread (macOS wants its event loop there): pump the
+// window's events, turn keys into bytes for the PTY, read what the program
+// wrote, and draw when something changed. Reading the PTY with a short
+// timeout is what paces the loop.
+
+import bytes
+import env
+import process
+import snaidhm.native.window as window
+import snaidhm.native.frame as frame
+import snaidhm.text as text
+import self.gui.fonts
+import self.gui.render
+import self.keys
+import self.pty
+import self.sys
+import self.terminal
+
+/// Font size in points, as Ghostty counts them: logical pixels.
+let FONT_SIZE = 14.5
+let PAD_X = 12.0
+let PAD_Y = 8.0
+let CELL_HEIGHT = 1.15
+
+/// Longest a frame waits for the PTY when nothing is pending, ms.
+let IDLE_WAIT = 8
+/// Least time between two frames, ms: the display's rate while the program
+/// answers keys, a lower one while its output streams in. Taking a frame
+/// waits for the display (vsync, ~16 ms), time the parser could have used.
+let FRAME_MS = 16
+let STREAM_FRAME_MS = 50
+/// Longest spent draining the PTY before the window gets a turn, ms.
+let DRAIN_MS = 12
+let STREAM_DRAIN_MS = 40
+/// Longest a synchronized update (mode 2026) may hold the screen, ms.
+let SYNC_LIMIT = 150
+
+effect fn run(capture: Option[String]) -> Unit = {
+  guard window.open("sprid", 960, 620) else println("sprid: could not open a window")
+  window.set_ime(true)
+  let faces = fonts.find()!
+  guard list.len(faces.regular) > 0 else println("sprid: no font found")
+  let scale = window.scale_factor()
+  let device = 1
+  var r = render.new(device, faces, float.to_int(float.round(FONT_SIZE * scale)),
+    float.to_int(PAD_X * scale), float.to_int(PAD_Y * scale), CELL_HEIGHT)
+  var width = window.width()
+  var height = window.height()
+  let (cols, rows) = render.grid_size(r, width, height)
+  var t = terminal.new(cols, rows)
+  let shell = env.get("SHELL") ?? "/bin/zsh"
+  let command = match capture { some(_) => env.get("SPRID_CAPTURE_CMD") ?? "exec ${shell} -l", none => "exec ${shell} -l" }
+  let fd = pty.spawn(command, cols, rows)
+  guard fd >= 0 else println("sprid: could not start ${shell}")
+
+  var preedit: List[Int] = []
+  var dirty = true
+  var alive = true
+  var last_frame = 0
+  var sync_since = -1
+  let debug = env.get("SPRID_DEBUG") != none
+  var frames = 0
+  var draw_ms = 0
+  var streaming = false
+  var pump_ms = 0
+  var feed_ms = 0
+  var reads = 0
+  var read_bytes = 0
+  while alive {
+    let p0 = sys.now_ms()
+    alive = window.pump()
+    pump_ms = pump_ms + sys.now_ms() - p0
+    if window.resized() then {
+      width = window.width()
+      height = window.height()
+      let (c, rw) = render.grid_size(r, width, height)
+      terminal.resize(t, c, rw)
+      let _ = pty.resize(fd, c, rw)
+      dirty = true
+    }
+
+    var kind = window.next_event()
+    while kind != window.NONE {
+      if kind == window.TEXT or kind == window.KEY then {
+        let mods = window.event_mods()
+        let code = window.event_code()
+        let paste = kind == window.TEXT and mods == window.MOD_SUPER and (code == 0x76 or code == 0x56)
+        let out = if paste then keys.paste(clipboard()!, t.bracketed_paste)
+                  else keys.encode(kind, code, mods, t.app_cursor)
+        if out != "" then {
+          let _ = pty.write(fd, out)
+        }
+      } else if kind == window.COMPOSE then {
+        preedit = text.code_points(window.event_text())
+        dirty = true
+      }
+      kind = window.next_event()
+    }
+
+    // Take everything the program has written, up to DRAIN_MS of work, so a
+    // burst becomes one frame instead of one per read.
+    let drain_until = sys.now_ms() + (if streaming then STREAM_DRAIN_MS else DRAIN_MS)
+    var data = pty.read(fd, if dirty then 0 else IDLE_WAIT)
+    // Still streaming if the last drain stopped at its deadline, not at the
+    // end of the output.
+    streaming = false
+    while bytes.len(data) > 0 {
+      reads = reads + 1
+      read_bytes = read_bytes + bytes.len(data)
+      let f0 = sys.now_ms()
+      terminal.feed(t, data)
+      feed_ms = feed_ms + sys.now_ms() - f0
+      dirty = true
+      // Wait a moment for more: a writer refills the PTY 1 KB at a time,
+      // and giving up in the gap costs a whole turn of the loop.
+      data = if sys.now_ms() < drain_until then pty.read(fd, 1) else {
+        streaming = true
+        bytes.new(0)
+      }
+    }
+    let replies = terminal.take_replies(t)
+    if replies != "" then {
+      let _ = pty.write(fd, replies)
+    }
+    if pty.eof() then alive = false
+    let clock = sys.now_ms()
+
+    // Mode 2026: the program is mid-update; show it when it says it is done,
+    // or after SYNC_LIMIT if it never does.
+    if t.sync_output then {
+      if sync_since < 0 then sync_since = clock
+    } else sync_since = -1
+    let held = sync_since >= 0 and clock - sync_since < SYNC_LIMIT
+    if dirty and not held and clock - last_frame >= (if streaming then STREAM_FRAME_MS else FRAME_MS) then {
+      let t0 = sys.now_ms()
+      render.draw(r, t, preedit, width, height)
+      frames = frames + 1
+      draw_ms = draw_ms + sys.now_ms() - t0
+      if debug and frames % 60 == 0 then eprintln("sprid: ${int.to_string(frames)} frames, ${int.to_string(draw_ms / frames)} ms per draw")
+      window.set_ime_area(
+        int.to_float(r.pad_x + t.x * r.cell_w) / scale, int.to_float(r.pad_y + t.y * r.cell_h) / scale,
+        int.to_float(r.cell_w) / scale, int.to_float(r.cell_h) / scale)
+      last_frame = clock
+      dirty = false
+    }
+
+    match capture {
+      some(path) => if pty.eof() or clock > (int.parse(env.get("SPRID_CAPTURE_MS") ?? "3000") ?? 3000) then {
+        if debug then eprintln("sprid: ${int.to_string(frames)} frames, draw ${int.to_string(draw_ms)} ms, pump ${int.to_string(pump_ms)} ms, feed ${int.to_string(feed_ms)} ms, ${int.to_string(reads)} reads averaging ${int.to_string(read_bytes / int.max(reads, 1))} bytes")
+        render.draw(r, t, preedit, width, height)
+        println(if frame.save_png(path) then "saved ${path}" else "capture failed")
+        alive = false
+      },
+      none => (),
+    }
+  }
+}
+
+effect fn clipboard() -> String =
+  match process.exec("pbpaste", []) {
+    ok(s) => s,
+    err(_) => "",
+  }

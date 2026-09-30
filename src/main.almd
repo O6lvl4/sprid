@@ -1,13 +1,15 @@
-// sprid, headless.
+// sprid.
 //
+//   sprid                   open a window running your shell
+//   sprid capture <png>     draw one screen of SPRID_CAPTURE_CMD, save it
 //   sprid run <command>     run <command> on a PTY, then print the screen
 //   sprid bench [MB]        stream MB of Claude-Code-like output through a
 //                           terminal and report memory as it goes
 //
-// The window comes later; everything here drives the same terminal core.
 
 import bytes
 import process
+import self.gui.app
 import self.pty
 import self.scrollback
 import self.sys
@@ -19,9 +21,11 @@ let ROWS = 30
 effect fn main() -> Unit = {
   let args = process.args()
   match list.get(args, 1) ?? "" {
+    "" => app.run(none)!,
+    "capture" => app.run(list.get(args, 2))!,
     "run" => run(list.join(list.drop(args, 2), " "))!,
     "bench" => bench(int.parse(list.get(args, 2) ?? "512") ?? 512)!,
-    _ => println("usage: sprid run <command> | sprid bench [MB]"),
+    _ => println("usage: sprid | sprid capture <png> | sprid run <command> | sprid bench [MB]"),
   }
 }
 

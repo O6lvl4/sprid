@@ -1,0 +1,66 @@
+// The faces sprid draws with: a monospace face for the grid, and faces to
+// fall back on for what it lacks. `SPRID_FONT` (a path) goes first when set.
+
+import env
+import fs
+import snaidhm.sfnt as sfnt
+
+type Faces = { regular: List[sfnt.Font], bold: List[sfnt.Font] }
+
+/// Monospace faces, in order of preference, each with its bold.
+let MONO = [
+  ("~/Library/Fonts/UDEVGothic35NFLG-Regular.ttf", "~/Library/Fonts/UDEVGothic35NFLG-Bold.ttf"),
+  ("/System/Library/Fonts/SFNSMono.ttf", ""),
+  ("/System/Library/Fonts/Menlo.ttc", ""),
+  ("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf"),
+  ("/usr/share/fonts/TTF/DejaVuSansMono.ttf", "/usr/share/fonts/TTF/DejaVuSansMono-Bold.ttf"),
+]
+
+/// Where the grid face has no glyph: Japanese (with the rest of CJK), then
+/// symbols — Menlo has the dingbats Claude Code draws (✻ ✔ ✘), STIX Two
+/// Math the media symbols (⏺), Apple Symbols most of the rest.
+let FALLBACK = [
+  "/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc",
+  "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+  "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+  "/System/Library/Fonts/Menlo.ttc",
+  "/System/Library/Fonts/Supplemental/STIXTwoMath.otf",
+  "/System/Library/Fonts/Apple Symbols.ttf",
+  "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+]
+
+effect fn expand(path: String) -> String =
+  if string.starts_with(path, "~/") then (env.get("HOME") ?? "") + string.drop(path, 1) else path
+
+effect fn load(path: String) -> Option[sfnt.Font] =
+  if path == "" then none
+  else match fs.read_bytes_raw(expand(path)!) {
+    ok(data) => sfnt.load(data, 0)?,
+    err(_) => none,
+  }
+
+/// The first monospace face (and its bold) this system has.
+effect fn mono(i: Int) -> (Option[sfnt.Font], Option[sfnt.Font]) =
+  if i >= list.len(MONO) then (none, none)
+  else {
+    let (regular, bold) = MONO[i]
+    match load(regular)! {
+      some(f) => (some(f), load(bold)!),
+      none => mono(i + 1)!,
+    }
+  }
+
+effect fn find() -> Faces = {
+  let custom = match env.get("SPRID_FONT") { some(p) => load(p)!, none => none }
+  let (regular, bold) = match custom { some(f) => (some(f), none), none => mono(0)! }
+  var fallback: List[sfnt.Font] = []
+  for path in FALLBACK {
+    match load(path)! {
+      some(f) => list.push(fallback, f),
+      none => (),
+    }
+  }
+  let first: List[sfnt.Font] = match regular { some(f) => [f], none => [] }
+  let first_bold: List[sfnt.Font] = match bold { some(f) => [f], none => first }
+  Faces { regular: first + fallback, bold: first_bold + fallback }
+}
