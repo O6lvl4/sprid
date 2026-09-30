@@ -32,6 +32,8 @@ See `src/scrollback.almd`.
 
 ## Install
 
+### macOS
+
 Download `Sprid-<version>-arm64.zip` from
 [Releases](https://github.com/O6lvl4/sprid/releases), unzip it and move
 `Sprid.app` to `/Applications`. It needs Apple Silicon and macOS 13 or later.
@@ -46,18 +48,25 @@ xattr -dr com.apple.quarantine /Applications/Sprid.app
 
 ### Linux
 
-No release build yet; build it from source (see Requirements). It runs on
-Wayland — typed into, Japanese composed with fcitx5 + Mozc, and pasted into
-under Hyprland — and on X11 (Ubuntu 24.04 under Xvfb with Mesa's lavapipe;
-`scripts/linux/` holds that setup: `docker build -t sprid-linux
-scripts/linux`, then `scripts/linux/check.sh`). The Mac's Cmd shortcuts are
-Ctrl+Shift's there — Ctrl+Shift+C / V to copy and paste, +T / W / N for tabs
-and windows, +F to find, +Plus / Minus / 0 for the font size, +Q to close the
-window — with Ctrl+Page Up / Down for tabs and F11 for full screen. For the clipboard it uses wl-copy / wl-paste under
-Wayland, else xclip or xsel; for symbols such as ⏺, Noto Sans Symbols 2
-(`fonts-noto-core` on Debian and Ubuntu). Not there yet: colour emoji, and
-the question before closing a tab or window with a program running (it
-closes without asking).
+Download `sprid-<version>-linux-<arch>.tar.gz` (x86_64 or aarch64) from
+Releases, unpack it and run `./install.sh` in it: the binary goes to
+`~/.local/bin`, its desktop entry and icon to `~/.local/share`. It needs
+glibc 2.35 or later (Ubuntu 22.04, Debian 12 and newer).
+
+- **Where it runs**: Wayland — typed into, Japanese composed with fcitx5 +
+  Mozc, and pasted into under Hyprland — and X11.
+- **Keys**: the Mac's Cmd shortcuts are Ctrl+Shift's — Ctrl+Shift+C / V to
+  copy and paste, +T / W / N for tabs and windows, +F to find, +Plus / Minus
+  / 0 for the font size, +Q to close the window — with Ctrl+Page Up / Down
+  for tabs and F11 for full screen.
+- **What it uses**: wl-copy / wl-paste under Wayland, else xclip or xsel, for
+  the clipboard; Noto Sans Symbols 2 (`fonts-noto-core` on Debian and Ubuntu)
+  for symbols such as ⏺.
+- **Not there yet**: colour emoji, and the question before closing a tab or
+  window with a program running (it closes without asking).
+- **Checking it**: `docker build -t sprid-linux scripts/linux`, then
+  `scripts/linux/check.sh` builds, tests and draws a screen under Xvfb with
+  Mesa's lavapipe.
 
 ## Status: M3 — a window you can use
 
