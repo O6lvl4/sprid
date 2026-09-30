@@ -5,14 +5,20 @@ font, grid (100 x 30) and scrollback budget (10 MB), running the same script.
 Timing comes from the script itself: it stamps a marker file when its work
 is done, so neither terminal's way of quitting (Ghostty keeps its hidden
 quick-terminal window, and so its process, after the last window closes)
-enters the numbers. After each run the terminal is terminated.
+enters the numbers. A run is over once the marker is stamped AND the
+terminal's window is on screen (scripts/window_shown.c): a terminal may start
+its program before its window, and is not ready until it shows. After each
+run the terminal is terminated.
 
 Measured, median of RUNS:
 
-  startup    launch until a script that only stamps the marker has run
-  cat        launch until `cat` of a Claude-Code-like file is done, minus
-             startup: the time the terminal took to take all of it in
-  peak       the largest phys_footprint seen while `cat` runs
+  startup    launch until the window shows and a script that only stamps the
+             marker has run
+  cat        launch until `cat` of a Claude-Code-like file is done (and the
+             window shows), minus startup: what taking all of it in added
+  peak       the largest phys_footprint the process has had by the time
+             `cat` is done, as the kernel records it (phys_footprint_peak):
+             sampling would miss a peak shorter than its interval
   idle cpu   CPU time used from 10 s to 30 s with nothing running, as a %
   idle mem   phys_footprint at 30 s
 
@@ -34,6 +40,13 @@ FONT = "UDEV Gothic 35NFLG"
 SIZE = "14.5"
 WORK = tempfile.mkdtemp(prefix="sprid-bench-")
 MARKER = os.path.join(WORK, "done")
+SHOWN = os.path.join(WORK, "window_shown")
+
+
+def build_helper() -> None:
+    src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "window_shown.c")
+    subprocess.run(["clang", "-O2", "-o", SHOWN, src, "-framework", "CoreGraphics",
+                    "-framework", "CoreFoundation"], check=True)
 
 
 def script(name: str, body: str) -> str:
@@ -78,13 +91,17 @@ def pid_of(exe: str, timeout: float = 15.0) -> int:
     raise RuntimeError(f"{exe} did not start")
 
 
-def footprint_mb(pid: int) -> float:
+def footprint_mb(pid: int, field: str = r"Footprint:") -> float:
     out = subprocess.run(["footprint", str(pid)], capture_output=True, text=True).stdout
-    m = re.search(r"Footprint:\s+([\d.]+)\s+(KB|MB|GB)", out)
+    m = re.search(field + r"\s+([\d.]+)\s+(KB|MB|GB)", out)
     if not m:
         return 0.0
     v = float(m.group(1))
     return {"KB": v / 1024, "MB": v, "GB": v * 1024}[m.group(2)]
+
+
+def peak_mb(pid: int) -> float:
+    return footprint_mb(pid, r"phys_footprint_peak:")
 
 
 def cpu_seconds(pid: int) -> float:
@@ -113,27 +130,28 @@ def stop(pid: int) -> None:
 
 def run(app: str, command: str, watch_memory: bool = False, timeout: float = 300.0) -> tuple[float, float, int]:
     """Seconds from launch until the script stamps the marker, the peak
-    footprint (MB) if watched, and the terminal's pid (still running)."""
+    footprint (MB) by then if watched, and the terminal's pid (still
+    running)."""
     if os.path.exists(MARKER):
         os.remove(MARKER)
     t0 = time.time()
     subprocess.Popen(["open", "-n", "-a", app, "--args"] + args_for(app, command))
     pid = pid_of(exe_of(app))
-    peak = 0.0
-    next_sample = 0.0
+    shown = subprocess.Popen([SHOWN, str(pid)], stdout=subprocess.PIPE, text=True)
     end = t0 + timeout
     while not os.path.exists(MARKER) and time.time() < end:
-        if watch_memory and time.time() >= next_sample:
-            peak = max(peak, footprint_mb(pid))
-            next_sample = time.time() + 0.25
         time.sleep(0.005)
     done = os.stat(MARKER).st_mtime if os.path.exists(MARKER) else float("nan")
-    return done - t0, peak, pid
+    out, _ = shown.communicate(timeout=max(1.0, end - time.time()))
+    ready = max(done, float(out) if out.strip() else float("nan"))
+    return ready - t0, peak_mb(pid) if watch_memory else 0.0, pid
 
 
 def measure(app: str, data: str) -> dict:
-    stamp = script("startup.sh", f"touch {MARKER}")
-    cat = script("cat.sh", f"cat '{data}'\ntouch {MARKER}")
+    # Every script stays running after the marker: the terminal must still
+    # be there to show its window, and to have its peak read.
+    stamp = script("startup.sh", f"touch {MARKER}\nexec sleep 60")
+    cat = script("cat.sh", f"cat '{data}'\ntouch {MARKER}\nexec sleep 60")
     idle_sh = script("idle.sh", f"touch {MARKER}\nexec sleep 60")
 
     startups = []
@@ -173,6 +191,7 @@ def measure(app: str, data: str) -> dict:
 
 def main() -> None:
     sprid, ghostty = sys.argv[1], sys.argv[2]
+    build_helper()
     data = sys.argv[3] if len(sys.argv) > 3 else "/tmp/sprid-bench.txt"
     results = {}
     for name, app in (("sprid", sprid), ("Ghostty", ghostty)):

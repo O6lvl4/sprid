@@ -106,3 +106,28 @@ pub fn reap() {
     let mut status = 0;
     while unsafe { libc::waitpid(-1, &mut status, libc::WNOHANG) } > 0 {}
 }
+
+/// The working directory of the program in the foreground on `fd` — the
+/// shell, or what it runs — as the system knows it; empty when unknown. What
+/// a new tab starts in, whether or not the shell reports its directory.
+pub fn cwd(fd: i64) -> String {
+    #[cfg(target_os = "macos")]
+    unsafe {
+        let pgid = libc::tcgetpgrp(fd as i32);
+        if pgid <= 0 { return String::new(); }
+        let mut info: libc::proc_vnodepathinfo = std::mem::zeroed();
+        let size = std::mem::size_of::<libc::proc_vnodepathinfo>() as i32;
+        let n = libc::proc_pidinfo(pgid, libc::PROC_PIDVNODEPATHINFO, 0, &mut info as *mut _ as *mut libc::c_void, size);
+        if n != size { return String::new(); }
+        let path = &info.pvi_cdir.vip_path;
+        // libc spells the 1024-byte path as 32 rows of 32.
+        let bytes: Vec<u8> = path.iter().flatten().take_while(|&&c| c != 0).map(|&c| c as u8).collect();
+        String::from_utf8(bytes).unwrap_or_default()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let pgid = unsafe { libc::tcgetpgrp(fd as i32) };
+        if pgid <= 0 { return String::new(); }
+        std::fs::read_link(format!("/proc/{pgid}/cwd")).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()
+    }
+}

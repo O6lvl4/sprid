@@ -93,7 +93,7 @@ fn palette256() -> List[Int] = {
 /// A renderer drawing `faces` at `size_px` pixels per em, the grid inset by
 /// `pad_x` x `pad_y` pixels.
 fn new(device: Int, faces: fonts.Faces, size_px: Int, pad_x: Int, pad_y: Int, cell_height: Float) -> Renderer = {
-  let layer = text.new_layer(device, [faces.regular])
+  let layer = text.new_buffer_layer(device, [faces.regular])
   let size = int.to_float(size_px)
   let cell_w = int.max(1, float.to_int(float.round(text.advance_px(layer, 0, sfnt.glyph_id(faces.regular, 0x4D), size))))
   let ascent = text.ascent(layer, size)
@@ -363,7 +363,7 @@ fn draw(mut r: Renderer, t: terminal.Terminal, back: Int, sel: Option[view.Selec
     // otherwise.
     if r.vtx != 0 then gpu.destroy_buffer(r.device, r.vtx)
     r.capacity = int.max(quads * 6, r.capacity * 3 / 2)
-    r.vtx = gpu.create_buffer(r.device, r.capacity * VERTEX_FLOATS * 4, int.bor(gpu.VERTEX, gpu.COPY_DST))
+    r.vtx = gpu.create_stream_buffer(r.device, r.capacity * VERTEX_FLOATS * 4, int.bor(gpu.VERTEX, gpu.COPY_DST))
   }
 
   // Pass 2: the quads.

@@ -31,3 +31,8 @@ fn close(fd: Int) -> Unit = _
 /// Collect exited children.
 @extern(rust, "crate::pty", "reap")
 fn reap() -> Unit = _
+
+/// The working directory of the foreground program on `fd`; empty when
+/// unknown.
+@extern(rust, "crate::pty", "cwd")
+fn cwd(fd: Int) -> String = _

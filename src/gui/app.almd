@@ -81,18 +81,11 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
   let capture = opts.capture
   // Sized to a grid, the window is measured before it opens, for a Retina
   // display (the scale is only known once it is open).
-  let (win_w, win_h) = if opts.cols > 0 and opts.rows > 0 then {
-    let (cw, ch) = render.cell_size(faces, float.to_int(float.round(FONT_SIZE * 2.0)), CELL_HEIGHT)
-    ((opts.cols * cw) / 2 + 2 * float.to_int(PAD_X) + 1, (opts.rows * ch) / 2 + 2 * float.to_int(PAD_Y) + 1)
-  } else (960, 620)
-  guard window.open("sprid", win_w, win_h) else println("sprid: could not open a window")
-  window.set_ime(true)
-  let scale = window.scale_factor()
-  let device = 1
-  var r = render.new(device, faces, float.to_int(float.round(FONT_SIZE * scale)),
-    float.to_int(PAD_X * scale), float.to_int(PAD_Y * scale), CELL_HEIGHT)
-  var width = window.width()
-  var height = window.height()
+  let (cw, ch) = render.cell_size(faces, float.to_int(float.round(FONT_SIZE * 2.0)), CELL_HEIGHT)
+  let (pad_x, pad_y) = (float.to_int(PAD_X * 2.0), float.to_int(PAD_Y * 2.0))
+  let (win_w, win_h) = if opts.cols > 0 and opts.rows > 0 then
+    ((opts.cols * cw) / 2 + pad_x / 2 + 1, (opts.rows * ch) / 2 + pad_y / 2 + 1)
+  else (960, 620)
   // Started from Finder there is no $SHELL and the directory is /: take the
   // shell from the password database and start at home, as Ghostty does.
   let shell = match env.get("SHELL") {
@@ -105,14 +98,26 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
     none => match capture { some(_) => env.get("SPRID_CAPTURE_CMD") ?? login, none => login },
   }
   let start_dir = if sys.cwd() == "/" or sys.cwd() == "" then env.get("HOME") ?? "" else ""
+  // The first program starts before the window opens and the GPU is set up —
+  // a login shell's startup files run meanwhile — on the grid the window is
+  // expected to hold; it is told the actual one if that differs.
+  let expected = (int.max(1, (win_w * 2 - 2 * pad_x) / cw), int.max(1, (win_h * 2 - 2 * pad_y) / ch))
+  let first_fd = pty.spawn(first, start_dir, expected.0, expected.1)
+  guard first_fd >= 0 else println("sprid: could not start ${shell}")
 
-  var tabs: List[Tab] = []
+  guard window.open("sprid", win_w, win_h) else println("sprid: could not open a window")
+  window.set_ime(true)
+  let scale = window.scale_factor()
+  let device = 1
+  var r = render.new(device, faces, float.to_int(float.round(FONT_SIZE * scale)),
+    float.to_int(PAD_X * scale), float.to_int(PAD_Y * scale), CELL_HEIGHT)
+  var width = window.width()
+  var height = window.height()
+
+  let (cols, rows) = render.grid_size(r, width, height, 1)
+  if (cols, rows) != expected then { let _ = pty.resize(first_fd, cols, rows) } else ()
+  var tabs: List[Tab] = [Tab { t: terminal.new(cols, rows), fd: first_fd, back: 0, sel: none, sync_since: -1 }]
   var active = 0
-  match open_tab(r, width, height, 1, first, start_dir) {
-    some(tb) => list.push(tabs, tb),
-    none => (),
-  }
-  guard list.len(tabs) > 0 else println("sprid: could not start ${shell}")
   // For captures of the tab bar: more tabs running the login shell.
   let extra = match capture { some(_) => int.parse(env.get("SPRID_CAPTURE_TABS") ?? "1") ?? 1, none => 1 }
   for _ in 1..<extra {
@@ -173,7 +178,7 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
       }
       match act {
         NewTab => {
-          let cwd = cwd_of(tabs, active)
+          let cwd = cwd_of(tabs, active, env.get("HOME") ?? "")
           match open_tab(r, width, height, list.len(tabs) + 1, login, cwd) {
             some(tb) => {
               list.push(tabs, tb)
@@ -320,9 +325,14 @@ fn fd_of(tabs: List[Tab], i: Int) -> Int = match list.get(tabs, i) {
   none => -1,
 }
 
-fn cwd_of(tabs: List[Tab], i: Int) -> String = match list.get(tabs, i) {
-  some(tb) => tb.t.cwd,
-  none => "",
+/// Where a tab opened from tab `i` starts: where the program in front there
+/// is, else where its shell last said it was, else `home`.
+fn cwd_of(tabs: List[Tab], i: Int, home: String) -> String = match list.get(tabs, i) {
+  some(tb) => {
+    let now = pty.cwd(tb.fd)
+    if now != "" then now else if tb.t.cwd != "" then tb.t.cwd else home
+  },
+  none => home,
 }
 
 /// A new tab running `command` in `cwd`, sized for `count` tabs.
@@ -490,8 +500,15 @@ effect fn handle(mut cur: Tab, mut ui: Ui, kind: Int, r: render.Renderer, scale:
     }
   } else if kind == window.MOUSE_MOVE and ui.dragging then {
     let (col, row) = cell_at(r, t, scale, tabs)
-    cur.sel = some(view.Selection { anchor_line: ui.anchor_line, anchor_col: ui.anchor_col, head_line: view.top_line(t, cur.back) + row, head_col: col })
-    ui.dirty = true
+    let line = view.top_line(t, cur.back) + row
+    // A click that wobbles within its cell selects nothing: a selection
+    // starts once the pointer reaches another cell.
+    let sel = if line == ui.anchor_line and col == ui.anchor_col then none
+      else some(view.Selection { anchor_line: ui.anchor_line, anchor_col: ui.anchor_col, head_line: line, head_col: col })
+    if sel != cur.sel then {
+      cur.sel = sel
+      ui.dirty = true
+    } else ()
     Stay
   } else if kind == window.MOUSE_UP then {
     ui.dragging = false
