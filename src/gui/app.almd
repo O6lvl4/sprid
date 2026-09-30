@@ -17,6 +17,7 @@ import process
 import snaidhm.native.window as window
 import snaidhm.native.frame as frame
 import snaidhm.text as text
+import snaidhm.web.gpu as gpu
 import self.gui.fonts
 import self.gui.render
 import self.keys
@@ -31,10 +32,11 @@ let PAD_X = 12.0
 let PAD_Y = 8.0
 let CELL_HEIGHT = 1.15
 
-/// Least time between two frames, ms: the display's rate while the program
-/// answers keys, a lower one while its output streams in. Taking a frame
-/// waits for the display (vsync, ~16 ms), time the parser could have used.
-let FRAME_MS = 16
+/// Least time between two frames, ms: short while the program answers keys —
+/// a shell echoes a key and then redraws the line in colour a few ms later,
+/// and the second must not wait a whole refresh — and longer while its output
+/// streams in, time the parser can use.
+let FRAME_MS = 8
 let STREAM_FRAME_MS = 50
 /// Longest spent draining the active tab's PTY before the window gets a
 /// turn, ms; background tabs get the short budget.
@@ -123,6 +125,9 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
 
   guard window.open("sprid", win_w, win_h) else println("sprid: could not open a window")
   window.set_ime(true)
+  // A key's echo shows as soon as it is drawn, not a display refresh or two
+  // later.
+  gpu.set_low_latency(true)
   let scale = window.scale_factor()
   let device = 1
   var r = render.new(device, faces, float.to_int(float.round(FONT_SIZE * scale)),
