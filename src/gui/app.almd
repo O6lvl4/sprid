@@ -82,7 +82,13 @@ type Options = { command: Option[String], cols: Int, rows: Int, capture: Option[
 /// What an input asks of the tabs.
 type Act = | Stay | NewTab | CloseTab | NextTab | PrevTab | GoTo(Int)
 
-effect fn run(opts: Options) -> Unit = match fonts.find()! {
+effect fn run(opts: Options) -> Unit = {
+  // Before anything starts a program: the shell, pbcopy.
+  sys.ensure_utf8_locale()
+  run_fonts(opts)!
+}
+
+effect fn run_fonts(opts: Options) -> Unit = match fonts.find()! {
   some(faces) => run_with(opts, faces)!,
   none => println("sprid: no font found"),
 }

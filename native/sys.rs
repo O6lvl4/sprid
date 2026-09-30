@@ -50,3 +50,57 @@ pub fn cwd() -> String {
 pub fn read_file(path: &str) -> crate::AlmideRcCow<Vec<u8>> {
     crate::AlmideRcCow::new(crate::mapped::map_file(path).unwrap_or_default())
 }
+
+/// Give this process — and so the shell and everything it runs, pbcopy
+/// included — a UTF-8 locale when it has none. Started from Finder, a program
+/// gets no LANG: the shell then runs in the C locale, counts `❯` as 3 columns
+/// and garbles every non-ASCII name. The locale is the system's (`ja_JP`,
+/// say) in UTF-8 when the system has that one, else `en_US.UTF-8`; LANG, LC_ALL
+/// or LC_CTYPE already set are left alone, as Terminal.app and Ghostty do.
+pub fn ensure_utf8_locale() {
+    let set = |k: &str| std::env::var(k).map_or(false, |v| !v.is_empty());
+    if set("LC_ALL") || set("LC_CTYPE") || set("LANG") {
+        return;
+    }
+    let valid = |name: &str| {
+        let Ok(c) = std::ffi::CString::new(name) else { return false };
+        unsafe {
+            let ok = !libc::setlocale(libc::LC_CTYPE, c.as_ptr()).is_null();
+            libc::setlocale(libc::LC_CTYPE, c"C".as_ptr());
+            ok
+        }
+    };
+    let chosen = system_locale()
+        .map(|id| format!("{id}.UTF-8"))
+        .filter(|name| valid(name))
+        .unwrap_or_else(|| "en_US.UTF-8".to_string());
+    std::env::set_var("LANG", chosen);
+}
+
+/// The system's locale identifier, `ja_JP` say, without `@` modifiers.
+#[cfg(target_os = "macos")]
+fn system_locale() -> Option<String> {
+    use std::ffi::c_void;
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        fn CFLocaleCopyCurrent() -> *const c_void;
+        fn CFLocaleGetIdentifier(locale: *const c_void) -> *const c_void;
+        fn CFStringGetCString(s: *const c_void, buf: *mut i8, size: isize, encoding: u32) -> u8;
+        fn CFRelease(cf: *const c_void);
+    }
+    const UTF8: u32 = 0x0800_0100;
+    unsafe {
+        let locale = CFLocaleCopyCurrent();
+        if locale.is_null() { return None; }
+        let mut buf = [0i8; 128];
+        let ok = CFStringGetCString(CFLocaleGetIdentifier(locale), buf.as_mut_ptr(), buf.len() as isize, UTF8) != 0;
+        CFRelease(locale);
+        if !ok { return None; }
+        let id = std::ffi::CStr::from_ptr(buf.as_ptr()).to_string_lossy().into_owned();
+        let id = id.split('@').next().unwrap_or("").to_string();
+        if id.is_empty() { None } else { Some(id) }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn system_locale() -> Option<String> { None }
