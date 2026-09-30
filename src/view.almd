@@ -1,0 +1,148 @@
+// Lines by absolute number, across scrollback and screen.
+//
+// Every line the terminal has ever held gets a number: scrollback's oldest
+// kept line is `first_line`, the screen's row 0 is `screen_line`, and a line
+// keeps its number while output scrolls it up and into scrollback. The
+// viewport and a selection are held in these numbers, so neither moves when
+// new output arrives underneath them.
+
+import bytes
+import self.cell
+import self.scrollback
+import self.terminal
+
+fn first_line(t: terminal.Terminal) -> Int = t.sb.evicted_lines
+
+fn screen_line(t: terminal.Terminal) -> Int = t.sb.evicted_lines + scrollback.line_count(t.sb)
+
+/// Line `n` as a row of `t.cols` cells, or none when it has been evicted or
+/// is below the screen. On the alternate screen only its rows are lines.
+fn line_at(t: terminal.Terminal, n: Int) -> Option[scrollback.Row] = {
+  let rel = n - first_line(t)
+  let kept = scrollback.line_count(t.sb)
+  if rel < 0 then none
+  else if rel < kept then {
+    if t.alt then none else scrollback.row(t.sb, rel, t.cols)
+  } else if rel - kept < t.rows then {
+    let y = rel - kept
+    let off = terminal.row_off(t, y)
+    some(scrollback.Row {
+      cells: bytes.slice(t.grid, off, off + t.cols * cell.SIZE),
+      extras: terminal.row_extras(t, y),
+      wrapped: bytes.read_u8(t.wrapped, terminal.phys(t, y)) == 1,
+    })
+  } else none
+}
+
+/// Line of the viewport's top row when it is scrolled back `back` lines.
+fn top_line(t: terminal.Terminal, back: Int) -> Int = screen_line(t) - back
+
+/// How far back the viewport can scroll: all of scrollback on the main
+/// screen, none on the alternate one.
+fn max_back(t: terminal.Terminal) -> Int = if t.alt then 0 else scrollback.line_count(t.sb)
+
+// ── Selection ─────────────────────────────────────────────────────────────
+
+/// Cells from (anchor_line, anchor_col) to (head_line, head_col), both ends
+/// included, in reading order whichever way it was dragged.
+type Selection = { anchor_line: Int, anchor_col: Int, head_line: Int, head_col: Int }
+
+/// The selection's ends in reading order: (start line, start col, end line,
+/// end col).
+fn ordered(s: Selection) -> (Int, Int, Int, Int) =
+  if s.anchor_line < s.head_line or (s.anchor_line == s.head_line and s.anchor_col <= s.head_col)
+  then (s.anchor_line, s.anchor_col, s.head_line, s.head_col)
+  else (s.head_line, s.head_col, s.anchor_line, s.anchor_col)
+
+fn selected(s: Selection, line: Int, col: Int) -> Bool = {
+  let (l0, c0, l1, c1) = ordered(s)
+  if line < l0 or line > l1 then false
+  else if l0 == l1 then col >= c0 and col <= c1
+  else if line == l0 then col >= c0
+  else if line == l1 then col <= c1
+  else true
+}
+
+/// The selected text. Lines end in a newline unless they wrapped onto the
+/// next; trailing blanks of a line are dropped.
+fn selected_text(t: terminal.Terminal, s: Selection) -> String = {
+  let (l0, c0, l1, c1) = ordered(s)
+  var out = ""
+  for n in l0...l1 {
+    match line_at(t, n) {
+      some(row) => {
+        let from = if n == l0 then c0 else 0
+        let to = if n == l1 then int.min(c1, t.cols - 1) else t.cols - 1
+        var line = ""
+        for x in from...to {
+          line = line + scrollback.cell_text(row.cells, x, row.extras)
+        }
+        let last = n == l1
+        out = out + (if row.wrapped and not last then line else string.trim_end(line)) + (if last or row.wrapped then "" else "\n")
+      },
+      none => (),
+    }
+  }
+  out
+}
+
+fn run(cols: Int, rows: Int, input: String) -> terminal.Terminal = {
+  var t = terminal.new(cols, rows)
+  terminal.feed_string(t, input)
+  t
+}
+
+fn text_of(t: terminal.Terminal, n: Int) -> String =
+  match line_at(t, n) {
+    some(row) => {
+      var s = ""
+      for x in 0..<t.cols {
+        s = s + scrollback.cell_text(row.cells, x, row.extras)
+      }
+      string.trim_end(s)
+    },
+    none => "<none>",
+  }
+
+test "lines keep their numbers as they scroll into scrollback" {
+  var t = run(10, 2, "a\r\nb")
+  assert_eq((text_of(t, 0), text_of(t, 1)), ("a", "b"))
+  terminal.feed_string(t, "\r\nc\r\nd")
+  assert_eq((text_of(t, 0), text_of(t, 1), text_of(t, 2), text_of(t, 3)), ("a", "b", "c", "d"))
+  assert_eq(screen_line(t), 2)
+  assert_eq(text_of(t, 4), "<none>")
+}
+
+test "evicted lines are gone but numbers stay" {
+  var t = terminal.new(10, 2)
+  // A budget of one byte in 64-byte blocks: every sealed block is evicted.
+  t.sb = scrollback.with_block(1, 64)
+  for i in 0..<20 {
+    terminal.feed_string(t, "line ${int.to_string(i)}\r\n")
+  }
+  terminal.feed_string(t, "d")
+  assert(first_line(t) > 0)
+  assert_eq(text_of(t, first_line(t) - 1), "<none>")
+  assert_eq(text_of(t, screen_line(t) + 1), "d")
+}
+
+test "a selection reads across scrollback and screen" {
+  let t = run(10, 2, "hello\r\nworld\r\nagain")
+  let s = Selection { anchor_line: 2, anchor_col: 2, head_line: 0, head_col: 1 }
+  assert_eq(selected_text(t, s), "ello\nworld\naga")
+}
+
+test "wrapped lines copy as one" {
+  let t = run(4, 3, "abcdefg")
+  let s = Selection { anchor_line: 0, anchor_col: 0, head_line: 1, head_col: 3 }
+  assert_eq(selected_text(t, s), "abcdefg")
+}
+
+test "selected is inclusive at both ends" {
+  let s = Selection { anchor_line: 1, anchor_col: 5, head_line: 3, head_col: 2 }
+  assert(selected(s, 1, 5))
+  assert(not selected(s, 1, 4))
+  assert(selected(s, 2, 0))
+  assert(selected(s, 3, 2))
+  assert(not selected(s, 3, 3))
+}

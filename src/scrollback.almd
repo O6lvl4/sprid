@@ -25,6 +25,7 @@
 
 import bytes
 import self.cell
+import self.width
 
 let DEFAULT_BLOCK = 65536
 
@@ -222,6 +223,78 @@ fn record_text(block: Bytes, start: Int, end: Int) -> String = {
   s
 }
 
+/// Where line `i` (0 = oldest kept) is stored: its block and the record's
+/// payload range in it.
+fn locate(sb: Scrollback, i: Int) -> Option[(Bytes, Int, Int)] = {
+  guard i >= 0 and i < line_count(sb) else none
+  var rest = i
+  var b = 0
+  let nb = list.len(sb.sealed)
+  while b < nb and rest >= sb.sealed_lines[b] {
+    rest = rest - sb.sealed_lines[b]
+    b = b + 1
+  }
+  let (block, len) = if b < nb then (sb.sealed[b], bytes.len(sb.sealed[b])) else (sb.cur, sb.cur_len)
+  var p = 0
+  while rest > 0 and p < len {
+    p = p + 4 + bytes.read_u32_le(block, p)
+    rest = rest - 1
+  }
+  some((block, p + 4, p + 4 + bytes.read_u32_le(block, p)))
+}
+
+/// A decoded line: `cols` cells in the grid layout, the combining marks by
+/// column, and whether it continued onto the next line.
+type Row = { cells: Bytes, extras: Map[Int, String], wrapped: Bool }
+
+/// Line `i` decoded into `cols` cells (cut or padded to fit).
+fn row(sb: Scrollback, i: Int, cols: Int) -> Option[Row] =
+  match locate(sb, i) {
+    some((block, start, end)) => some(decode(block, start, end, cols)),
+    none => none,
+  }
+
+fn decode(block: Bytes, start: Int, end: Int, cols: Int) -> Row = {
+  var cells = cell.blank_row(cols, cell.COLOR_DEFAULT)
+  var extras: Map[Int, String] = [:]
+  let wrapped = bytes.read_u8(block, start + 2) == 1
+  var p = start + 3
+  var x = 0
+  var last = -1
+  while p < end {
+    let fg = bytes.read_u32_le(block, p)
+    let bg = bytes.read_u32_le(block, p + 4)
+    let attrs = bytes.read_u16_le(block, p + 8)
+    let n = bytes.read_u32_le(block, p + 10)
+    for ch in string.chars(bytes.read_string_at(block, p + 14, n)) {
+      let cp = string.codepoint(ch) ?? 32
+      let w = width.of(cp)
+      if w == 0 then {
+        if last >= 0 then {
+          map.insert(extras, last, map.get_or(extras, last, "") + ch)
+          let flags = bytes.read_u8(cells, last * cell.SIZE + cell.OFF_FLAGS)
+          bytes.set_u8(cells, last * cell.SIZE + cell.OFF_FLAGS, int.bor(flags, cell.FLAG_GRAPHEME))
+        }
+      } else if x + w <= cols then {
+        let o = x * cell.SIZE
+        bytes.set_u32_le(cells, o + cell.OFF_CP, if cp == 32 then 0 else cp)
+        bytes.set_u32_le(cells, o + cell.OFF_FG, fg)
+        bytes.set_u32_le(cells, o + cell.OFF_BG, bg)
+        bytes.set_u16_le(cells, o + cell.OFF_ATTRS, attrs)
+        bytes.set_u8(cells, o + cell.OFF_WIDTH, w)
+        if w == 2 then {
+          bytes.set_u32_le(cells, o + cell.SIZE + cell.OFF_BG, bg)
+          bytes.set_u8(cells, o + cell.SIZE + cell.OFF_WIDTH, 0)
+        }
+        last = x
+        x = x + w
+      }
+    }
+    p = p + 14 + n
+  }
+  Row { cells: cells, extras: extras, wrapped: wrapped }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 fn row_of(text: String, cols: Int) -> Bytes = {
@@ -284,4 +357,34 @@ test "a line larger than a block is stored and later evicted" {
   }
   assert(bytes_used(sb) <= 3000)
   assert(not list.contains(texts(sb), long))
+}
+
+test "any line decodes back into cells" {
+  var sb = with_block(100000, 256)
+  for i in 0..<60 {
+    push(sb, encode_row(row_of("line ${int.to_string(i)}", 20), 20, i % 2 == 0, [:]))
+  }
+  let r = row(sb, 37, 20) ?? Row { cells: bytes.new(0), extras: [:], wrapped: false }
+  assert_eq(bytes.read_u32_le(r.cells, 5 * cell.SIZE), string.codepoint("3") ?? 0)
+  assert_eq(bytes.read_u32_le(r.cells, 6 * cell.SIZE), string.codepoint("7") ?? 0)
+  assert_eq(r.wrapped, false)
+  assert_eq((row(sb, 36, 20) ?? r).wrapped, true)
+  assert_eq(row(sb, 60, 20), none)
+}
+
+test "wide chars and marks decode to their cells" {
+  var src = row_of("a", 6)
+  var sb = new(100000)
+  var t = src
+  bytes.set_u32_le(t, 1 * cell.SIZE + cell.OFF_CP, 0x65E5)
+  bytes.set_u8(t, 1 * cell.SIZE + cell.OFF_WIDTH, 2)
+  bytes.set_u8(t, 2 * cell.SIZE + cell.OFF_WIDTH, 0)
+  bytes.set_u32_le(t, 3 * cell.SIZE + cell.OFF_CP, 0x65)
+  bytes.set_u8(t, 3 * cell.SIZE + cell.OFF_FLAGS, cell.FLAG_GRAPHEME)
+  push(sb, encode_row(t, 6, false, [3: "\u{0301}"]))
+  let r = row(sb, 0, 6) ?? Row { cells: bytes.new(0), extras: [:], wrapped: false }
+  assert_eq(bytes.read_u8(r.cells, 1 * cell.SIZE + cell.OFF_WIDTH), 2)
+  assert_eq(bytes.read_u8(r.cells, 2 * cell.SIZE + cell.OFF_WIDTH), 0)
+  assert_eq(bytes.read_u32_le(r.cells, 3 * cell.SIZE), 0x65)
+  assert_eq(map.get(r.extras, 3), some("\u{0301}"))
 }

@@ -17,6 +17,7 @@ import self.keys
 import self.pty
 import self.sys
 import self.terminal
+import self.view
 
 /// Font size in points, as Ghostty counts them: logical pixels.
 let FONT_SIZE = 14.5
@@ -56,6 +57,13 @@ effect fn run(capture: Option[String]) -> Unit = {
   guard fd >= 0 else println("sprid: could not start ${shell}")
 
   var preedit: List[Int] = []
+  // Viewport: lines scrolled back into scrollback, 0 at the bottom.
+  var back = 0
+  var wheel_acc = 0.0
+  var sel: Option[view.Selection] = none
+  var dragging = false
+  var anchor_line = 0
+  var anchor_col = 0
   var dirty = true
   var alive = true
   var last_frame = 0
@@ -86,12 +94,65 @@ effect fn run(capture: Option[String]) -> Unit = {
       if kind == window.TEXT or kind == window.KEY then {
         let mods = window.event_mods()
         let code = window.event_code()
-        let paste = kind == window.TEXT and mods == window.MOD_SUPER and (code == 0x76 or code == 0x56)
-        let out = if paste then keys.paste(clipboard()!, t.bracketed_paste)
-                  else keys.encode(kind, code, mods, t.app_cursor)
-        if out != "" then {
-          let _ = pty.write(fd, out)
+        let command = kind == window.TEXT and mods == window.MOD_SUPER
+        let page = kind == window.KEY and mods == window.MOD_SHIFT and (code == window.KEY_PAGE_UP or code == window.KEY_PAGE_DOWN)
+        if command and (code == 0x63 or code == 0x43) then {
+          // Cmd+C: the selection to the clipboard.
+          match sel {
+            some(s) => copy(view.selected_text(t, s))!,
+            none => (),
+          }
+        } else if page then {
+          let step = if code == window.KEY_PAGE_UP then t.rows - 1 else 1 - t.rows
+          back = int.clamp(back + step, 0, view.max_back(t))
+          dirty = true
+        } else {
+          let out = if command and (code == 0x76 or code == 0x56) then keys.paste(clipboard()!, t.bracketed_paste)
+                    else keys.encode(kind, code, mods, t.app_cursor)
+          if out != "" then {
+            let _ = pty.write(fd, out)
+            // Typing brings the viewport back to the prompt.
+            if back != 0 then dirty = true
+            back = 0
+          }
         }
+      } else if kind == window.WHEEL then {
+        wheel_acc = wheel_acc + window.event_dy()
+        let line_px = int.to_float(r.cell_h) / scale
+        let lines = float.to_int(wheel_acc / line_px)
+        wheel_acc = wheel_acc - int.to_float(lines) * line_px
+        if lines != 0 then {
+          let (col, row) = cell_at(r, t, scale)
+          if t.mouse_mode != 0 and t.mouse_sgr then {
+            // The program asked for the mouse: tell it about the wheel.
+            let button = if lines < 0 then 64 else 65
+            for _ in 0..<int.abs(lines) {
+              let _ = pty.write(fd, "\x1b[<${int.to_string(button)};${int.to_string(col + 1)};${int.to_string(row + 1)}M")
+            }
+          } else if t.alt then {
+            // A full-screen program without the mouse scrolls by arrow keys.
+            let key = keys.encode(keys.KEY, if lines < 0 then keys.KEY_UP else keys.KEY_DOWN, 0, t.app_cursor)
+            for _ in 0..<int.abs(lines) {
+              let _ = pty.write(fd, key)
+            }
+          } else {
+            back = int.clamp(back - lines, 0, view.max_back(t))
+            dirty = true
+          }
+        }
+      } else if kind == window.MOUSE_DOWN and window.event_code() == 0 then {
+        let (col, row) = cell_at(r, t, scale)
+        anchor_line = view.top_line(t, back) + row
+        anchor_col = col
+        dragging = true
+        if sel != none then dirty = true
+        sel = none
+      } else if kind == window.MOUSE_MOVE and dragging then {
+        let (col, row) = cell_at(r, t, scale)
+        sel = some(view.Selection { anchor_line: anchor_line, anchor_col: anchor_col, head_line: view.top_line(t, back) + row, head_col: col })
+        dirty = true
+      } else if kind == window.MOUSE_UP then {
+        dragging = false
       } else if kind == window.COMPOSE then {
         preedit = text.code_points(window.event_text())
         dirty = true
@@ -106,6 +167,7 @@ effect fn run(capture: Option[String]) -> Unit = {
     // Still streaming if the last drain stopped at its deadline, not at the
     // end of the output.
     streaming = false
+    let screen_before = view.screen_line(t)
     while bytes.len(data) > 0 {
       reads = reads + 1
       read_bytes = read_bytes + bytes.len(data)
@@ -120,6 +182,9 @@ effect fn run(capture: Option[String]) -> Unit = {
         bytes.new(0)
       }
     }
+    // Scrolled back, the viewport stays on the lines it shows while new ones
+    // arrive below.
+    if back > 0 then back = int.min(back + view.screen_line(t) - screen_before, view.max_back(t))
     let replies = terminal.take_replies(t)
     if replies != "" then {
       let _ = pty.write(fd, replies)
@@ -135,7 +200,7 @@ effect fn run(capture: Option[String]) -> Unit = {
     let held = sync_since >= 0 and clock - sync_since < SYNC_LIMIT
     if dirty and not held and clock - last_frame >= (if streaming then STREAM_FRAME_MS else FRAME_MS) then {
       let t0 = sys.now_ms()
-      render.draw(r, t, preedit, width, height)
+      render.draw(r, t, back, sel, preedit, width, height)
       frames = frames + 1
       draw_ms = draw_ms + sys.now_ms() - t0
       if debug and frames % 60 == 0 then eprintln("sprid: ${int.to_string(frames)} frames, ${int.to_string(draw_ms / frames)} ms per draw")
@@ -148,14 +213,27 @@ effect fn run(capture: Option[String]) -> Unit = {
 
     match capture {
       some(path) => if pty.eof() or clock > (int.parse(env.get("SPRID_CAPTURE_MS") ?? "3000") ?? 3000) then {
+        back = int.clamp(int.parse(env.get("SPRID_CAPTURE_BACK") ?? "0") ?? 0, 0, view.max_back(t))
+        sel = if back > 0 then some(view.Selection { anchor_line: view.top_line(t, back) + 2, anchor_col: 4, head_line: view.top_line(t, back) + 4, head_col: 10 }) else none
         if debug then eprintln("sprid: ${int.to_string(frames)} frames, draw ${int.to_string(draw_ms)} ms, pump ${int.to_string(pump_ms)} ms, feed ${int.to_string(feed_ms)} ms, ${int.to_string(reads)} reads averaging ${int.to_string(read_bytes / int.max(reads, 1))} bytes")
-        render.draw(r, t, preedit, width, height)
+        render.draw(r, t, back, sel, preedit, width, height)
         println(if frame.save_png(path) then "saved ${path}" else "capture failed")
         alive = false
       },
       none => (),
     }
   }
+}
+
+/// The cell under the pointer: (column, row of the viewport).
+fn cell_at(r: render.Renderer, t: terminal.Terminal, scale: Float) -> (Int, Int) = {
+  let px = float.to_int(window.event_x() * scale)
+  let py = float.to_int(window.event_y() * scale)
+  (int.clamp((px - r.pad_x) / r.cell_w, 0, t.cols - 1), int.clamp((py - r.pad_y) / r.cell_h, 0, t.rows - 1))
+}
+
+effect fn copy(s: String) -> Unit = {
+  let _ = process.exec_with_stdin("pbcopy", [], s)
 }
 
 effect fn clipboard() -> String =
