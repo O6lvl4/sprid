@@ -88,6 +88,11 @@ type Updates = { syncs: Int, sync_at: Int, hides: Int, hide_at: Int }
 /// Window-wide input state.
 type Ui = {
   preedit: List[Int],
+  // Where the input method's caret is in it, and the part it is converting
+  // ([from, to), empty when none), in characters.
+  preedit_caret: Int,
+  preedit_from: Int,
+  preedit_to: Int,
   wheel_acc: Float,
   // Selecting with the pointer: by cell, word or line (`view.unit_span`),
   // from what the press took — its first and last cell.
@@ -129,12 +134,6 @@ type Ui = {
   // Dragging the scrollbar, and where in its thumb it was taken, pixels.
   scroll_drag: Bool,
   scroll_grab: Int,
-  // The input method: its composition is ending — the text is committed or
-  // dropped — and, when committed, how long the composition is still shown
-  // while the program echoes the text (-1: not waiting). Shown until then,
-  // the text doesn't blink out between the two.
-  ime_ending: Bool,
-  ghost_until: Int,
   // Where the input method was last told the caret is.
   ime_x: Int,
   ime_y: Int,
@@ -223,11 +222,11 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
   let home = env.get("HOME") ?? ""
   // Questions in Japanese on a Japanese system.
   let ja = string.starts_with(env.get("LANG") ?? "", "ja")
-  var ui = Ui { preedit: [], wheel_acc: 0.0, dragging: false, unit: 0, anchor_line: 0, anchor_col: 0,
+  var ui = Ui { preedit: [], preedit_caret: 0, preedit_from: 0, preedit_to: 0, wheel_acc: 0.0, dragging: false, unit: 0, anchor_line: 0, anchor_col: 0,
                 anchor_end_line: 0, anchor_end_col: 0, clicks: 0, click_line: 0, click_col: 0, dirty: true,
                 renaming: false, draft: "", click_ms: 0, click_tab: -1, home: home, finding: false, find: search.empty(),
                 field: field.of(""), find_focus: false, field_drag: false, scroll_drag: false, scroll_grab: 0,
-                ime_ending: false, ghost_until: -1, ime_x: -1, ime_y: -1,
+                ime_x: -1, ime_y: -1,
                 app_button: -1, report_col: -1, report_row: -1 }
   var alive = true
   var last_frame = 0
@@ -258,9 +257,8 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
     let idle = if capture == none then -1 else 50
     let settle_wait = if resized_at < 0 then -1 else int.max(0, resized_at + SETTLE_MS - now)
     let drawn_wait = if ui.dirty then int.max(frame_wait, sync_wait(tabs, active, now)) else idle
-    let ghost_wait = if ui.ghost_until < 0 then -1 else int.max(0, ui.ghost_until - now)
     let auto_wait = if auto_next < 0 then -1 else int.max(0, auto_next - now)
-    let timeout = sooner(sooner(sooner(drawn_wait, settle_wait), ghost_wait), auto_wait)
+    let timeout = sooner(sooner(drawn_wait, settle_wait), auto_wait)
     // With no time to wait, just take the window's events: arming the fd
     // watcher on every turn of a streaming loop costs more than it saves.
     alive = if timeout == 0 then window.pump() else window.wait_fds(list.map(tabs, (tb) => tb.fd), timeout)
@@ -300,7 +298,7 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
     while kind != window.NONE {
       var act = Stay
       if trace and (kind == window.COMPOSE or kind == window.TEXT or kind == window.KEY) then
-        eprintln("input ${int.to_string(sys.now_ms())} kind ${int.to_string(kind)} code ${int.to_string(window.event_code())} text \"${window.event_text()}\" preedit ${int.to_string(list.len(ui.preedit))}")
+        eprintln("input ${int.to_string(sys.now_ms())} kind ${int.to_string(kind)} code ${int.to_string(window.event_code())} end ${int.to_string(window.event_end())} text \"${window.event_text()}\" preedit ${int.to_string(list.len(ui.preedit))}")
       // Counted before the active tab is taken out of the list: with it out,
       // two tabs looked like one — no tab bar to click, and every click
       // below it placed a tab bar's height too low.
@@ -374,10 +372,6 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
       kind = if list.len(tabs) == 0 then window.NONE else window.next_event()
     }
     if list.len(tabs) == 0 then alive = false
-    // A composition dropped, or committed to the find bar or a tab's name,
-    // goes at once; one committed to the program stays till its echo.
-    if ui.ime_ending and (ui.ghost_until < 0 or sys.now_ms() >= ui.ghost_until) then end_composition(ui)
-
     if auto_next >= 0 and sys.now_ms() >= auto_next then {
       match take(tabs, active) {
         some(tb) => {
@@ -402,7 +396,6 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
           if got and trace then eprintln("out ${int.to_string(sys.now_ms())} tab ${int.to_string(i)} cursor ${int.to_string(cur.t.x)},${int.to_string(cur.t.y)}")
           if i == active then {
             if got then ui.dirty = true
-            if got and ui.ime_ending then end_composition(ui)
             if more then streaming = true
           }
           let replies = terminal.take_replies(cur.t)
@@ -443,19 +436,30 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
           if trace and held then eprintln("held ${int.to_string(clock)} for ${int.to_string(hold_left(cur, clock))} ms")
           if not held then {
             let t0 = sys.now_ms()
-            render.draw(r, cur.t, cur.back, cur.shift, cur.sel, ui.preedit, width, height, titles, active,
+            render.draw(r, cur.t, cur.back, cur.shift, cur.sel, compose_of(ui), width, height, titles, active,
               bar_of(ui))
-            if trace then eprintln("frame ${int.to_string(sys.now_ms())} cursor ${int.to_string(cur.t.x)},${int.to_string(cur.t.y)} line ${view.text_of(cur.t, view.screen_line(cur.t) + cur.t.y)}")
+            if trace then eprintln("frame ${int.to_string(sys.now_ms())} cursor ${int.to_string(cur.t.x)},${int.to_string(cur.t.y)} shown ${if cur.t.cursor_visible then "yes" else "no"}"
+              + " preedit ${int.to_string(list.len(ui.preedit))} line ${view.text_of(cur.t, view.screen_line(cur.t) + cur.t.y)}")
             frames = frames + 1
             draw_ms = draw_ms + sys.now_ms() - t0
             // The input method composes where typing goes: the find bar
             // while it is open, else the cursor.
             let gy = render.grid_top(r, list.len(titles))
             let (ix, iy) = if ui.finding and ui.find_focus then render.find_caret(r, bar(ui), ui.preedit, list.len(titles), width)
-              else (r.pad_x + cur.t.x * r.cell_w, gy + cur.t.y * r.cell_h)
+              else {
+                // At the input method's caret in the composition, so its
+                // candidates follow the typing.
+                (r.pad_x + render.compose_caret(compose_of(ui), cur.t.x, cur.t.cols) * r.cell_w, gy + cur.t.y * r.cell_h)
+              }
             // Told only when it moves: each time the input method is told,
             // it lays out its candidate window again, which shows as a
             // flicker while typing.
+            if trace and list.len(ui.preedit) > 0 then {
+              let (x0, ca, cb) = render.compose_span(compose_of(ui), cur.t.x, cur.t.cols)
+              eprintln("compose ${int.to_string(sys.now_ms())} x ${int.to_string(cur.t.x)} cols ${int.to_string(cur.t.cols)} span ${int.to_string(x0)} ${int.to_string(ca)}..${int.to_string(cb)}"
+                + " caret ${int.to_string(ui.preedit_caret)} sel ${int.to_string(ui.preedit_from)}..${int.to_string(ui.preedit_to)} ime_px ${int.to_string(ix)},${int.to_string(iy)} cell_w ${int.to_string(r.cell_w)} pad ${int.to_string(r.pad_x)}"
+                + " text \"${list.join(list.map(ui.preedit, (c) => string.from_codepoint(c)), "")}\"")
+            }
             if (ix, iy) != (ui.ime_x, ui.ime_y) then {
               window.set_ime_area(int.to_float(ix) / scale, int.to_float(iy) / scale,
                 int.to_float(r.cell_w) / scale, int.to_float(r.cell_h) / scale)
@@ -490,7 +494,10 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
             cur.shift = int.clamp(int.parse(env.get("SPRID_CAPTURE_SHIFT") ?? "0") ?? 0, 0, r.cell_h - 1)
             // A composition at the cursor, as the input method shows one.
             match env.get("SPRID_CAPTURE_PREEDIT") {
-              some(p) => { ui.preedit = text.code_points(p) },
+              some(p) => {
+                ui.preedit = text.code_points(p)
+                ui.preedit_caret = list.len(ui.preedit)
+              },
               none => (),
             }
             // The find bar searching for this, stepped up SPRID_CAPTURE_FIND_UP times.
@@ -514,7 +521,7 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
               },
               none => (),
             }
-            render.draw(r, cur.t, cur.back, cur.shift, cur.sel, ui.preedit, width, height, titles, active,
+            render.draw(r, cur.t, cur.back, cur.shift, cur.sel, compose_of(ui), width, height, titles, active,
               bar_of(ui))
             list.push(tabs, cur)
           },
@@ -735,10 +742,6 @@ fn drain(mut tb: Tab, budget_ms: Int) -> (Bool, Bool) = {
 /// returned. `tabs` is how many are open, `width` the drawable's.
 effect fn handle(mut cur: Tab, mut ui: Ui, kind: Int, r: render.Renderer, scale: Float, tabs: Int, width: Int) -> Act = {
   let t = cur.t
-  // Text committed by the input method, going to the program: the
-  // composition stays shown until the program echoes it, or GHOST_MS.
-  if kind == window.TEXT and ui.ime_ending and not ui.renaming and not (ui.finding and ui.find_focus) then
-    ui.ghost_until = sys.now_ms() + GHOST_MS
   // A press anywhere but the find bar takes the focus from it: typing goes
   // to the program again, the matches stay marked.
   if kind == window.MOUSE_DOWN and ui.finding and ui.find_focus
@@ -1005,15 +1008,15 @@ effect fn handle(mut cur: Tab, mut ui: Ui, kind: Int, r: render.Renderer, scale:
     ui.dragging = false
     Stay
   } else if kind == window.COMPOSE then {
-    // The input method sends an empty composition before committing its
-    // text: the composition stays until the batch is done (see `run_with`).
     let cps = text.code_points(window.event_text())
-    if list.len(cps) == 0 and list.len(ui.preedit) > 0 then ui.ime_ending = true
-    else {
-      ui.preedit = cps
-      ui.ime_ending = false
-      ui.ghost_until = -1
-    }
+    ui.preedit = cps
+    // The selected range: a caret while typing, the segment being
+    // converted while converting (-1: none, the caret at the end).
+    let from = window.event_code()
+    let to = window.event_end()
+    ui.preedit_caret = if from < 0 then list.len(cps) else int.clamp(to, 0, list.len(cps))
+    ui.preedit_from = if from >= 0 and to > from then int.min(from, list.len(cps)) else 0
+    ui.preedit_to = if from >= 0 and to > from then int.min(to, list.len(cps)) else 0
     ui.dirty = true
     Stay
   } else Stay
@@ -1149,14 +1152,9 @@ fn follow(mut cur: Tab, f: search.Find) -> Unit = {
     scroll_to(cur, int.clamp(view.screen_line(cur.t) - f.line + cur.t.rows / 2, 0, view.max_back(cur.t)))
 }
 
-/// Stop showing the composition.
-fn end_composition(mut ui: Ui) -> Unit = {
-  let nothing: List[Int] = []
-  ui.preedit = nothing
-  ui.ime_ending = false
-  ui.ghost_until = -1
-  ui.dirty = true
-}
+/// The input method's composition, as drawn.
+fn compose_of(ui: Ui) -> render.Compose =
+  render.Compose { cps: ui.preedit, caret: ui.preedit_caret, from: ui.preedit_from, to: ui.preedit_to }
 
 /// The sooner of two waits, ms; -1 is no limit.
 fn sooner(a: Int, b: Int) -> Int = if a < 0 then b else if b < 0 then a else int.min(a, b)
@@ -1176,9 +1174,6 @@ fn switches_tab(act: Act) -> Bool = match act {
   GoTo(_) => true,
   _ => false,
 }
-
-/// Longest a committed composition is shown waiting for the program's echo, ms.
-let GHOST_MS = 150
 
 /// Longest gap between the presses of a double click, ms (macOS's default).
 let DOUBLE_CLICK_MS = 500

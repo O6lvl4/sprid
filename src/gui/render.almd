@@ -360,11 +360,16 @@ fn rect(r: Renderer, x0: Int, y0: Int, x1: Int, y1: Int, rgb: Int, alpha: Float,
 }
 
 /// The glyph in `slot` with its pen at `x` on the baseline `y`.
+/// One quad for glyph `slot` — always one: a glyph with nothing to draw (an
+/// ideographic space) gets an empty quad, as every caller counts one, and a
+/// quad counted but not written draws whatever an earlier frame left in the
+/// vertex buffer there.
 fn glyph_quad(r: Renderer, slot: Int, x: Int, y: Int, rgb: Int, alpha: Float, sx: Float, sy: Float) -> Unit = {
   let o = slot * 6
   let w = r.layer.rects[o + 2]
   let h = r.layer.rects[o + 3]
-  if w > 0 and h > 0 then {
+  if w <= 0 or h <= 0 then quad(r, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, rgb, 0.0, sx, sy)
+  else {
     let left = x + r.layer.rects[o + 4]
     let top = y - r.layer.rects[o + 5]
     let atlas = int.to_float(text.ATLAS)
@@ -378,14 +383,61 @@ fn glyph_quad(r: Renderer, slot: Int, x: Int, y: Int, rgb: Int, alpha: Float, sx
 
 // ── Frames ────────────────────────────────────────────────────────────────
 
+/// What the input method is composing: its characters, where among them its
+/// caret is, and the part being converted, [`from`, `to`) (empty when none).
+type Compose = { cps: List[Int], caret: Int, from: Int, to: Int }
+
+fn no_compose() -> Compose = Compose { cps: [], caret: 0, from: 0, to: 0 }
+
+/// The part of a composition shown, and where: characters [`a`, `b`) from
+/// column `x0` of the cursor's row. As terminals commonly lay it out: on
+/// the cursor's row, over its cells, from the cursor — moved left to end
+/// within the row; wider than the row, its end is shown, or from the input
+/// method's caret on when the caret is before that.
+fn compose_span(c: Compose, x: Int, cols: Int) -> (Int, Int, Int) = {
+  let n = list.len(c.cps)
+  var a = n
+  var w = 0
+  while a > 0 and w + cell_cols(c.cps[a - 1]) <= cols {
+    a = a - 1
+    w = w + cell_cols(c.cps[a])
+  }
+  var b = n
+  let focus = compose_focus(c)
+  if focus < a then {
+    a = focus
+    b = a
+    w = 0
+    while b < n and w + cell_cols(c.cps[b]) <= cols {
+      w = w + cell_cols(c.cps[b])
+      b = b + 1
+    }
+  }
+  (int.max(0, int.min(x, cols - w)), a, b)
+}
+
+/// Where in a composition the input method is: the part being converted,
+/// else its caret.
+fn compose_focus(c: Compose) -> Int = int.clamp(if c.from < c.to then c.from else c.caret, 0, list.len(c.cps))
+
+/// The column of the input method's caret in a composition at column `x`:
+/// where its candidates go.
+fn compose_caret(c: Compose, x: Int, cols: Int) -> Int = {
+  let (x0, a, b) = compose_span(c, x, cols)
+  x0 + cols_of(list.slice(c.cps, a, int.clamp(compose_focus(c), a, b)))
+}
+
+fn cell_cols(cp: Int) -> Int = int.max(1, cell_width.of(cp))
+
 /// Draw `t` into the window's current frame: the viewport scrolled `back`
-/// lines and `shift` pixels into scrollback, `sel` highlighted, and `preedit` — what the input
-/// method is composing — at the cursor. `width` x `height` is the drawable.
-/// With `find`, its matches are marked and its bar is shown — while the bar
-/// has the focus, with the composition in it.
+/// lines and `shift` pixels into scrollback, `sel` highlighted, and `compose`
+/// — what the input method is composing — at the cursor. `width` x `height`
+/// is the drawable. With `find`, its matches are marked and its bar is shown
+/// — while the bar has the focus, with the composition in it.
 fn draw(mut r: Renderer, t: terminal.Terminal, back: Int, shift: Int, sel: Option[view.Selection],
-        preedit: List[Int], width: Int, height: Int, tabs: List[String], active: Int,
+        compose: Compose, width: Int, height: Int, tabs: List[String], active: Int,
         find: Option[Bar]) -> Unit = {
+  let preedit = compose.cps
   let gy = grid_top(r, list.len(tabs))
   let titles = if list.len(tabs) > 1 then list.map(tabs, (s) => text.code_points(s)) else []
   // Scrolled by part of a line, the line above the viewport shows in part at
@@ -395,19 +447,9 @@ fn draw(mut r: Renderer, t: terminal.Terminal, back: Int, shift: Int, sel: Optio
   let top_line = view.top_line(t, back) - extra
   let shown = t.rows + extra
   let row_y = gy - (if extra == 1 then r.cell_h - shift else 0)
-  // A composition at the cursor is shown inserted there: the rest of the
-  // cursor's line moves right to make room, as the text will once it is
-  // committed, instead of showing through beside it.
+  // A composition is drawn over the cursor's row (see `compose_span`).
   let composing = list.len(preedit) > 0 and (match find { some(b) => not b.focused, none => true })
-  let gap = if composing then cols_of(preedit) else 0
-  let cursor_y = view.screen_line(t) + t.y - top_line
-  let lines = list.map(0..<shown, (y) => {
-    let line = view.line_at(t, top_line + y)
-    if gap > 0 and y == cursor_y then match line {
-      some(row) => some(with_gap(row, t.x, gap, t.cols)),
-      none => none,
-    } else line
-  })
+  let lines = list.map(0..<shown, (y) => view.line_at(t, top_line + y))
   let query = match find { some(b) => b.find.query, none => "" }
   // The matches on each row, and the current one's columns where it is.
   let found = list.map(lines, (line) => match line {
@@ -465,7 +507,7 @@ fn draw(mut r: Renderer, t: terminal.Terminal, back: Int, shift: Int, sel: Optio
 
   // Room for the worst case: per cell a background, a glyph and two lines,
   // plus marks, the cursor, the scrollbar and the composition.
-  let quads = shown * t.cols * 4 + 2 + marks_total + 3 + list.len(preedit) * 3 + title_chars + list.len(titles) * 3 + 1
+  let quads = shown * t.cols * 4 + 2 + marks_total + 7 + list.len(preedit) * 3 + title_chars + list.len(titles) * 3 + 1
     + list.len(bar) * 3 + FIND_QUADS
   if quads * 6 > r.capacity then {
     // Grow by half again, so a count creeping up doesn't replace the buffer
@@ -502,16 +544,42 @@ fn draw(mut r: Renderer, t: terminal.Terminal, back: Int, shift: Int, sel: Optio
     let cx = r.pad_x + t.x * r.cell_w
     let ctop = row_y + cursor_row * r.cell_h
     if composing then {
-      var px = cx
-      for cp in preedit {
-        let w = r.cell_w * int.max(1, cell_width.of(cp))
+      // Underlined, over the cells it covers; the caret a bar, the part being
+      // converted boxed. The terminal's cursor is
+      // not drawn meanwhile.
+      let (x0, ca, cb) = compose_span(compose, t.x, t.cols)
+      var px = r.pad_x + x0 * r.cell_w
+      var from_x = -1
+      var to_x = -1
+      var caret_x = if compose.caret == ca then px else -1
+      for i in ca..<cb {
+        let cp = preedit[i]
+        let w = r.cell_w * cell_cols(cp)
+        if i == compose.from then from_x = px
         rect(r, px, ctop, px + w, ctop + r.cell_h, DEFAULT_BG, 1.0, sx, sy)
         let slot = glyph(r, cp, false)
-        if slot >= 0 then glyph_quad(r, slot, px, ctop + r.baseline, DEFAULT_FG, 1.0, sx, sy)
+        if slot >= 0 then {
+          glyph_quad(r, slot, px, ctop + r.baseline, DEFAULT_FG, 1.0, sx, sy)
+          n = n + 1
+        }
         let uy = ctop + r.baseline + r.line_w
         rect(r, px, uy, px + w, uy + r.line_w, DEFAULT_FG, 1.0, sx, sy)
-        n = n + 3
+        n = n + 2
         px = px + w
+        if i + 1 == compose.to then to_x = px
+        if i + 1 == compose.caret then caret_x = px
+      }
+      let lw = int.max(1, r.line_w)
+      if compose.from < compose.to and from_x >= 0 then {
+        let x1 = if to_x >= 0 then to_x else px
+        rect(r, from_x, ctop, x1, ctop + lw, CURSOR, 1.0, sx, sy)
+        rect(r, from_x, ctop + r.cell_h - lw, x1, ctop + r.cell_h, CURSOR, 1.0, sx, sy)
+        rect(r, from_x, ctop, from_x + lw, ctop + r.cell_h, CURSOR, 1.0, sx, sy)
+        rect(r, x1 - lw, ctop, x1, ctop + r.cell_h, CURSOR, 1.0, sx, sy)
+        n = n + 4
+      } else if compose.from >= compose.to and caret_x >= 0 then {
+        rect(r, caret_x, ctop, caret_x + int.max(2, r.line_w * 2), ctop + r.cell_h, CURSOR, 1.0, sx, sy)
+        n = n + 1
       }
     } else if t.cursor_visible then {
       let shape = t.cursor_shape
@@ -704,21 +772,6 @@ fn marks(row: scrollback.Row, x: Int) -> List[Int] =
   else text.code_points(map.get_or(row.extras, x, ""))
     |> list.filter((cp) => cp != 0x200D and (cp < 0xFE00 or cp > 0xFE0F))
 
-/// `row` with `n` blank cells inserted at column `at`, the cells after them
-/// moved right and those pushed past `cols` dropped.
-fn with_gap(row: scrollback.Row, at: Int, n: Int, cols: Int) -> scrollback.Row = {
-  let x = int.clamp(at, 0, cols)
-  let keep = int.max(0, cols - x - n)
-  let cells = bytes.concat(bytes.concat(bytes.slice(row.cells, 0, x * cell.SIZE), cell.blank_row(int.min(n, cols - x), cell.COLOR_DEFAULT)),
-    bytes.slice(row.cells, x * cell.SIZE, (x + keep) * cell.SIZE))
-  var extras: Map[Int, String] = [:]
-  for k in map.keys(row.extras) {
-    let to = if k >= x then k + n else k
-    if to < cols then map.insert(extras, to, map.get_or(row.extras, k, ""))
-  }
-  scrollback.Row { cells: cells, extras: extras, wrapped: row.wrapped }
-}
-
 /// A row's find matches: their columns, and the current one's (`from` -1
 /// when it isn't on the row).
 type Lit = { spans: List[(Int, Int)], from: Int, to: Int }
@@ -905,3 +958,24 @@ fn rgb_floats(rgb: Int) -> (Float, Float, Float) = (
   int.to_float(int.band(int.bshr(rgb, 8), 0xFF)) / 255.0,
   int.to_float(int.band(rgb, 0xFF)) / 255.0,
 )
+
+test "a composition lies from the cursor, moved left to end within the row" {
+  let c = (s) => { let cps = text.code_points(s); Compose { cps: cps, caret: list.len(cps), from: 0, to: 0 } }
+  assert_eq(compose_span(c("a"), 2, 10), (2, 0, 1))
+  assert_eq(compose_span(c("あ"), 2, 10), (2, 0, 1))
+  // At the right edge it moves left.
+  assert_eq(compose_span(c("あ"), 9, 10), (8, 0, 1))
+  // Wider than the row: its end, where the caret is.
+  assert_eq(compose_span(c("あいうえおか"), 0, 10), (0, 1, 6))
+  assert_eq(compose_caret(c("あいうえおか"), 0, 10), 10)
+}
+
+test "a long composition shows from the caret when the caret is before its end" {
+  let cps = text.code_points("あいうえおか")
+  let at_start = Compose { cps: cps, caret: 0, from: 0, to: 0 }
+  assert_eq(compose_span(at_start, 0, 10), (0, 0, 5))
+  // Converting: from the part being converted.
+  let converting = Compose { cps: cps, caret: 6, from: 1, to: 3 }
+  assert_eq(compose_span(converting, 0, 10), (0, 1, 6))
+  assert_eq(compose_caret(converting, 0, 10), 0)
+}
