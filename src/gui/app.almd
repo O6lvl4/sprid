@@ -60,8 +60,10 @@ let SYNC_LIMIT = 150
 type Tab = {
   t: terminal.Terminal,
   fd: Int,
-  // Lines scrolled back into scrollback, 0 at the bottom.
+  // Lines scrolled back into scrollback, 0 at the bottom, and pixels
+  // further back than that: a trackpad scrolls by the pixel.
   back: Int,
+  shift: Int,
   sel: Option[view.Selection],
   // When a synchronized update began, -1 when none is open.
   sync_since: Int,
@@ -100,6 +102,18 @@ type Ui = {
   field: field.Field,
   find_focus: Bool,
   field_drag: Bool,
+  // Dragging the scrollbar, and where in its thumb it was taken, pixels.
+  scroll_drag: Bool,
+  scroll_grab: Int,
+  // The input method: its composition is ending — the text is committed or
+  // dropped — and, when committed, how long the composition is still shown
+  // while the program echoes the text (-1: not waiting). Shown until then,
+  // the text doesn't blink out between the two.
+  ime_ending: Bool,
+  ghost_until: Int,
+  // Where the input method was last told the caret is.
+  ime_x: Int,
+  ime_y: Int,
 }
 
 /// How the window starts: a command for the first tab instead of the login
@@ -168,7 +182,7 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
 
   let (cols, rows) = render.grid_size(r, width, height, 1)
   if (cols, rows) != expected then { let _ = pty.resize(first_fd, cols, rows) } else ()
-  var tabs: List[Tab] = [Tab { t: terminal.new(cols, rows), fd: first_fd, back: 0, sel: none, sync_since: -1, name: "" }]
+  var tabs: List[Tab] = [Tab { t: terminal.new(cols, rows), fd: first_fd, back: 0, shift: 0, sel: none, sync_since: -1, name: "" }]
   var active = 0
   // For captures of the tab bar: more tabs running the login shell.
   let extra = match capture { some(_) => int.parse(env.get("SPRID_CAPTURE_TABS") ?? "1") ?? 1, none => 1 }
@@ -187,16 +201,23 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
   let ja = string.starts_with(env.get("LANG") ?? "", "ja")
   var ui = Ui { preedit: [], wheel_acc: 0.0, dragging: false, anchor_line: 0, anchor_col: 0, dirty: true,
                 renaming: false, draft: "", click_ms: 0, click_tab: -1, home: home, finding: false, find: search.empty(),
-                field: field.of(""), find_focus: false, field_drag: false,
+                field: field.of(""), find_focus: false, field_drag: false, scroll_drag: false, scroll_grab: 0,
+                ime_ending: false, ghost_until: -1, ime_x: -1, ime_y: -1,
                 app_button: -1, report_col: -1, report_row: -1 }
   var alive = true
   var last_frame = 0
   var streaming = false
   let debug = env.get("SPRID_DEBUG") != none
+  let trace = env.get("SPRID_TRACE") != none
   var frames = 0
   var draw_ms = 0
   var wakes = 0
   var wake_report = 0
+  // Debug: from an input being taken to the frame showing it, ms.
+  var input_at = -1
+  var latency_max = 0
+  var latency_sum = 0
+  var latency_n = 0
   // When the window last changed size, while scrollback waits to be
   // reflowed; -1 when it doesn't.
   var resized_at = -1
@@ -208,7 +229,8 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
     let idle = if capture == none then -1 else 50
     let settle_wait = if resized_at < 0 then -1 else int.max(0, resized_at + SETTLE_MS - now)
     let drawn_wait = if ui.dirty then int.max(frame_wait, sync_wait(tabs, active, now)) else idle
-    let timeout = if settle_wait < 0 then drawn_wait else if drawn_wait < 0 then settle_wait else int.min(drawn_wait, settle_wait)
+    let ghost_wait = if ui.ghost_until < 0 then -1 else int.max(0, ui.ghost_until - now)
+    let timeout = sooner(sooner(drawn_wait, settle_wait), ghost_wait)
     // With no time to wait, just take the window's events: arming the fd
     // watcher on every turn of a streaming loop costs more than it saves.
     alive = if timeout == 0 then window.pump() else window.wait_fds(list.map(tabs, (tb) => tb.fd), timeout)
@@ -219,7 +241,11 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
     }
     wakes = wakes + 1
     if debug and sys.now_ms() - wake_report >= 2000 then {
-      eprintln("sprid: ${int.to_string(wakes)} wakes in 2 s (dirty ${if ui.dirty then "yes" else "no"}, timeout ${int.to_string(timeout)})")
+      eprintln("sprid: ${int.to_string(wakes)} wakes in 2 s (dirty ${if ui.dirty then "yes" else "no"}, timeout ${int.to_string(timeout)})"
+        + ", input to frame avg ${int.to_string(latency_sum / int.max(1, latency_n))} max ${int.to_string(latency_max)} ms over ${int.to_string(latency_n)}")
+      latency_max = 0
+      latency_sum = 0
+      latency_n = 0
       wakes = 0
       wake_report = sys.now_ms()
     }
@@ -240,6 +266,7 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
     // Input goes to the active tab; what it asks of the tabs is done after
     // the tab is back in the list.
     var kind = window.next_event()
+    if kind != window.NONE and input_at < 0 then input_at = sys.now_ms()
     while kind != window.NONE {
       var act = Stay
       // Counted before the active tab is taken out of the list: with it out,
@@ -315,6 +342,9 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
       kind = if list.len(tabs) == 0 then window.NONE else window.next_event()
     }
     if list.len(tabs) == 0 then alive = false
+    // A composition dropped, or committed to the find bar or a tab's name,
+    // goes at once; one committed to the program stays till its echo.
+    if ui.ime_ending and (ui.ghost_until < 0 or sys.now_ms() >= ui.ghost_until) then end_composition(ui)
 
     // Every tab's output, the active tab's with the longer budget.
     streaming = false
@@ -323,8 +353,10 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
         some(tb) => {
           var cur = tb
           let (got, more) = drain(cur, if i == active then STREAM_DRAIN_MS else DRAIN_MS)
+          if got and trace then eprintln("out ${int.to_string(sys.now_ms())} tab ${int.to_string(i)} cursor ${int.to_string(cur.t.x)},${int.to_string(cur.t.y)}")
           if i == active then {
             if got then ui.dirty = true
+            if got and ui.ime_ending then end_composition(ui)
             if more then streaming = true
           }
           let replies = terminal.take_replies(cur.t)
@@ -365,8 +397,9 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
           let held = cur.sync_since >= 0 and clock - cur.sync_since < SYNC_LIMIT
           if not held then {
             let t0 = sys.now_ms()
-            render.draw(r, cur.t, cur.back, cur.sel, ui.preedit, width, height, titles, active,
+            render.draw(r, cur.t, cur.back, cur.shift, cur.sel, ui.preedit, width, height, titles, active,
               bar_of(ui))
+            if trace then eprintln("frame ${int.to_string(sys.now_ms())} cursor ${int.to_string(cur.t.x)},${int.to_string(cur.t.y)} line ${view.text_of(cur.t, view.screen_line(cur.t) + cur.t.y)}")
             frames = frames + 1
             draw_ms = draw_ms + sys.now_ms() - t0
             // The input method composes where typing goes: the find bar
@@ -374,9 +407,23 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
             let gy = render.grid_top(r, list.len(titles))
             let (ix, iy) = if ui.finding and ui.find_focus then render.find_caret(r, bar(ui), ui.preedit, list.len(titles), width)
               else (r.pad_x + cur.t.x * r.cell_w, gy + cur.t.y * r.cell_h)
-            window.set_ime_area(int.to_float(ix) / scale, int.to_float(iy) / scale,
-              int.to_float(r.cell_w) / scale, int.to_float(r.cell_h) / scale)
+            // Told only when it moves: each time the input method is told,
+            // it lays out its candidate window again, which shows as a
+            // flicker while typing.
+            if (ix, iy) != (ui.ime_x, ui.ime_y) then {
+              window.set_ime_area(int.to_float(ix) / scale, int.to_float(iy) / scale,
+                int.to_float(r.cell_w) / scale, int.to_float(r.cell_h) / scale)
+              ui.ime_x = ix
+              ui.ime_y = iy
+            }
             last_frame = clock
+            if input_at >= 0 then {
+              let lat = sys.now_ms() - input_at
+              latency_max = int.max(latency_max, lat)
+              latency_sum = latency_sum + lat
+              latency_n = latency_n + 1
+              input_at = -1
+            }
             ui.dirty = false
           }
           list.push(tabs, cur)
@@ -394,6 +441,7 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
           some(tb) => {
             var cur = tb
             cur.back = int.clamp(int.parse(env.get("SPRID_CAPTURE_BACK") ?? "0") ?? 0, 0, view.max_back(cur.t))
+            cur.shift = int.clamp(int.parse(env.get("SPRID_CAPTURE_SHIFT") ?? "0") ?? 0, 0, r.cell_h - 1)
             // The find bar searching for this, stepped up SPRID_CAPTURE_FIND_UP times.
             match env.get("SPRID_CAPTURE_FIND") {
               some(q) => {
@@ -415,7 +463,7 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
               },
               none => (),
             }
-            render.draw(r, cur.t, cur.back, cur.sel, ui.preedit, width, height, titles, active,
+            render.draw(r, cur.t, cur.back, cur.shift, cur.sel, ui.preedit, width, height, titles, active,
               bar_of(ui))
             list.push(tabs, cur)
           },
@@ -460,7 +508,7 @@ fn settle_all(mut tabs: List[Tab]) -> Unit = {
         var cur = tb
         if cur.t.reflow_pending then {
           terminal.settle(cur.t)
-          cur.back = 0
+          scroll_to(cur, 0)
           cur.sel = none
         }
         list.push(tabs, cur)
@@ -506,7 +554,7 @@ fn open_tab(r: render.Renderer, width: Int, height: Int, count: Int, command: St
   let (cols, rows) = render.grid_size(r, width, height, count)
   let fd = pty.spawn(command, cwd, cols, rows)
   if fd < 0 then none
-  else some(Tab { t: terminal.new(cols, rows), fd: fd, back: 0, sel: none, sync_since: -1, name: "" })
+  else some(Tab { t: terminal.new(cols, rows), fd: fd, back: 0, shift: 0, sel: none, sync_since: -1, name: "" })
 }
 
 /// Close tab `i` and its program, keeping the other tabs in order.
@@ -546,7 +594,7 @@ fn fit(mut tabs: List[Tab], r: render.Renderer, width: Int, height: Int, live: B
           let _ = pty.resize(cur.fd, cols, rows)
           // Lines are numbered anew: a view scrolled back or a selection
           // would point at other lines.
-          cur.back = 0
+          scroll_to(cur, 0)
           cur.sel = none
         }
         list.push(tabs, cur)
@@ -601,7 +649,7 @@ fn drain(mut tb: Tab, budget_ms: Int) -> (Bool, Bool) = {
   }
   // Scrolled back, the viewport stays on the lines it shows while new ones
   // arrive below.
-  if tb.back > 0 then tb.back = int.min(tb.back + view.screen_line(tb.t) - screen_before, view.max_back(tb.t))
+  if tb.back > 0 or tb.shift > 0 then tb.back = int.min(tb.back + view.screen_line(tb.t) - screen_before, view.max_back(tb.t))
   (got, more)
 }
 
@@ -611,6 +659,10 @@ fn drain(mut tb: Tab, budget_ms: Int) -> (Bool, Bool) = {
 /// returned. `tabs` is how many are open, `width` the drawable's.
 effect fn handle(mut cur: Tab, mut ui: Ui, kind: Int, r: render.Renderer, scale: Float, tabs: Int, width: Int) -> Act = {
   let t = cur.t
+  // Text committed by the input method, going to the program: the
+  // composition stays shown until the program echoes it, or GHOST_MS.
+  if kind == window.TEXT and ui.ime_ending and not ui.renaming and not (ui.finding and ui.find_focus) then
+    ui.ghost_until = sys.now_ms() + GHOST_MS
   // A press anywhere but the find bar takes the focus from it: typing goes
   // to the program again, the matches stay marked.
   if kind == window.MOUSE_DOWN and ui.finding and ui.find_focus
@@ -681,13 +733,13 @@ effect fn handle(mut cur: Tab, mut ui: Ui, kind: Int, r: render.Renderer, scale:
         else if code == window.KEY_UP then cur.back + 1
         else cur.back - 1
       if back > cur.back then terminal.settle(cur.t)
-      cur.back = int.clamp(back, 0, view.max_back(cur.t))
+      scroll_to(cur, int.clamp(back, 0, view.max_back(cur.t)))
       ui.dirty = true
       Stay
     } else if edit != "" then {
       let _ = pty.write(cur.fd, edit)
       if cur.back != 0 then ui.dirty = true
-      cur.back = 0
+      scroll_to(cur, 0)
       Stay
     } else if command and lower == 0x66 then {
       // Cmd+F: the find bar, focused, its last query selected — typing
@@ -709,7 +761,7 @@ effect fn handle(mut cur: Tab, mut ui: Ui, kind: Int, r: render.Renderer, scale:
       // typed, at the top. A program running keeps its screen: clearing it
       // under the program would leave its drawing out of step.
       scrollback.clear(cur.t.sb)
-      cur.back = 0
+      scroll_to(cur, 0)
       cur.sel = none
       if pty.busy(cur.fd) == "" then {
         let _ = pty.write(cur.fd, "\x0c")
@@ -726,7 +778,7 @@ effect fn handle(mut cur: Tab, mut ui: Ui, kind: Int, r: render.Renderer, scale:
     } else if page then {
       let step = if code == window.KEY_PAGE_UP then t.rows - 1 else 1 - t.rows
       terminal.settle(cur.t)
-      cur.back = int.clamp(cur.back + step, 0, view.max_back(cur.t))
+      scroll_to(cur, int.clamp(cur.back + step, 0, view.max_back(cur.t)))
       ui.dirty = true
       Stay
     } else {
@@ -736,10 +788,24 @@ effect fn handle(mut cur: Tab, mut ui: Ui, kind: Int, r: render.Renderer, scale:
         let _ = pty.write(cur.fd, out)
         // Typing brings the viewport back to the prompt.
         if cur.back != 0 then ui.dirty = true
-        cur.back = 0
+        scroll_to(cur, 0)
       }
       Stay
     }
+  } else if kind == window.WHEEL and not (t.mouse_mode != 0 and t.mouse_sgr) and not t.alt then {
+    // Scrollback follows the wheel by the pixel: a trackpad moves the text
+    // with the fingers, not a line at a time once a line's worth adds up.
+    ui.wheel_acc = ui.wheel_acc + window.event_dy() * scale
+    let px = float.to_int(ui.wheel_acc)
+    ui.wheel_acc = ui.wheel_acc - int.to_float(px)
+    if px < 0 then terminal.settle(cur.t)
+    let pos = int.clamp(cur.back * r.cell_h + cur.shift - px, 0, view.max_back(cur.t) * r.cell_h)
+    if pos != cur.back * r.cell_h + cur.shift then {
+      cur.back = pos / r.cell_h
+      cur.shift = pos % r.cell_h
+      ui.dirty = true
+    }
+    Stay
   } else if kind == window.WHEEL then {
     ui.wheel_acc = ui.wheel_acc + window.event_dy()
     let line_px = int.to_float(r.cell_h) / scale
@@ -753,16 +819,12 @@ effect fn handle(mut cur: Tab, mut ui: Ui, kind: Int, r: render.Renderer, scale:
         for _ in 0..<int.abs(lines) {
           let _ = pty.write(cur.fd, "\x1b[<${int.to_string(button)};${int.to_string(col + 1)};${int.to_string(row + 1)}M")
         }
-      } else if t.alt then {
+      } else {
         // A full-screen program without the mouse scrolls by arrow keys.
         let key = keys.encode(keys.KEY, if lines < 0 then keys.KEY_UP else keys.KEY_DOWN, 0, t.app_cursor)
         for _ in 0..<int.abs(lines) {
           let _ = pty.write(cur.fd, key)
         }
-      } else {
-        if lines < 0 then terminal.settle(cur.t)
-        cur.back = int.clamp(cur.back - lines, 0, view.max_back(cur.t))
-        ui.dirty = true
       }
     }
     Stay
@@ -783,6 +845,20 @@ effect fn handle(mut cur: Tab, mut ui: Ui, kind: Int, r: render.Renderer, scale:
       ui.dirty = true
     }
     if kind == window.MOUSE_UP then ui.field_drag = false
+    Stay
+  } else if kind == window.MOUSE_DOWN and window.event_code() == 0
+      and render.on_scrollbar(r, t, width, float.to_int(window.event_x() * scale)) then {
+    // The scrollbar: its thumb is dragged from where it was taken; a press
+    // on the track brings the thumb's middle there.
+    let py = float.to_int(window.event_y() * scale)
+    let (y0, y1) = render.thumb(r, t, cur.back, cur.shift, tabs, window.height())
+    ui.scroll_grab = if py >= y0 and py < y1 then py - y0 else (y1 - y0) / 2
+    ui.scroll_drag = true
+    drag_scrollbar(cur, ui, r, scale, tabs)
+    Stay
+  } else if ui.scroll_drag and (kind == window.MOUSE_MOVE or kind == window.MOUSE_UP) then {
+    drag_scrollbar(cur, ui, r, scale, tabs)
+    if kind == window.MOUSE_UP then ui.scroll_drag = false
     Stay
   } else if (kind == window.MOUSE_DOWN or kind == window.MOUSE_UP or kind == window.MOUSE_MOVE) and app_mouse(t, ui, r, scale, tabs, kind) then {
     // The program asked for the mouse: presses, releases
@@ -837,7 +913,7 @@ effect fn handle(mut cur: Tab, mut ui: Ui, kind: Int, r: render.Renderer, scale:
       } else GoTo(i)
     } else {
       let (col, row) = cell_at(r, t, scale, tabs)
-      ui.anchor_line = view.top_line(t, cur.back) + row
+      ui.anchor_line = pointer_line(r, cur, scale, tabs)
       ui.anchor_col = col
       ui.dragging = true
       if cur.sel != none then ui.dirty = true
@@ -846,7 +922,7 @@ effect fn handle(mut cur: Tab, mut ui: Ui, kind: Int, r: render.Renderer, scale:
     }
   } else if kind == window.MOUSE_MOVE and ui.dragging then {
     let (col, row) = cell_at(r, t, scale, tabs)
-    let line = view.top_line(t, cur.back) + row
+    let line = pointer_line(r, cur, scale, tabs)
     // A click that wobbles within its cell selects nothing: a selection
     // starts once the pointer reaches another cell.
     let sel = if line == ui.anchor_line and col == ui.anchor_col then none
@@ -860,7 +936,15 @@ effect fn handle(mut cur: Tab, mut ui: Ui, kind: Int, r: render.Renderer, scale:
     ui.dragging = false
     Stay
   } else if kind == window.COMPOSE then {
-    ui.preedit = text.code_points(window.event_text())
+    // The input method sends an empty composition before committing its
+    // text: the composition stays until the batch is done (see `run_with`).
+    let cps = text.code_points(window.event_text())
+    if list.len(cps) == 0 and list.len(ui.preedit) > 0 then ui.ime_ending = true
+    else {
+      ui.preedit = cps
+      ui.ime_ending = false
+      ui.ghost_until = -1
+    }
     ui.dirty = true
     Stay
   } else Stay
@@ -984,7 +1068,7 @@ fn find_step(mut cur: Tab, mut ui: Ui, dir: Int) -> Unit = {
 fn settle_for_find(mut cur: Tab) -> Unit = {
   if cur.t.reflow_pending then {
     terminal.settle(cur.t)
-    cur.back = 0
+    scroll_to(cur, 0)
     cur.sel = none
   }
 }
@@ -993,7 +1077,25 @@ fn settle_for_find(mut cur: Tab) -> Unit = {
 fn follow(mut cur: Tab, f: search.Find) -> Unit = {
   let top = view.top_line(cur.t, cur.back)
   if f.index >= 0 and (f.line < top or f.line >= top + cur.t.rows) then
-    cur.back = int.clamp(view.screen_line(cur.t) - f.line + cur.t.rows / 2, 0, view.max_back(cur.t))
+    scroll_to(cur, int.clamp(view.screen_line(cur.t) - f.line + cur.t.rows / 2, 0, view.max_back(cur.t)))
+}
+
+/// Stop showing the composition.
+fn end_composition(mut ui: Ui) -> Unit = {
+  let nothing: List[Int] = []
+  ui.preedit = nothing
+  ui.ime_ending = false
+  ui.ghost_until = -1
+  ui.dirty = true
+}
+
+/// The sooner of two waits, ms; -1 is no limit.
+fn sooner(a: Int, b: Int) -> Int = if a < 0 then b else if b < 0 then a else int.min(a, b)
+
+/// Scroll `tb` to `back` lines into scrollback, on a line's edge.
+fn scroll_to(mut tb: Tab, back: Int) -> Unit = {
+  tb.back = back
+  tb.shift = 0
 }
 
 /// Whether an act makes another tab the active one, or changes which there are.
@@ -1005,6 +1107,9 @@ fn switches_tab(act: Act) -> Bool = match act {
   GoTo(_) => true,
   _ => false,
 }
+
+/// Longest a committed composition is shown waiting for the program's echo, ms.
+let GHOST_MS = 150
 
 /// Longest gap between the presses of a double click, ms (macOS's default).
 let DOUBLE_CLICK_MS = 500
@@ -1030,6 +1135,28 @@ fn finish_rename(mut cur: Tab, mut ui: Ui, keep: Bool) -> Unit = {
   ui.renaming = false
   ui.draft = ""
   ui.dirty = true
+}
+
+/// Scroll to where the pointer puts the scrollbar's thumb.
+fn drag_scrollbar(mut cur: Tab, mut ui: Ui, r: render.Renderer, scale: Float, tabs: Int) -> Unit = {
+  terminal.settle(cur.t)
+  let py = float.to_int(window.event_y() * scale)
+  let pos = render.scroll_pos_at(r, cur.t, tabs, window.height(), py - ui.scroll_grab)
+  if pos != cur.back * r.cell_h + cur.shift then {
+    cur.back = pos / r.cell_h
+    cur.shift = pos % r.cell_h
+    ui.dirty = true
+  }
+}
+
+/// The line under the pointer, as `tb` is scrolled.
+fn pointer_line(r: render.Renderer, tb: Tab, scale: Float, tabs: Int) -> Int = {
+  let py = float.to_int(window.event_y() * scale)
+  // The viewport's top line starts `shift` pixels below the grid's top; the
+  // line above it shows in those pixels.
+  let rel = py - render.grid_top(r, tabs) - tb.shift
+  let row = if rel < 0 then (if tb.shift > 0 then -1 else 0) else int.min(rel / r.cell_h, tb.t.rows - 1)
+  view.top_line(tb.t, tb.back) + row
 }
 
 /// The cell under the pointer: (column, row of the viewport).

@@ -379,17 +379,23 @@ fn glyph_quad(r: Renderer, slot: Int, x: Int, y: Int, rgb: Int, alpha: Float, sx
 // ── Frames ────────────────────────────────────────────────────────────────
 
 /// Draw `t` into the window's current frame: the viewport scrolled `back`
-/// lines into scrollback, `sel` highlighted, and `preedit` — what the input
+/// lines and `shift` pixels into scrollback, `sel` highlighted, and `preedit` — what the input
 /// method is composing — at the cursor. `width` x `height` is the drawable.
 /// With `find`, its matches are marked and its bar is shown — while the bar
 /// has the focus, with the composition in it.
-fn draw(mut r: Renderer, t: terminal.Terminal, back: Int, sel: Option[view.Selection],
+fn draw(mut r: Renderer, t: terminal.Terminal, back: Int, shift: Int, sel: Option[view.Selection],
         preedit: List[Int], width: Int, height: Int, tabs: List[String], active: Int,
         find: Option[Bar]) -> Unit = {
   let gy = grid_top(r, list.len(tabs))
   let titles = if list.len(tabs) > 1 then list.map(tabs, (s) => text.code_points(s)) else []
-  let top_line = view.top_line(t, back)
-  let lines = list.map(0..<t.rows, (y) => view.line_at(t, top_line + y))
+  // Scrolled by part of a line, the line above the viewport shows in part at
+  // its top: one row more is drawn, from `shift` pixels less than a row
+  // above the grid, and what falls outside the grid is covered.
+  let extra = if shift > 0 then 1 else 0
+  let top_line = view.top_line(t, back) - extra
+  let shown = t.rows + extra
+  let row_y = gy - (if extra == 1 then r.cell_h - shift else 0)
+  let lines = list.map(0..<shown, (y) => view.line_at(t, top_line + y))
   let query = match find { some(b) => b.find.query, none => "" }
   // The matches on each row, and the current one's columns where it is.
   let found = list.map(lines, (line) => match line {
@@ -447,7 +453,7 @@ fn draw(mut r: Renderer, t: terminal.Terminal, back: Int, sel: Option[view.Selec
 
   // Room for the worst case: per cell a background, a glyph and two lines,
   // plus marks, the cursor, the scrollbar and the composition.
-  let quads = t.rows * t.cols * 4 + marks_total + 3 + list.len(preedit) * 3 + title_chars + list.len(titles) * 3 + 1
+  let quads = shown * t.cols * 4 + 2 + marks_total + 3 + list.len(preedit) * 3 + title_chars + list.len(titles) * 3 + 1
     + list.len(bar) * 3 + FIND_QUADS
   if quads * 6 > r.capacity then {
     // Grow by half again, so a count creeping up doesn't replace the buffer
@@ -463,21 +469,26 @@ fn draw(mut r: Renderer, t: terminal.Terminal, back: Int, sel: Option[view.Selec
   let sy = 2.0 / int.to_float(height)
   var n = 0
   gpu.begin_data()
-  for y in 0..<t.rows {
+  for y in 0..<shown {
     match lines[y] {
       some(row) => {
         let lit = if current.0 == y then Lit { spans: found[y], from: current.1, to: current.2 } else Lit { spans: found[y], from: -1, to: -1 }
-        n = n + draw_row(r, row, top_line + y, sel, lit, gy + y * r.cell_h, t.cols, sx, sy)
+        n = n + draw_row(r, row, top_line + y, sel, lit, row_y + y * r.cell_h, t.cols, sx, sy)
       },
       none => (),
     }
   }
+  if extra == 1 then {
+    rect(r, 0, 0, width, gy, DEFAULT_BG, 1.0, sx, sy)
+    rect(r, 0, gy + t.rows * r.cell_h, width, height, DEFAULT_BG, 1.0, sx, sy)
+    n = n + 2
+  }
 
   // The cursor, where its line is in view; the composition over it.
   let cursor_row = view.screen_line(t) + t.y - top_line
-  if cursor_row >= 0 and cursor_row < t.rows then {
+  if cursor_row >= extra and cursor_row < shown then {
     let cx = r.pad_x + t.x * r.cell_w
-    let ctop = gy + cursor_row * r.cell_h
+    let ctop = row_y + cursor_row * r.cell_h
     let in_bar = match find { some(b) => b.focused, none => false }
     if list.len(preedit) > 0 and not in_bar then {
       var px = cx
@@ -500,14 +511,12 @@ fn draw(mut r: Renderer, t: terminal.Terminal, back: Int, sel: Option[view.Selec
     }
   }
 
-  // Scrolled back: a thumb on the right edge shows where.
-  if back > 0 then {
-    let total = view.max_back(t) + t.rows
-    let track = height - gy - r.pad_y
-    let thumb = int.max(r.cell_h, track * t.rows / total)
-    let y0 = gy + (track - thumb) * (view.max_back(t) - back) / int.max(1, view.max_back(t))
-    let w = int.max(3, r.pad_x / 3)
-    rect(r, width - w - 2, y0, width - 2, y0 + thumb, DEFAULT_FG, 0.35, sx, sy)
+  // The scrollbar, while there is scrollback: faint at the bottom, plainer
+  // scrolled back.
+  if view.max_back(t) > 0 then {
+    let (y0, y1) = thumb(r, t, back, shift, list.len(tabs), height)
+    let w = scrollbar_width(r)
+    rect(r, width - w - r.pad_x / 4, y0, width - r.pad_x / 4, y1, DEFAULT_FG, if back > 0 or shift > 0 then 0.4 else 0.2, sx, sy)
     n = n + 1
   }
 
@@ -532,6 +541,41 @@ fn draw(mut r: Renderer, t: terminal.Terminal, back: Int, sel: Option[view.Selec
   gpu.end_pass(pass)
   gpu.finish_and_submit(r.device, encoder)
 }
+
+// ── Scrollbar ─────────────────────────────────────────────────────────────
+
+fn scrollbar_width(r: Renderer) -> Int = int.max(4, r.pad_x / 3)
+
+/// The scrollbar's track: its top and height, pixels.
+fn track(r: Renderer, tabs: Int, height: Int) -> (Int, Int) = {
+  let top = grid_top(r, tabs)
+  (top, int.max(1, height - top - r.pad_y))
+}
+
+/// The scrollbar thumb's top and bottom, pixels, for the view scrolled
+/// `back` lines and `shift` pixels.
+fn thumb(r: Renderer, t: terminal.Terminal, back: Int, shift: Int, tabs: Int, height: Int) -> (Int, Int) = {
+  let (top, len) = track(r, tabs, height)
+  let max = view.max_back(t) * r.cell_h
+  let size = int.min(len, int.max(r.cell_h, len * t.rows / (view.max_back(t) + t.rows)))
+  let pos = back * r.cell_h + shift
+  let y0 = top + (len - size) * (max - pos) / int.max(1, max)
+  (y0, y0 + size)
+}
+
+/// Where the view is scrolled to, pixels back, with the thumb's top at `y`.
+fn scroll_pos_at(r: Renderer, t: terminal.Terminal, tabs: Int, height: Int, y: Int) -> Int = {
+  let (top, len) = track(r, tabs, height)
+  let max = view.max_back(t) * r.cell_h
+  let (y0, y1) = thumb(r, t, 0, 0, tabs, height)
+  let room = int.max(1, len - (y1 - y0))
+  int.clamp(max - (y - top) * max / room, 0, max)
+}
+
+/// Whether pixel column `x` is on the scrollbar: the right margin, while
+/// there is scrollback to scroll.
+fn on_scrollbar(r: Renderer, t: terminal.Terminal, width: Int, x: Int) -> Bool =
+  view.max_back(t) > 0 and x >= width - int.max(r.pad_x, scrollbar_width(r) * 3)
 
 /// The tab bar: one tab per title, `active` raised to the terminal's
 /// background with an accent line, the others on a darker strip. Returns the
