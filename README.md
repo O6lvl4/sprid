@@ -61,6 +61,10 @@ What works:
 - **Input**: keys with Ctrl / Option-as-Alt / Shift in xterm's encoding,
   DECCKM, function keys, the macOS input method (Japanese composition is drawn
   at the cursor), Cmd+V paste with bracketed paste.
+- **Claude Code**: the kitty keyboard protocol's disambiguation, so
+  Shift+Enter starts a new line in the prompt; mouse presses, drags and
+  motion reported to a program that asks (SGR), with Shift held for
+  selecting; XTVERSION and the dark colour scheme answered.
 - **Scrollback**: the wheel scrolls back through it (full-screen programs get
   arrow keys, or wheel reports if they asked for the mouse), Shift+PageUp /
   PageDown by pages. The view stays put while new output arrives below.
@@ -125,7 +129,7 @@ zeroes 64 KB per 1 KB it returns, and the window sleeps on its PTYs and
 events at once instead of polling (snaidhm's `wait_fds`).
 
 Not yet: colour emoji (snaidhm reads outlines, not
-bitmaps), mouse clicks reported to programs, the window title, a config
+bitmaps), the window title, a config
 file, splits.
 
 ## Milestones

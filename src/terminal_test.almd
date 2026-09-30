@@ -297,3 +297,17 @@ test "a live resize settles to what one resize gives" {
   assert_eq(scrollback.texts(live.sb), scrollback.texts(once.sb))
   assert_eq((live.x, live.y), (once.x, once.y))
 }
+
+test "kitty keyboard flags are pushed, queried and popped" {
+  var t = run(10, 2, "\x1b[?u")
+  assert_eq(terminal.take_replies(t), "\x1b[?0u")
+  terminal.feed_string(t, "\x1b[>31u\x1b[?u")
+  assert_eq(terminal.take_replies(t), "\x1b[?1u")
+  terminal.feed_string(t, "\x1b[<u\x1b[?u")
+  assert_eq(terminal.take_replies(t), "\x1b[?0u")
+}
+
+test "XTVERSION and the colour scheme are answered" {
+  var t = run(10, 2, "\x1b[>0q\x1b[?996n")
+  assert_eq(terminal.take_replies(t), "\x1bP>|sprid 0.1\x1b\\\x1b[?997;1n")
+}

@@ -33,10 +33,29 @@ let KEY_F1 = 112
 /// window's, not the program's). `app_cursor` is DECCKM: arrows and Home/End
 /// send SS3 instead of CSI.
 fn encode(kind: Int, code: Int, mods: Int, app_cursor: Bool) -> String =
+  encode_with(kind, code, mods, app_cursor, 0)
+
+/// `encode` under kitty keyboard `flags` (the program's, see
+/// terminal.kitty_flags). With 1, disambiguate escape codes, a key that
+/// xterm's encoding confuses with another is sent as `CSI code ; mods u`:
+/// Escape, and Enter, Tab and Backspace with a modifier (Shift+Enter is not
+/// Enter), and text typed with Ctrl or Alt (Ctrl+I is not Tab).
+fn encode_with(kind: Int, code: Int, mods: Int, app_cursor: Bool, flags: Int) -> String =
   if int.band(mods, MOD_SUPER) != 0 then ""
+  else if int.band(flags, 1) != 0 and kind == TEXT and int.band(mods, MOD_CTRL + MOD_ALT) != 0 then
+    csi_u(if code >= 0x41 and code <= 0x5A then code + 32 else code, mods)
+  else if int.band(flags, 1) != 0 and kind == KEY and code == KEY_ESCAPE then csi_u(27, mods)
+  else if int.band(flags, 1) != 0 and kind == KEY and mods != 0 and (code == KEY_ENTER or code == KEY_TAB or code == KEY_BACKSPACE) then
+    csi_u(if code == KEY_BACKSPACE then 127 else code, mods)
   else if kind == TEXT then text(code, mods)
   else if kind == KEY then key(code, mods, app_cursor)
   else ""
+
+/// `CSI code u`, or `CSI code ; mods u` with modifiers held.
+fn csi_u(code: Int, mods: Int) -> String = {
+  let m = modifier_param(mods)
+  if m > 1 then "\x1b[${int.to_string(code)};${int.to_string(m)}u" else "\x1b[${int.to_string(code)}u"
+}
 
 /// A typed character. Ctrl makes a control character of it; Alt (Option, as
 /// macos-option-as-alt) sends ESC before it.
@@ -154,4 +173,16 @@ test "editing and function keys" {
 test "paste brackets and normalizes newlines" {
   assert_eq(paste("a\nb\r\nc", false), "a\rb\rc")
   assert_eq(paste("x\x1b[201~y", true), "\x1b[200~xy\x1b[201~")
+}
+
+test "kitty disambiguation tells modified keys apart" {
+  assert_eq(encode_with(KEY, KEY_ENTER, MOD_SHIFT, false, 1), "\x1b[13;2u")
+  assert_eq(encode_with(KEY, KEY_ENTER, 0, false, 1), "\r")
+  assert_eq(encode_with(KEY, KEY_ESCAPE, 0, false, 1), "\x1b[27u")
+  assert_eq(encode_with(TEXT, 0x63, MOD_CTRL, false, 1), "\x1b[99;5u")
+  assert_eq(encode_with(TEXT, 0x61, MOD_ALT, false, 1), "\x1b[97;3u")
+  assert_eq(encode_with(TEXT, 0x41, MOD_SHIFT, false, 1), "A")
+  assert_eq(encode_with(KEY, KEY_TAB, MOD_SHIFT, false, 1), "\x1b[9;2u")
+  assert_eq(encode_with(KEY, KEY_UP, 0, false, 1), "\x1b[A")
+  assert_eq(encode_with(KEY, KEY_ENTER, MOD_SHIFT, false, 0), "\r")
 }

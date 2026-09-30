@@ -76,6 +76,11 @@ type Ui = {
   // The last press on the tab bar, to tell a double click: when, which tab.
   click_ms: Int,
   click_tab: Int,
+  // The button held in a press reported to the program, -1 when none, and
+  // the cell the pointer was last reported at.
+  app_button: Int,
+  report_col: Int,
+  report_row: Int,
   // $HOME, which titles show as "~".
   home: String,
 }
@@ -157,7 +162,8 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
 
   let home = env.get("HOME") ?? ""
   var ui = Ui { preedit: [], wheel_acc: 0.0, dragging: false, anchor_line: 0, anchor_col: 0, dirty: true,
-                renaming: false, draft: "", click_ms: 0, click_tab: -1, home: home }
+                renaming: false, draft: "", click_ms: 0, click_tab: -1, home: home,
+                app_button: -1, report_col: -1, report_row: -1 }
   var alive = true
   var last_frame = 0
   var streaming = false
@@ -538,7 +544,7 @@ effect fn handle(mut cur: Tab, mut ui: Ui, kind: Int, r: render.Renderer, scale:
       Stay
     } else {
       let out = if command and (code == 0x76 or code == 0x56) then keys.paste(clipboard()!, t.bracketed_paste)
-                else keys.encode(kind, code, mods, t.app_cursor)
+                else keys.encode_with(kind, code, mods, t.app_cursor, t.kitty_flags)
       if out != "" then {
         let _ = pty.write(cur.fd, out)
         // Typing brings the viewport back to the prompt.
@@ -572,6 +578,40 @@ effect fn handle(mut cur: Tab, mut ui: Ui, kind: Int, r: render.Renderer, scale:
         ui.dirty = true
       }
     }
+    Stay
+  } else if (kind == window.MOUSE_DOWN or kind == window.MOUSE_UP or kind == window.MOUSE_MOVE) and app_mouse(t, ui, r, scale, tabs, kind) then {
+    // The program asked for the mouse (Claude Code does): presses, releases
+    // and motion are its, as SGR reports. Shift held keeps them the
+    // window's, for selecting text as anywhere else.
+    let (col, row) = cell_at(r, t, scale, tabs)
+    let mods = window.event_mods()
+    // Modifier bits of a report: Alt 8, Ctrl 16 (Shift is the window's).
+    let held = (if int.band(mods, window.MOD_ALT) != 0 then 8 else 0)
+      + (if int.band(mods, window.MOD_CTRL) != 0 then 16 else 0)
+    let at = ";${int.to_string(col + 1)};${int.to_string(row + 1)}"
+    if kind == window.MOUSE_DOWN then {
+      // The window's buttons are left 0, right 1, middle 2; a report's
+      // left 0, middle 1, right 2.
+      let code = window.event_code()
+      let button = if code == 1 then 2 else if code == 2 then 1 else 0
+      ui.app_button = button
+      let _ = pty.write(cur.fd, "\x1b[<${int.to_string(button + held)}${at}M")
+    } else if kind == window.MOUSE_UP then {
+      if ui.app_button >= 0 then {
+        let _ = pty.write(cur.fd, "\x1b[<${int.to_string(ui.app_button + held)}${at}m")
+      }
+      ui.app_button = -1
+    } else if (col, row) != (ui.report_col, ui.report_row) then {
+      // Motion: with a button held under 1002 and 1003, without one only
+      // under 1003; once per cell.
+      if ui.app_button >= 0 and t.mouse_mode >= 1002 then {
+        let _ = pty.write(cur.fd, "\x1b[<${int.to_string(ui.app_button + 32 + held)}${at}M")
+      } else if ui.app_button < 0 and t.mouse_mode == 1003 then {
+        let _ = pty.write(cur.fd, "\x1b[<${int.to_string(35 + held)}${at}M")
+      }
+    }
+    ui.report_col = col
+    ui.report_row = row
     Stay
   } else if kind == window.MOUSE_DOWN and window.event_code() == 0 then {
     let py = float.to_int(window.event_y() * scale)
@@ -619,6 +659,15 @@ effect fn handle(mut cur: Tab, mut ui: Ui, kind: Int, r: render.Renderer, scale:
     ui.dirty = true
     Stay
   } else Stay
+}
+
+/// Whether a mouse input goes to the program: it asked for the mouse (in SGR
+/// form), Shift isn't held, and the pointer is not on the tab bar — or it
+/// ends a press the program was sent.
+fn app_mouse(t: terminal.Terminal, ui: Ui, r: render.Renderer, scale: Float, tabs: Int, kind: Int) -> Bool = {
+  let wanted = t.mouse_mode != 0 and t.mouse_sgr and int.band(window.event_mods(), window.MOD_SHIFT) == 0
+  let on_bar = tabs > 1 and float.to_int(window.event_y() * scale) < render.bar_height(r)
+  (wanted and not on_bar and not ui.dragging) or (kind == window.MOUSE_UP and ui.app_button >= 0)
 }
 
 /// Longest gap between the presses of a double click, ms (macOS's default).

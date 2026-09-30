@@ -37,6 +37,13 @@ let IGNORED_STRING = 8
 let OSC_MAX = 4096
 let MAX_PARAMS = 32
 
+/// What XTVERSION reports.
+let VERSION = "0.1"
+
+/// Kitty keyboard flags sprid implements: 1, disambiguate escape codes —
+/// what lets a program tell Shift+Enter from Enter.
+let KITTY_SUPPORTED = 1
+
 /// Default scrollback budget: 10 MB, the same as Ghostty's default.
 let DEFAULT_SCROLLBACK = 10000000
 
@@ -80,6 +87,10 @@ type Terminal = {
   bracketed_paste: Bool,
   focus_events: Bool,
   mouse_mode: Int,
+  // Kitty keyboard protocol: the flags in force and those pushed under them.
+  // Of the flags only 1 (disambiguate escape codes) is supported.
+  kitty_flags: Int,
+  kitty_stack: List[Int],
   mouse_sgr: Bool,
   sync_output: Bool,
   // Scrollback still holds lines at an earlier width (see `resize_live`).
@@ -152,6 +163,8 @@ fn with_scrollback(cols: Int, rows: Int, limit: Int) -> Terminal = {
     bracketed_paste: false,
     focus_events: false,
     mouse_mode: 0,
+    kitty_flags: 0,
+    kitty_stack: [],
     mouse_sgr: false,
     sync_output: false,
     reflow_pending: false,
@@ -772,8 +785,24 @@ fn csi_dispatch(mut t: Terminal, final: Int) -> Unit = {
   else if t.private == 0x3F and t.intermediate == 0 then {
     if final == 0x68 then set_private_modes(t, true)
     else if final == 0x6C then set_private_modes(t, false)
-    else if final == 0x75 then reply(t, "\x1b[?0u")          // kitty keyboard: no flags
+    else if final == 0x75 then reply(t, "\x1b[?${int.to_string(t.kitty_flags)}u") // kitty keyboard: flags
+    else if final == 0x6E and arg0(t, 0) == 996 then reply(t, "\x1b[?997;1n")    // colour scheme: dark
   } else if t.private == 0x3E and final == 0x63 then reply(t, "\x1b[>1;10;0c")   // DA2
+  else if t.private == 0x3E and final == 0x71 then reply(t, "\x1bP>|sprid ${VERSION}\x1b\\") // XTVERSION
+  else if t.private == 0x3E and final == 0x75 then {                          // kitty keyboard: push
+    list.push(t.kitty_stack, t.kitty_flags)
+    t.kitty_flags = int.band(arg0(t, 0), KITTY_SUPPORTED)
+  } else if t.private == 0x3C and final == 0x75 then {                        // kitty keyboard: pop
+    for _ in 0..<arg(t, 0, 1) {
+      t.kitty_flags = list.pop(t.kitty_stack) ?? 0
+    }
+  } else if t.private == 0x3D and final == 0x75 then {                        // kitty keyboard: set
+    let flags = int.band(arg0(t, 0), KITTY_SUPPORTED)
+    let mode = arg(t, 1, 1)
+    t.kitty_flags = if mode == 2 then int.bor(t.kitty_flags, flags)
+      else if mode == 3 then int.band(t.kitty_flags, int.bxor(flags, 0xFF))
+      else flags
+  }
   else if t.intermediate == 0x20 and final == 0x71 then t.cursor_shape = arg0(t, 0) // DECSCUSR
   else if t.intermediate == 0x21 and final == 0x70 then soft_reset(t)             // DECSTR
 }
@@ -1024,6 +1053,9 @@ fn reset(mut t: Terminal) -> Unit = {
   t.tabs = default_tabs(t.cols)
   t.bracketed_paste = false
   t.mouse_mode = 0
+  t.kitty_flags = 0
+  let no_flags: List[Int] = []
+  t.kitty_stack = no_flags
   t.mouse_sgr = false
   t.focus_events = false
   t.sync_output = false
