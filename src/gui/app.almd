@@ -23,6 +23,7 @@ import self.gui.fonts
 import self.gui.render
 import self.keys
 import self.pty
+import self.scrollback
 import self.sys
 import self.terminal
 import self.view
@@ -562,7 +563,20 @@ effect fn handle(mut cur: Tab, mut ui: Ui, kind: Int, r: render.Renderer, scale:
     else if command and code >= 0x31 and code <= 0x39 then GoTo(code - 0x31)
     else if command_shift and ((kind == window.TEXT and code == 0x5D) or (kind == window.KEY and code == window.KEY_RIGHT)) then NextTab
     else if command_shift and ((kind == window.TEXT and code == 0x5B) or (kind == window.KEY and code == window.KEY_LEFT)) then PrevTab
-    else if command and (code == 0x63 or code == 0x43) then {
+    else if command and (code == 0x6B or code == 0x4B) then {
+      // Cmd+K: clear. Scrollback always; the screen too when the shell waits
+      // at its prompt — it is sent Ctrl+L, and draws the prompt, with what was
+      // typed, at the top. A program running keeps its screen: clearing it
+      // under the program would leave its drawing out of step.
+      scrollback.clear(cur.t.sb)
+      cur.back = 0
+      cur.sel = none
+      if pty.busy(cur.fd) == "" then {
+        let _ = pty.write(cur.fd, "\x0c")
+      }
+      ui.dirty = true
+      Stay
+    } else if command and (code == 0x63 or code == 0x43) then {
       // Cmd+C: the selection to the clipboard.
       match cur.sel {
         some(s) => copy(view.selected_text(t, s))!,

@@ -69,6 +69,9 @@ What works:
   arrow keys, or wheel reports if they asked for the mouse), Shift+PageUp /
   PageDown by pages. The view stays put while new output arrives below.
 - **Selection**: drag to select, across scrollback and screen; Cmd+C copies.
+- **Clear** (Cmd+K): scrollback goes; at the shell's prompt the screen too
+  (the shell is sent Ctrl+L and redraws its prompt at the top). A program
+  running keeps its screen.
 - **Colour emoji** from Apple Color Emoji: a wide character the grid face
   has no glyph for is drawn from the font's images, fitted to its two cells.
 - **Tabs**: Cmd+T opens one in the current tab's directory, Cmd+W closes,
