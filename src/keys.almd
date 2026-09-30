@@ -127,6 +127,19 @@ fn key(code: Int, mods: Int, app_cursor: Bool) -> String = {
 /// end of the line (Ctrl+A, Ctrl+E), Cmd+Backspace deletes to its start
 /// (Ctrl+U), Option+Left / Right move by word (ESC b, ESC f). "" for any
 /// other input.
+/// The modifiers a shortcut reads. On a Mac a terminal's own keys — copy,
+/// paste, tabs, find, font size, scrolling — are Cmd's; on Linux, where the
+/// desktop keeps Super, they are Ctrl+Shift's. So there Ctrl+Shift with a
+/// character, or with Enter, Home, End, Page Up / Down, Up or Down, reads as
+/// Cmd, and one set of shortcuts serves both. Ctrl+Shift with Left, Right or
+/// Backspace stays the program's (an editor selects by word with them).
+fn shortcut_mods(linux: Bool, kind: Int, code: Int, mods: Int) -> Int =
+  if not linux or mods != MOD_CTRL + MOD_SHIFT then mods
+  else if kind == TEXT then MOD_SUPER
+  else if kind == KEY and (code == KEY_ENTER or code == KEY_HOME or code == KEY_END or code == KEY_PAGE_UP
+      or code == KEY_PAGE_DOWN or code == KEY_UP or code == KEY_DOWN) then MOD_SUPER
+  else mods
+
 fn mac_edit(kind: Int, code: Int, mods: Int) -> String =
   if kind != KEY then ""
   else if mods == MOD_SUPER and code == KEY_LEFT then "\x01"
@@ -210,4 +223,16 @@ test "mac editing keys" {
   // Shift+Option+Left selects in some editors: left to the program.
   assert_eq(mac_edit(KEY, KEY_LEFT, MOD_ALT + MOD_SHIFT), "")
   assert_eq(mac_edit(TEXT, 0x61, MOD_SUPER), "")
+}
+
+test "on Linux Ctrl+Shift is a shortcut's Cmd, and nowhere else" {
+  let cs = MOD_CTRL + MOD_SHIFT
+  assert_eq(shortcut_mods(true, TEXT, 0x76, cs), MOD_SUPER)
+  assert_eq(shortcut_mods(true, KEY, KEY_PAGE_UP, cs), MOD_SUPER)
+  assert_eq(shortcut_mods(true, KEY, KEY_ENTER, cs), MOD_SUPER)
+  // The program's: Ctrl+Shift+Left, and plain Ctrl.
+  assert_eq(shortcut_mods(true, KEY, KEY_LEFT, cs), cs)
+  assert_eq(shortcut_mods(true, TEXT, 0x76, MOD_CTRL), MOD_CTRL)
+  // A Mac keeps its modifiers.
+  assert_eq(shortcut_mods(false, TEXT, 0x76, cs), cs)
 }

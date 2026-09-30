@@ -39,6 +39,9 @@ pub fn login_shell() -> String {
     }
 }
 
+/// Whether this is Linux: its shortcuts are Ctrl+Shift's, a Mac's Cmd's.
+pub fn is_linux() -> bool { cfg!(target_os = "linux") }
+
 /// The directory this process runs in.
 pub fn cwd() -> String {
     std::env::current_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()

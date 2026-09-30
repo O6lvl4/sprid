@@ -47,10 +47,13 @@ xattr -dr com.apple.quarantine /Applications/Sprid.app
 ### Linux
 
 No release build yet; build it from source (see Requirements). It runs on
-X11 — built, tested and driven on Ubuntu 24.04 (arm64) under Xvfb with Mesa's
-lavapipe — and should on Wayland, which is not tried yet. `scripts/linux/`
-holds that setup: `docker build -t sprid-linux scripts/linux`, then
-`scripts/linux/check.sh`. For the clipboard it uses wl-copy / wl-paste under
+Wayland — typed into, Japanese composed with fcitx5 + Mozc, and pasted into
+under Hyprland — and on X11 (Ubuntu 24.04 under Xvfb with Mesa's lavapipe;
+`scripts/linux/` holds that setup: `docker build -t sprid-linux
+scripts/linux`, then `scripts/linux/check.sh`). The Mac's Cmd shortcuts are
+Ctrl+Shift's there — Ctrl+Shift+C / V to copy and paste, +T / W / N for tabs
+and windows, +F to find, +Plus / Minus / 0 for the font size, +Q to close the
+window — with Ctrl+Page Up / Down for tabs and F11 for full screen. For the clipboard it uses wl-copy / wl-paste under
 Wayland, else xclip or xsel; for symbols such as ⏺, Noto Sans Symbols 2
 (`fonts-noto-core` on Debian and Ubuntu). Not there yet: colour emoji, and
 the question before closing a tab or window with a program running (it

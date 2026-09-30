@@ -9,6 +9,9 @@ fn now_ms() -> Int = _
 @extern(rust, "crate::sys", "login_shell")
 fn login_shell() -> String = _
 
+@extern(rust, "crate::sys", "is_linux")
+fn is_linux() -> Bool = _
+
 @extern(rust, "crate::sys", "cwd")
 fn cwd() -> String = _
 
