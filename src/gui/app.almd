@@ -52,6 +52,8 @@ type Tab = {
   sel: Option[view.Selection],
   // When a synchronized update began, -1 when none is open.
   sync_since: Int,
+  // The name the user gave it; "" for the automatic title.
+  name: String,
 }
 
 /// Window-wide input state.
@@ -62,6 +64,14 @@ type Ui = {
   anchor_line: Int,
   anchor_col: Int,
   dirty: Bool,
+  // Renaming the active tab: what its name reads so far.
+  renaming: Bool,
+  draft: String,
+  // The last press on the tab bar, to tell a double click: when, which tab.
+  click_ms: Int,
+  click_tab: Int,
+  // $HOME, which titles show as "~".
+  home: String,
 }
 
 /// How the window starts: a command for the first tab instead of the login
@@ -116,7 +126,7 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
 
   let (cols, rows) = render.grid_size(r, width, height, 1)
   if (cols, rows) != expected then { let _ = pty.resize(first_fd, cols, rows) } else ()
-  var tabs: List[Tab] = [Tab { t: terminal.new(cols, rows), fd: first_fd, back: 0, sel: none, sync_since: -1 }]
+  var tabs: List[Tab] = [Tab { t: terminal.new(cols, rows), fd: first_fd, back: 0, sel: none, sync_since: -1, name: "" }]
   var active = 0
   // For captures of the tab bar: more tabs running the login shell.
   let extra = match capture { some(_) => int.parse(env.get("SPRID_CAPTURE_TABS") ?? "1") ?? 1, none => 1 }
@@ -130,7 +140,9 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
     }
   }
 
-  var ui = Ui { preedit: [], wheel_acc: 0.0, dragging: false, anchor_line: 0, anchor_col: 0, dirty: true }
+  let home = env.get("HOME") ?? ""
+  var ui = Ui { preedit: [], wheel_acc: 0.0, dragging: false, anchor_line: 0, anchor_col: 0, dirty: true,
+                renaming: false, draft: "", click_ms: 0, click_tab: -1, home: home }
   var alive = true
   var last_frame = 0
   var streaming = false
@@ -250,7 +262,7 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
 
     let clock = sys.now_ms()
     if alive and ui.dirty and clock - last_frame >= (if streaming then STREAM_FRAME_MS else FRAME_MS) then {
-      let titles = list.map(tabs, (tb) => title_of(tb.t))
+      let titles = tab_titles(tabs, active, ui, home)
       match take(tabs, active) {
         some(tb) => {
           var cur = tb
@@ -282,7 +294,7 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
     match capture {
       some(path) => if (list.len(tabs) > 0 and pty.eof(fd_of(tabs, 0))) or clock > (int.parse(env.get("SPRID_CAPTURE_MS") ?? "3000") ?? 3000) then {
         if debug then eprintln("sprid: ${int.to_string(frames)} frames, draw ${int.to_string(draw_ms)} ms")
-        let titles = list.map(tabs, (tb) => title_of(tb.t))
+        let titles = tab_titles(tabs, active, ui, home)
         match take(tabs, active) {
           some(tb) => {
             var cur = tb
@@ -340,7 +352,7 @@ fn open_tab(r: render.Renderer, width: Int, height: Int, count: Int, command: St
   let (cols, rows) = render.grid_size(r, width, height, count)
   let fd = pty.spawn(command, cwd, cols, rows)
   if fd < 0 then none
-  else some(Tab { t: terminal.new(cols, rows), fd: fd, back: 0, sel: none, sync_since: -1 })
+  else some(Tab { t: terminal.new(cols, rows), fd: fd, back: 0, sel: none, sync_since: -1, name: "" })
 }
 
 /// Close tab `i` and its program, keeping the other tabs in order.
@@ -379,14 +391,26 @@ fn relayout(mut tabs: List[Tab], r: render.Renderer, width: Int, height: Int) ->
   }
 }
 
-/// What a tab is called: the title its program set, else its directory's
-/// name, else the shell's.
-fn title_of(t: terminal.Terminal) -> String =
-  if t.title != "" then t.title
-  else if t.cwd != "" then {
-    let parts = string.split(t.cwd, "/") |> list.filter((p) => p != "")
+/// The tab bar's titles; the tab being renamed shows its draft, with a
+/// caret.
+fn tab_titles(tabs: List[Tab], active: Int, ui: Ui, home: String) -> List[String] =
+  list.enumerate(tabs) |> list.map(((i, tb)) => if ui.renaming and i == active then ui.draft + "▏" else title_of(tb, home))
+
+/// What a tab is called: the name the user gave it, else the title its
+/// program set, else its directory's name, else the shell's.
+fn title_of(tb: Tab, home: String) -> String = {
+  let t = tb.t
+  // The directory the shell reported, else the one its foreground program
+  // is in (a shell that reports nothing still gets a useful title).
+  let dir = if t.cwd != "" then t.cwd else pty.cwd(tb.fd)
+  if tb.name != "" then tb.name
+  else if t.title != "" then t.title
+  else if dir != "" and dir == home then "~"
+  else if dir != "" then {
+    let parts = string.split(dir, "/") |> list.filter((p) => p != "")
     list.last(parts) ?? "/"
   } else "shell"
+}
 
 // ── Output ────────────────────────────────────────────────────────────────
 
@@ -421,7 +445,10 @@ fn drain(mut tb: Tab, budget_ms: Int) -> (Bool, Bool) = {
 /// returned. `tabs` is how many are open, `width` the drawable's.
 effect fn handle(mut cur: Tab, mut ui: Ui, kind: Int, r: render.Renderer, scale: Float, tabs: Int, width: Int) -> Act = {
   let t = cur.t
-  if kind == window.TEXT or kind == window.KEY then {
+  if ui.renaming and (kind == window.TEXT or kind == window.KEY) then {
+    rename_key(cur, ui, kind, window.event_code(), window.event_mods())
+    Stay
+  } else if kind == window.TEXT or kind == window.KEY then {
     let mods = window.event_mods()
     let code = window.event_code()
     let command = kind == window.TEXT and mods == window.MOD_SUPER
@@ -488,8 +515,22 @@ effect fn handle(mut cur: Tab, mut ui: Ui, kind: Int, r: render.Renderer, scale:
     Stay
   } else if kind == window.MOUSE_DOWN and window.event_code() == 0 then {
     let py = float.to_int(window.event_y() * scale)
-    if tabs > 1 and py < render.bar_height(r) then GoTo(render.tab_at(r, float.to_int(window.event_x() * scale), width, tabs))
-    else {
+    // A press anywhere ends a rename, keeping the draft.
+    if ui.renaming then finish_rename(cur, ui, true) else ()
+    if tabs > 1 and py < render.bar_height(r) then {
+      let i = render.tab_at(r, float.to_int(window.event_x() * scale), width, tabs)
+      let now = sys.now_ms()
+      // A double click renames the tab: its first press made it the active one.
+      let double = i == ui.click_tab and now - ui.click_ms < DOUBLE_CLICK_MS
+      ui.click_ms = if double then 0 else now
+      ui.click_tab = i
+      if double then {
+        ui.renaming = true
+        ui.draft = title_of(cur, ui.home)
+        ui.dirty = true
+        Stay
+      } else GoTo(i)
+    } else {
       let (col, row) = cell_at(r, t, scale, tabs)
       ui.anchor_line = view.top_line(t, cur.back) + row
       ui.anchor_col = col
@@ -518,6 +559,32 @@ effect fn handle(mut cur: Tab, mut ui: Ui, kind: Int, r: render.Renderer, scale:
     ui.dirty = true
     Stay
   } else Stay
+}
+
+/// Longest gap between the presses of a double click, ms (macOS's default).
+let DOUBLE_CLICK_MS = 500
+
+/// Edit the name being given to tab `cur`: typing adds, Backspace takes the
+/// last character off, Enter keeps it, Escape drops it.
+fn rename_key(mut cur: Tab, mut ui: Ui, kind: Int, code: Int, mods: Int) -> Unit = {
+  if kind == window.KEY and code == window.KEY_ENTER then finish_rename(cur, ui, true)
+  else if kind == window.KEY and code == window.KEY_ESCAPE then finish_rename(cur, ui, false)
+  else if kind == window.KEY and code == window.KEY_BACKSPACE then {
+    ui.draft = string.take(ui.draft, int.max(0, string.len(ui.draft) - 1))
+    ui.dirty = true
+  } else if kind == window.TEXT and int.band(mods, window.MOD_SUPER + window.MOD_CTRL) == 0 then {
+    ui.draft = ui.draft + string.from_codepoint(code)
+    ui.dirty = true
+  } else ()
+}
+
+/// End a rename, giving the tab the draft when `keep` (an empty one: back to
+/// the automatic title).
+fn finish_rename(mut cur: Tab, mut ui: Ui, keep: Bool) -> Unit = {
+  if keep then cur.name = string.trim(ui.draft) else ()
+  ui.renaming = false
+  ui.draft = ""
+  ui.dirty = true
 }
 
 /// The cell under the pointer: (column, row of the viewport).
