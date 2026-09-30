@@ -70,7 +70,11 @@ What works:
   click on the tab bar. A tab is titled by its program's title, else its
   directory; double-click it to name it (Enter keeps, Escape drops, an empty
   name goes back to the automatic title).
-- **Resize**: the grid follows the window (content is cut, not reflowed).
+- **Resize**: the main screen reflows — lines a program wrapped, on screen
+  and in scrollback, are wrapped again at the new width, wide characters
+  whole, the cursor at its place in its line. While the window is dragged
+  only the screen is reflowed; scrollback follows once the size holds. The
+  alternate screen is cut or padded: its program redraws it.
 - **Synchronized output** (mode 2026), which Claude Code uses, holds the
   frame until the update is complete.
 
@@ -120,7 +124,7 @@ pair, CSI parameters in fixed buffers), a PTY read no longer allocates and
 zeroes 64 KB per 1 KB it returns, and the window sleeps on its PTYs and
 events at once instead of polling (snaidhm's `wait_fds`).
 
-Not yet: reflow on resize, colour emoji (snaidhm reads outlines, not
+Not yet: colour emoji (snaidhm reads outlines, not
 bitmaps), mouse clicks reported to programs, the window title, a config
 file, splits.
 

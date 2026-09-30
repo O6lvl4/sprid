@@ -42,6 +42,10 @@ let STREAM_FRAME_MS = 50
 /// turn, ms; background tabs get the short budget.
 let DRAIN_MS = 12
 let STREAM_DRAIN_MS = 40
+/// How long the window's size must hold before scrollback is reflowed to it,
+/// ms: reflowing a full scrollback takes about 0.2 s, too long for every step
+/// of a drag.
+let SETTLE_MS = 300
 /// Longest a synchronized update (mode 2026) may hold the screen, ms.
 let SYNC_LIMIT = 150
 
@@ -162,13 +166,18 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
   var draw_ms = 0
   var wakes = 0
   var wake_report = 0
+  // When the window last changed size, while scrollback waits to be
+  // reflowed; -1 when it doesn't.
+  var resized_at = -1
   while alive {
     // Sleep until input, output on any tab, or the next frame is due: with
     // nothing to draw that is indefinitely, so an idle window costs nothing.
     let now = sys.now_ms()
     let frame_wait = int.max(0, last_frame + (if streaming then STREAM_FRAME_MS else FRAME_MS) - now)
     let idle = if capture == none then -1 else 50
-    let timeout = if ui.dirty then int.max(frame_wait, sync_wait(tabs, active, now)) else idle
+    let settle_wait = if resized_at < 0 then -1 else int.max(0, resized_at + SETTLE_MS - now)
+    let drawn_wait = if ui.dirty then int.max(frame_wait, sync_wait(tabs, active, now)) else idle
+    let timeout = if settle_wait < 0 then drawn_wait else if drawn_wait < 0 then settle_wait else int.min(drawn_wait, settle_wait)
     // With no time to wait, just take the window's events: arming the fd
     // watcher on every turn of a streaming loop costs more than it saves.
     alive = if timeout == 0 then window.pump() else window.wait_fds(list.map(tabs, (tb) => tb.fd), timeout)
@@ -181,7 +190,14 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
     if window.resized() then {
       width = window.width()
       height = window.height()
-      relayout(tabs, r, width, height)
+      relayout_live(tabs, r, width, height)
+      resized_at = sys.now_ms()
+      ui.dirty = true
+    }
+    // Once the size has held for a moment, scrollback is reflowed too.
+    if resized_at >= 0 and sys.now_ms() - resized_at >= SETTLE_MS then {
+      settle_all(tabs)
+      resized_at = -1
       ui.dirty = true
     }
 
@@ -328,6 +344,25 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
 
 // ── Tabs ──────────────────────────────────────────────────────────────────
 
+/// Reflow every tab's scrollback to the size the window settled at.
+fn settle_all(mut tabs: List[Tab]) -> Unit = {
+  for i in 0..<list.len(tabs) {
+    match take(tabs, i) {
+      some(tb) => {
+        var cur = tb
+        if cur.t.reflow_pending then {
+          terminal.settle(cur.t)
+          cur.back = 0
+          cur.sel = none
+        }
+        list.push(tabs, cur)
+        tabs = list.swap(tabs, i, list.len(tabs) - 1)
+      },
+      none => (),
+    }
+  }
+}
+
 /// Tab `i`, taken out of `tabs`: the last tab moves into its place until the
 /// caller pushes it back and swaps it home.
 fn take(mut tabs: List[Tab], i: Int) -> Option[Tab] = {
@@ -384,15 +419,27 @@ fn close_tab(mut tabs: List[Tab], i: Int) -> Unit = {
 
 /// Fit every tab to the window: the grid shrinks by the tab bar from two tabs
 /// on.
-fn relayout(mut tabs: List[Tab], r: render.Renderer, width: Int, height: Int) -> Unit = {
+fn relayout(mut tabs: List[Tab], r: render.Renderer, width: Int, height: Int) -> Unit =
+  fit(tabs, r, width, height, false)
+
+/// `relayout` while the window is being resized: scrollback is reflowed once
+/// the size holds (`settle_all`).
+fn relayout_live(mut tabs: List[Tab], r: render.Renderer, width: Int, height: Int) -> Unit =
+  fit(tabs, r, width, height, true)
+
+fn fit(mut tabs: List[Tab], r: render.Renderer, width: Int, height: Int, live: Bool) -> Unit = {
   let (cols, rows) = render.grid_size(r, width, height, list.len(tabs))
   for i in 0..<list.len(tabs) {
     match take(tabs, i) {
       some(tb) => {
         var cur = tb
         if cur.t.cols != cols or cur.t.rows != rows then {
-          terminal.resize(cur.t, cols, rows)
+          if live then terminal.resize_live(cur.t, cols, rows) else terminal.resize(cur.t, cols, rows)
           let _ = pty.resize(cur.fd, cols, rows)
+          // Lines are numbered anew: a view scrolled back or a selection
+          // would point at other lines.
+          cur.back = 0
+          cur.sel = none
         }
         list.push(tabs, cur)
         tabs = list.swap(tabs, i, list.len(tabs) - 1)
@@ -485,7 +532,8 @@ effect fn handle(mut cur: Tab, mut ui: Ui, kind: Int, r: render.Renderer, scale:
       Stay
     } else if page then {
       let step = if code == window.KEY_PAGE_UP then t.rows - 1 else 1 - t.rows
-      cur.back = int.clamp(cur.back + step, 0, view.max_back(t))
+      terminal.settle(cur.t)
+      cur.back = int.clamp(cur.back + step, 0, view.max_back(cur.t))
       ui.dirty = true
       Stay
     } else {
@@ -519,7 +567,8 @@ effect fn handle(mut cur: Tab, mut ui: Ui, kind: Int, r: render.Renderer, scale:
           let _ = pty.write(cur.fd, key)
         }
       } else {
-        cur.back = int.clamp(cur.back - lines, 0, view.max_back(t))
+        if lines < 0 then terminal.settle(cur.t)
+        cur.back = int.clamp(cur.back - lines, 0, view.max_back(cur.t))
         ui.dirty = true
       }
     }

@@ -89,6 +89,11 @@ fn push(mut sb: Scrollback, record: Bytes) -> Unit = {
 /// on): all but width and flags.
 let STYLE_MASK = 0xFFFFFFFFFFFF
 
+/// A blank cell's bytes from `cell.OFF_BG` up to its flags: default
+/// background, no attributes, width 1.
+let BLANK_MASK = 0xFFFFFFFFFFFFFF
+let BLANK_TAIL = 0x1000000000000
+
 /// Append the row at byte `off` of `grid` as a line record, encoded straight
 /// into the block being filled — the same record `encode_cells` makes, with
 /// no allocation per line. This is what every line scrolling off the screen
@@ -313,9 +318,10 @@ fn used_cols_at(grid: Bytes, off: Int, cols: Int) -> Int = {
   var blank = true
   while blank and n > 0 {
     let o = off + (n - 1) * cell.SIZE
-    // Blank: no character, and no background or attributes (the 6 bytes
-    // from `cell.OFF_BG`) — the default background is 0.
-    if bytes.read_u32_le(grid, o + cell.OFF_CP) == 0 and int.band(bytes.read_i64_le(grid, o + cell.OFF_BG), STYLE_MASK) == 0 then {
+    // Blank: no character, no background or attributes (the default
+    // background is 0), and one column wide — the second half of a wide
+    // character has no character either, and belongs to the line.
+    if bytes.read_u32_le(grid, o + cell.OFF_CP) == 0 and int.band(bytes.read_i64_le(grid, o + cell.OFF_BG), BLANK_MASK) == BLANK_TAIL then {
       n = n - 1
     } else {
       blank = false
@@ -376,6 +382,26 @@ fn locate(sb: Scrollback, i: Int) -> Option[(Bytes, Int, Int)] = {
   }
   some((block, p + 4, p + 4 + bytes.read_u32_le(block, p)))
 }
+
+/// Every stored line, oldest first: its block and the record's payload
+/// range in it, as `locate` gives one.
+fn records(sb: Scrollback) -> List[(Bytes, Int, Int)] = {
+  var out: List[(Bytes, Int, Int)] = []
+  let nb = list.len(sb.sealed)
+  for b in 0...nb {
+    let (block, len) = if b < nb then (sb.sealed[b], bytes.len(sb.sealed[b])) else (sb.cur, sb.cur_len)
+    var p = 0
+    while p < len {
+      let n = bytes.read_u32_le(block, p)
+      list.push(out, (block, p + 4, p + 4 + n))
+      p = p + 4 + n
+    }
+  }
+  out
+}
+
+/// Columns the line of the record at `start` uses.
+fn record_used(block: Bytes, start: Int) -> Int = bytes.read_u16_le(block, start)
 
 /// A decoded line: `cols` cells in the grid layout, the combining marks by
 /// column, and whether it continued onto the next line.

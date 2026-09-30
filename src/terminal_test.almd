@@ -206,12 +206,56 @@ test "resizing shorter moves the lines above the cursor to scrollback" {
   assert_eq(t.y, 1)
 }
 
-test "resizing narrower cuts a wide char at the edge" {
-  var t = run(6, 2, "ab日本")
-  terminal.resize(t, 5, 2)
-  assert_eq(terminal.screen_text(t), "ab日")
-  terminal.resize(t, 3, 2)
-  assert_eq(terminal.screen_text(t), "ab")
+test "narrowing wraps a wide char that no longer fits onto the next row" {
+  var t = run(6, 3, "ab日本")
+  terminal.resize(t, 5, 3)
+  assert_eq(terminal.screen_text(t), "ab日\n本")
+  terminal.resize(t, 3, 3)
+  assert_eq(terminal.screen_text(t), "ab\n日\n本")
+}
+
+test "widening joins the rows a line wrapped onto" {
+  var t = run(5, 3, "abcdefgh\r\nxy")
+  assert_eq(terminal.screen_text(t), "abcde\nfgh\nxy")
+  terminal.resize(t, 10, 3)
+  assert_eq(terminal.screen_text(t), "abcdefgh\nxy")
+  assert_eq((t.x, t.y), (2, 1))
+}
+
+test "narrowing wraps lines and keeps the cursor at its place in its line" {
+  var t = run(10, 4, "0123456789\r\nhello")
+  terminal.resize(t, 4, 4)
+  assert_eq(terminal.screen_text(t), "4567\n89\nhell\no")
+  assert_eq(scrollback.texts(t.sb), ["0123"])
+  assert_eq((t.x, t.y), (1, 3))
+}
+
+test "spaces at a wrap point survive wrapping again" {
+  var t = run(6, 3, "hello world")
+  terminal.resize(t, 20, 3)
+  assert_eq(terminal.screen_text(t), "hello world")
+  terminal.resize(t, 6, 3)
+  terminal.resize(t, 20, 3)
+  assert_eq(terminal.screen_text(t), "hello world")
+}
+
+test "a line wrapped between scrollback and screen is joined" {
+  var t = run(4, 2, "abcdefghij")
+  assert_eq(terminal.screen_text(t), "efgh\nij")
+  assert_eq(scrollback.texts(t.sb), ["abcd"])
+  terminal.resize(t, 12, 2)
+  assert_eq(terminal.screen_text(t), "abcdefghij")
+  assert_eq(scrollback.texts(t.sb), [])
+  assert_eq((t.x, t.y), (10, 0))
+}
+
+test "a pending wrap stays pending across a reflow" {
+  var t = run(5, 3, "abcde")
+  terminal.resize(t, 3, 3)
+  assert_eq(terminal.screen_text(t), "abc\nde")
+  terminal.feed_string(t, "f")
+  terminal.resize(t, 10, 3)
+  assert_eq(terminal.screen_text(t), "abcdef")
 }
 
 test "resizing after the ring has turned keeps row order" {
@@ -238,4 +282,18 @@ test "an ASCII run ends on the last column and wraps on the next byte" {
 test "the shell's working directory arrives by OSC 7" {
   let t = run(10, 2, "\x1b]7;file://mac.local/Users/me/my%20dir\x07")
   assert_eq(t.cwd, "/Users/me/my dir")
+}
+
+test "a live resize settles to what one resize gives" {
+  let text = "0123456789abcdefghij\r\nshort\r\n日本語のテキストが折り返す\r\nend"
+  var once = run(20, 3, text)
+  terminal.resize(once, 7, 3)
+  var live = run(20, 3, text)
+  terminal.resize_live(live, 15, 3)
+  terminal.resize_live(live, 9, 3)
+  terminal.resize_live(live, 7, 3)
+  terminal.settle(live)
+  assert_eq(terminal.screen_text(live), terminal.screen_text(once))
+  assert_eq(scrollback.texts(live.sb), scrollback.texts(once.sb))
+  assert_eq((live.x, live.y), (once.x, once.y))
 }
