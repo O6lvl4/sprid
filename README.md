@@ -66,8 +66,10 @@ What works:
 - **Scrollback**: the wheel scrolls back through it (full-screen programs get
   arrow keys, or wheel reports if they asked for the mouse), Shift+PageUp /
   PageDown by pages. The view stays put while new output arrives below.
-- **Selection**: drag to select, across scrollback and screen; Cmd+A selects
-  it all, Cmd+C copies.
+- **Selection**: drag to select, across scrollback and screen; double-click
+  selects a word (a path or URL whole, Japanese by script), triple-click the
+  line with the rows it wrapped onto, and a drag after either goes on by
+  words or lines; Cmd+A selects it all, Cmd+C copies.
 - **Mac keys**: Cmd+Left / Right to the start and end of the line,
   Cmd+Backspace deletes to its start, Option+Left / Right move by word (as
   other macOS terminals send them). Cmd+Home / End, Cmd+PageUp /
