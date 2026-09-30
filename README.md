@@ -30,9 +30,23 @@ so that its memory is a number you can check, not a hope:
 
 See `src/scrollback.almd`.
 
+## Install
+
+Download `Sprid-<version>-arm64.zip` from
+[Releases](https://github.com/O6lvl4/sprid/releases), unzip it and move
+`Sprid.app` to `/Applications`. It needs Apple Silicon and macOS 13 or later.
+
+The app is signed ad hoc, not notarized, so macOS stops it the first time.
+Either open it once from System Settings → Privacy & Security → "Open
+Anyway", or clear the quarantine flag:
+
+```
+xattr -dr com.apple.quarantine /Applications/Sprid.app
+```
+
 ## Status: M3 — a window you can use
 
-As a Mac app: `scripts/make-app.sh --install` builds `Sprid.app` (icon from
+To build it yourself as a Mac app: `scripts/make-app.sh --install` builds `Sprid.app` (icon from
 `scripts/make-icon.py`) and puts it in `~/Applications`, for Finder, Spotlight
 and the Dock. Started that way it takes the login shell from the password
 database and opens at home.
@@ -57,8 +71,9 @@ What works:
   ⏺ ✻ ✔. Bold, faint, underline, strikethrough, inverse,
   256 and direct colour, wide chars, combining marks. Theme: Tokyo Night Storm.
 - **Input**: keys with Ctrl / Option-as-Alt / Shift in xterm's encoding,
-  DECCKM, function keys, the macOS input method (Japanese composition is drawn
-  at the cursor), Cmd+V paste with bracketed paste.
+  DECCKM, function keys, the macOS input method (a composition is drawn
+  over the cursor's row, moved left to fit, with its caret and the segment
+  being converted boxed; the candidates follow the caret), Cmd+V paste with bracketed paste.
 - **Interactive CLIs**: the kitty keyboard protocol's disambiguation, so
   Shift+Enter starts a new line in the prompt; mouse presses, drags and
   motion reported to a program that asks (SGR), with Shift held for
@@ -155,10 +170,11 @@ file, splits.
 
 ## Requirements
 
-Almide with the fix for [almide#3049](https://github.com/almide/almide/issues/3049)
-([almide#3061](https://github.com/almide/almide/pull/3061), in review). Without
-it, calls such as `erase_cells(t, t.y, t.x, t.cols)` silently pass the wrong
-arguments and the tests fail. snaidhm comes from its `main` branch.
+Almide with the fix for [almide#3049](https://github.com/almide/almide/issues/3049),
+on `develop` since [almide#3087](https://github.com/almide/almide/pull/3087)
+(Almide 0.65.1 and earlier releases lack it). Without it, calls such as
+`erase_cells(t, t.y, t.x, t.cols)` silently pass the wrong arguments: the
+tests fail, and in the app lines never rejoin when the window widens. snaidhm comes from its `main` branch.
 
 Open compiler issues this project works around:
 [#3045](https://github.com/almide/almide/issues/3045) (a `Bytes` parameter on

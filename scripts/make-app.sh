@@ -4,6 +4,8 @@
 #
 #   scripts/make-app.sh               build dist/Sprid.app
 #   scripts/make-app.sh --install     ... and copy it to ~/Applications
+#   scripts/make-app.sh --zip         ... and pack it for a release,
+#                                     dist/Sprid-<version>-<arch>.zip
 #
 # ALMIDE names the compiler (default: almide on PATH).
 set -eu
@@ -26,7 +28,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
 <dict>
   <key>CFBundleName</key><string>Sprid</string>
   <key>CFBundleDisplayName</key><string>Sprid</string>
-  <key>CFBundleIdentifier</key><string>com.almide-graphics.sprid</string>
+  <key>CFBundleIdentifier</key><string>io.github.o6lvl4.sprid</string>
   <key>CFBundleExecutable</key><string>sprid</string>
   <key>CFBundleIconFile</key><string>Sprid</string>
   <key>CFBundlePackageType</key><string>APPL</string>
@@ -40,6 +42,14 @@ cat > "$app/Contents/Info.plist" <<PLIST
 PLIST
 codesign --force --sign - "$app" >/dev/null 2>&1 || echo "make-app: codesign failed; the app is unsigned" >&2
 echo "built $app"
+
+if [ "${1:-}" = "--zip" ]; then
+  # ditto keeps the bundle as Finder would: its signature and permissions.
+  zip="$root/dist/Sprid-$version-$(uname -m).zip"
+  rm -f "$zip"
+  ditto -c -k --keepParent "$app" "$zip"
+  echo "packed $zip"
+fi
 
 if [ "${1:-}" = "--install" ]; then
   dest="$HOME/Applications/Sprid.app"
