@@ -1,0 +1,217 @@
+// Find: where a query is in a terminal's lines, scrollback and screen.
+//
+// A match lies within one line. The case is smart: a query with no capitals
+// matches any case, one with capitals only itself. Matches are in reading
+// order, and "the current one" is held by where it is — line and column —
+// not by its number, so output arriving meanwhile doesn't move it.
+//
+// Finding the lines that hold the query reads each scrollback record's text
+// as it is stored; only the lines that hold it, and those drawn, are
+// decoded into cells to place the matches in columns.
+
+import bytes
+import self.cell
+import self.scrollback
+import self.terminal
+import self.view
+
+/// A search: its query, the lines holding it as (line, matches on it), top to
+/// bottom, the matches in all, and the current one — its number in reading
+/// order (-1: none), its line and its columns `from ..< to`.
+type Find = { query: String, hits: List[(Int, Int)], total: Int, index: Int, line: Int, from: Int, to: Int }
+
+/// Below every line: a search starting here finds the last match first.
+let BOTTOM = 4611686018427387903
+
+fn empty() -> Find = {
+  let hits: List[(Int, Int)] = []
+  Find { query: "", hits: hits, total: 0, index: -1, line: BOTTOM, from: 0, to: 0 }
+}
+
+/// `f` searching for `query`, the current match the nearest at or above the
+/// last one — typing narrows the search where it stands.
+fn with_query(t: terminal.Terminal, f: Find, query: String) -> Find =
+  seek(t, { ...f, query: query }, f.line, f.from, -1, true)
+
+/// The next match up (`dir` -1, older) or down (1), wrapping around; the
+/// lines are searched again, for what arrived since.
+fn next(t: terminal.Terminal, f: Find, dir: Int) -> Find = seek(t, f, f.line, f.from, dir, false)
+
+/// The query as matched, and whether case is folded.
+fn needle(query: String) -> (String, Bool) = {
+  let lower = string.to_lower(query)
+  if lower == query then (lower, true) else (query, false)
+}
+
+fn folded(s: String, fold: Bool) -> String = if fold then string.to_lower(s) else s
+
+/// The lines of `t` holding `query`, top to bottom: (line, how many times).
+/// On the alternate screen only its rows are lines.
+fn scan(t: terminal.Terminal, query: String) -> List[(Int, Int)] = {
+  var out: List[(Int, Int)] = []
+  if query != "" then {
+    let (q, fold) = needle(query)
+    var n = view.first_line(t)
+    if t.alt then n = view.screen_line(t)
+    else {
+      for rec in scrollback.records(t.sb) {
+        let (block, start, end) = rec
+        let c = string.count(folded(scrollback.record_text(block, start, end), fold), q)
+        if c > 0 then list.push(out, (n, c))
+        n = n + 1
+      }
+    }
+    for y in 0..<t.rows {
+      match view.line_at(t, n + y) {
+        some(row) => {
+          let c = list.len(row_spans(row, t.cols, query))
+          if c > 0 then list.push(out, (n + y, c))
+        },
+        none => (),
+      }
+    }
+  }
+  out
+}
+
+/// Where `query` is on line `line`: columns (from, to), left to right.
+fn spans(t: terminal.Terminal, line: Int, query: String) -> List[(Int, Int)] =
+  match view.line_at(t, line) {
+    some(row) => row_spans(row, t.cols, query),
+    none => [],
+  }
+
+/// Where `query` is in `row`, `cols` wide: columns (from, to), left to right,
+/// matches not overlapping — as `string.count` counts them in the stored text.
+fn row_spans(row: scrollback.Row, cols: Int, query: String) -> List[(Int, Int)] = {
+  var out: List[(Int, Int)] = []
+  if query != "" then {
+    let (q, fold) = needle(query)
+    let qs = list.map(string.chars(q), (ch) => string.codepoint(ch) ?? 32)
+    // The line's text as it is stored — a space for an empty cell, marks
+    // after their base — each code point with the columns of its cell.
+    var cps: List[Int] = []
+    var starts: List[Int] = []
+    var ends: List[Int] = []
+    for x in 0..<scrollback.used_cols(row.cells, cols) {
+      let s = folded(scrollback.cell_text(row.cells, x, row.extras), fold)
+      let end = x + int.max(1, width_at(row, x))
+      for ch in string.chars(s) {
+        list.push(cps, string.codepoint(ch) ?? 32)
+        list.push(starts, x)
+        list.push(ends, end)
+      }
+    }
+    let m = list.len(qs)
+    let n = list.len(cps)
+    var i = 0
+    while m > 0 and i + m <= n {
+      var j = 0
+      while j < m and cps[i + j] == qs[j] {
+        j = j + 1
+      }
+      if j == m then {
+        list.push(out, (starts[i], ends[i + m - 1]))
+        i = i + m
+      } else i = i + 1
+    }
+  }
+  out
+}
+
+/// Columns cell `x` of `row` takes.
+fn width_at(row: scrollback.Row, x: Int) -> Int = bytes.read_u8(row.cells, x * cell.SIZE + cell.OFF_WIDTH)
+
+/// The match nearest (`line`, `col`) going `dir` — at it too when
+/// `inclusive` — wrapping past the end; `f` found anew, with no current
+/// match when there is none.
+fn seek(t: terminal.Terminal, f: Find, line: Int, col: Int, dir: Int, inclusive: Bool) -> Find = {
+  let hits = scan(t, f.query)
+  let total = list.fold(hits, 0, (acc, h) => acc + h.1)
+  let n = list.len(hits)
+  if total == 0 then { ...f, hits: hits, total: 0, index: -1 }
+  else {
+    // The first line holding a match that way, and which of its matches.
+    var i = if dir < 0 then n - 1 else 0
+    var hit = -1
+    var k = -1
+    while hit < 0 and i >= 0 and i < n {
+      let ln = hits[i].0
+      if (dir < 0 and ln <= line) or (dir > 0 and ln >= line) then {
+        let sp = spans(t, ln, f.query)
+        let cands = list.enumerate(sp) |> list.filter(((_, s)) =>
+          ln != line or (if dir < 0 then s.0 < col else s.0 > col) or (inclusive and s.0 == col))
+        if list.len(cands) > 0 then {
+          hit = i
+          k = match (if dir < 0 then list.last(cands) else list.first(cands)) {
+            some(c) => c.0,
+            none => 0,
+          }
+        }
+      }
+      i = i + dir
+    }
+    // None that way: around to the other end.
+    if hit < 0 then {
+      hit = if dir < 0 then n - 1 else 0
+      k = if dir < 0 then hits[hit].1 - 1 else 0
+    }
+    let ln = hits[hit].0
+    let sp = spans(t, ln, f.query)
+    let at = int.clamp(k, 0, int.max(0, list.len(sp) - 1))
+    let (from, to) = list.get(sp, at) ?? (0, 0)
+    var before = 0
+    for j in 0..<hit {
+      before = before + hits[j].1
+    }
+    { ...f, hits: hits, total: total, index: before + at, line: ln, from: from, to: to }
+  }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────
+
+fn term(input: String) -> terminal.Terminal = {
+  var t = terminal.new(20, 3)
+  terminal.feed_string(t, input)
+  t
+}
+
+test "matches are placed in columns, wide characters whole" {
+  let t = term("ab 日本語 ab")
+  assert_eq(spans(t, 0, "ab"), [(0, 2), (10, 12)])
+  assert_eq(spans(t, 0, "本"), [(5, 7)])
+}
+
+test "smart case" {
+  let t = term("Error error ERROR")
+  assert_eq(list.len(spans(t, 0, "error")), 3)
+  assert_eq(spans(t, 0, "Error"), [(0, 5)])
+}
+
+test "the first match is the last one, then up and around" {
+  // Five lines on a three-row screen: two are in scrollback.
+  let t = term("x1\r\nfoo\r\nx3\r\nfoo foo\r\nfoo")
+  let f = with_query(t, empty(), "foo")
+  assert_eq((f.total, f.index, f.line, f.from), (4, 3, 4, 0))
+  let up = next(t, f, -1)
+  assert_eq((up.index, up.line, up.from), (2, 3, 4))
+  let up2 = next(t, up, -1)
+  assert_eq((up2.index, up2.line, up2.from), (1, 3, 0))
+  let up3 = next(t, up2, -1)
+  assert_eq((up3.index, up3.line), (0, 1))
+  let around = next(t, up3, -1)
+  assert_eq((around.index, around.line), (3, 4))
+  let down = next(t, around, 1)
+  assert_eq((down.index, down.line), (0, 1))
+}
+
+test "typing narrows where the search stands" {
+  let t = term("foobar\r\nfoo\r\nfoobaz")
+  let f = next(t, with_query(t, empty(), "foo"), -1)
+  assert_eq(f.line, 1)
+  // "foob" isn't on line 1: the nearest above it.
+  let g = with_query(t, f, "foob")
+  assert_eq((g.line, g.total), (0, 2))
+  let none_ = with_query(t, g, "qux")
+  assert_eq((none_.total, none_.index), (0, -1))
+}

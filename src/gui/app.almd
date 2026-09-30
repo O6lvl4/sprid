@@ -24,6 +24,7 @@ import self.gui.render
 import self.keys
 import self.pty
 import self.scrollback
+import self.search
 import self.sys
 import self.terminal
 import self.view
@@ -88,6 +89,10 @@ type Ui = {
   report_row: Int,
   // $HOME, which titles show as "~".
   home: String,
+  // Find (Cmd+F): whether its bar is open, and the search. The search
+  // stays when the bar closes, for Cmd+G and the next Cmd+F.
+  finding: Bool,
+  find: search.Find,
 }
 
 /// How the window starts: a command for the first tab instead of the login
@@ -174,7 +179,7 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
   // Questions in Japanese on a Japanese system.
   let ja = string.starts_with(env.get("LANG") ?? "", "ja")
   var ui = Ui { preedit: [], wheel_acc: 0.0, dragging: false, anchor_line: 0, anchor_col: 0, dirty: true,
-                renaming: false, draft: "", click_ms: 0, click_tab: -1, home: home,
+                renaming: false, draft: "", click_ms: 0, click_tab: -1, home: home, finding: false, find: search.empty(),
                 app_button: -1, report_col: -1, report_row: -1 }
   var alive = true
   var last_frame = 0
@@ -241,6 +246,11 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
           tabs = list.swap(tabs, active, list.len(tabs) - 1)
         },
         none => (),
+      }
+      // Find follows the tab it was opened in: another tab closes it.
+      if switches_tab(act) then {
+        ui.finding = false
+        ui.find = search.empty()
       }
       match act {
         NewTab => {
@@ -346,12 +356,16 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
           let held = cur.sync_since >= 0 and clock - cur.sync_since < SYNC_LIMIT
           if not held then {
             let t0 = sys.now_ms()
-            render.draw(r, cur.t, cur.back, cur.sel, ui.preedit, width, height, titles, active)
+            render.draw(r, cur.t, cur.back, cur.sel, ui.preedit, width, height, titles, active,
+              if ui.finding then some(ui.find) else none)
             frames = frames + 1
             draw_ms = draw_ms + sys.now_ms() - t0
+            // The input method composes where typing goes: the find bar
+            // while it is open, else the cursor.
             let gy = render.grid_top(r, list.len(titles))
-            window.set_ime_area(
-              int.to_float(r.pad_x + cur.t.x * r.cell_w) / scale, int.to_float(gy + cur.t.y * r.cell_h) / scale,
+            let (ix, iy) = if ui.finding then render.find_caret(r, ui.find, ui.preedit, list.len(titles), width)
+              else (r.pad_x + cur.t.x * r.cell_w, gy + cur.t.y * r.cell_h)
+            window.set_ime_area(int.to_float(ix) / scale, int.to_float(iy) / scale,
               int.to_float(r.cell_w) / scale, int.to_float(r.cell_h) / scale)
             last_frame = clock
             ui.dirty = false
@@ -371,7 +385,19 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
           some(tb) => {
             var cur = tb
             cur.back = int.clamp(int.parse(env.get("SPRID_CAPTURE_BACK") ?? "0") ?? 0, 0, view.max_back(cur.t))
-            render.draw(r, cur.t, cur.back, cur.sel, ui.preedit, width, height, titles, active)
+            // The find bar searching for this, stepped up SPRID_CAPTURE_FIND_UP times.
+            match env.get("SPRID_CAPTURE_FIND") {
+              some(q) => {
+                ui.finding = true
+                set_query(cur, ui, q, true)
+                for _ in 0..<(int.parse(env.get("SPRID_CAPTURE_FIND_UP") ?? "0") ?? 0) {
+                  find_step(cur, ui, -1)
+                }
+              },
+              none => (),
+            }
+            render.draw(r, cur.t, cur.back, cur.sel, ui.preedit, width, height, titles, active,
+              if ui.finding then some(ui.find) else none)
             list.push(tabs, cur)
           },
           none => (),
@@ -569,6 +595,9 @@ effect fn handle(mut cur: Tab, mut ui: Ui, kind: Int, r: render.Renderer, scale:
   if ui.renaming and (kind == window.TEXT or kind == window.KEY) then {
     rename_key(cur, ui, kind, window.event_code(), window.event_mods())
     Stay
+  } else if ui.finding and (kind == window.TEXT or kind == window.KEY) and find_owns(kind, window.event_code(), window.event_mods()) then {
+    find_key(cur, ui, kind, window.event_code(), window.event_mods())!
+    Stay
   } else if kind == window.TEXT or kind == window.KEY then {
     let mods = window.event_mods()
     let code = window.event_code()
@@ -633,6 +662,17 @@ effect fn handle(mut cur: Tab, mut ui: Ui, kind: Int, r: render.Renderer, scale:
       let _ = pty.write(cur.fd, edit)
       if cur.back != 0 then ui.dirty = true
       cur.back = 0
+      Stay
+    } else if command and lower == 0x66 then {
+      // Cmd+F: the find bar, with the last search again from the bottom.
+      ui.finding = true
+      set_query(cur, ui, ui.find.query, true)
+      ui.dirty = true
+      Stay
+    } else if (command or command_shift) and lower == 0x67 and ui.find.query != "" then {
+      // Cmd+G / Cmd+Shift+G with the bar closed: the last search goes on.
+      ui.finding = true
+      find_step(cur, ui, if command_shift then 1 else -1)
       Stay
     } else if command and (code == 0x6B or code == 0x4B) then {
       // Cmd+K: clear. Scrollback always; the screen too when the shell waits
@@ -786,6 +826,91 @@ fn app_mouse(t: terminal.Terminal, ui: Ui, r: render.Renderer, scale: Float, tab
   let wanted = t.mouse_mode != 0 and t.mouse_sgr and int.band(window.event_mods(), window.MOD_SHIFT) == 0
   let on_bar = tabs > 1 and float.to_int(window.event_y() * scale) < render.bar_height(r)
   (wanted and not on_bar and not ui.dragging) or (kind == window.MOUSE_UP and ui.app_button >= 0)
+}
+
+/// Whether an input goes to the open find bar: typing, and keys without Cmd —
+/// the program gets nothing while it is open — and Cmd+G, Cmd+V, Cmd+F,
+/// Cmd+Backspace. Other Cmd shortcuts (tabs, copy) work as ever.
+fn find_owns(kind: Int, code: Int, mods: Int) -> Bool = {
+  let lower = if code >= 0x41 and code <= 0x5A then code + 32 else code
+  let cmd = int.band(mods, window.MOD_SUPER) != 0
+  not cmd
+    or (kind == window.TEXT and (lower == 0x67 or lower == 0x76 or lower == 0x66))
+    or (kind == window.KEY and code == window.KEY_BACKSPACE)
+}
+
+/// An input to the find bar: typing searches as it goes, Backspace takes a
+/// character off (Cmd+Backspace all), Enter or Up goes to the match above,
+/// Shift+Enter or Down the one below (Cmd+G and Cmd+Shift+G too), Cmd+V
+/// pastes, Escape closes the bar.
+effect fn find_key(mut cur: Tab, mut ui: Ui, kind: Int, code: Int, mods: Int) -> Unit = {
+  let lower = if code >= 0x41 and code <= 0x5A then code + 32 else code
+  let cmd = int.band(mods, window.MOD_SUPER) != 0
+  let shift = int.band(mods, window.MOD_SHIFT) != 0
+  let q = ui.find.query
+  if kind == window.KEY and code == window.KEY_ESCAPE then {
+    ui.finding = false
+    let nothing: List[Int] = []
+    ui.preedit = nothing
+    ui.dirty = true
+  } else if (kind == window.KEY and code == window.KEY_ENTER) or (kind == window.TEXT and cmd and lower == 0x67) then
+    find_step(cur, ui, if shift then 1 else -1)
+  else if kind == window.KEY and (code == window.KEY_UP or code == window.KEY_DOWN) then
+    find_step(cur, ui, if code == window.KEY_UP then -1 else 1)
+  else if kind == window.KEY and code == window.KEY_BACKSPACE then
+    set_query(cur, ui, if cmd then "" else string.take(q, int.max(0, string.len(q) - 1)), false)
+  else if kind == window.TEXT and cmd and lower == 0x76 then {
+    // The first line of the clipboard: a search stays within a line.
+    let pasted = list.first(string.lines(clipboard()!)) ?? ""
+    set_query(cur, ui, q + pasted, false)
+  } else if kind == window.TEXT and int.band(mods, window.MOD_SUPER + window.MOD_CTRL) == 0 then
+    set_query(cur, ui, q + string.from_codepoint(code), false)
+  else ()
+}
+
+/// Search for `query`: from the bottom when `fresh`, else narrowing where
+/// the search stands; the view follows the current match.
+fn set_query(mut cur: Tab, mut ui: Ui, query: String, fresh: Bool) -> Unit = {
+  settle_for_find(cur)
+  let from = if fresh then search.empty() else ui.find
+  ui.find = search.with_query(cur.t, from, query)
+  follow(cur, ui.find)
+  ui.dirty = true
+}
+
+/// The match above (`dir` -1) or below (1) the current one.
+fn find_step(mut cur: Tab, mut ui: Ui, dir: Int) -> Unit = {
+  settle_for_find(cur)
+  ui.find = search.next(cur.t, ui.find, dir)
+  follow(cur, ui.find)
+  ui.dirty = true
+}
+
+/// Scrollback reflowed to the window, if it waits for that: matches are
+/// found by line number, and a reflow numbers the lines anew.
+fn settle_for_find(mut cur: Tab) -> Unit = {
+  if cur.t.reflow_pending then {
+    terminal.settle(cur.t)
+    cur.back = 0
+    cur.sel = none
+  }
+}
+
+/// Scroll so the current match is in view, in the middle when it wasn't.
+fn follow(mut cur: Tab, f: search.Find) -> Unit = {
+  let top = view.top_line(cur.t, cur.back)
+  if f.index >= 0 and (f.line < top or f.line >= top + cur.t.rows) then
+    cur.back = int.clamp(view.screen_line(cur.t) - f.line + cur.t.rows / 2, 0, view.max_back(cur.t))
+}
+
+/// Whether an act makes another tab the active one, or changes which there are.
+fn switches_tab(act: Act) -> Bool = match act {
+  NewTab => true,
+  CloseTab => true,
+  NextTab => true,
+  PrevTab => true,
+  GoTo(_) => true,
+  _ => false,
 }
 
 /// Longest gap between the presses of a double click, ms (macOS's default).
