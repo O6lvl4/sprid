@@ -1,0 +1,190 @@
+import bytes
+import self.cell
+import self.scrollback
+import self.terminal
+
+fn run(cols: Int, rows: Int, input: String) -> terminal.Terminal = {
+  var t = terminal.new(cols, rows)
+  terminal.feed_string(t, input)
+  t
+}
+
+test "text and CRLF" {
+  let t = run(10, 3, "hello\r\nworld")
+  assert_eq(terminal.screen_text(t), "hello\nworld")
+  assert_eq((t.x, t.y), (5, 1))
+}
+
+test "the last column holds the cursor until the next char wraps" {
+  var t = run(5, 3, "abcde")
+  assert_eq((t.x, t.y, t.pending_wrap), (4, 0, true))
+  terminal.feed_string(t, "f")
+  assert_eq(terminal.screen_text(t), "abcde\nf")
+}
+
+test "CR in the pending-wrap state stays on the row" {
+  let t = run(5, 3, "abcde\rX")
+  assert_eq(terminal.screen_text(t), "Xbcde")
+}
+
+test "no autowrap overwrites the last column" {
+  let t = run(5, 3, "\x1b[?7labcdefg")
+  assert_eq(terminal.screen_text(t), "abcdg")
+}
+
+test "cursor position and erase" {
+  let t = run(10, 4, "0123456789\r\n0123456789\x1b[1;4H\x1b[K\x1b[2;3H\x1b[1K")
+  assert_eq(terminal.screen_text(t), "012\n   3456789")
+}
+
+test "erase display below the cursor" {
+  let t = run(6, 3, "aaaaaa\r\nbbbbbb\r\ncccccc\x1b[2;3H\x1b[J")
+  assert_eq(terminal.screen_text(t), "aaaaaa\nbb")
+}
+
+test "SGR colors: 16, 256, direct, colon form" {
+  let t = run(10, 2, "\x1b[31ma\x1b[38;5;200mb\x1b[38;2;1;2;3mc\x1b[38:2::4:5:6md\x1b[48:5:9me\x1b[0mf")
+  assert_eq(terminal.cell_fg(t, 0, 0), cell.palette(1))
+  assert_eq(terminal.cell_fg(t, 1, 0), cell.palette(200))
+  assert_eq(terminal.cell_fg(t, 2, 0), cell.rgb(1, 2, 3))
+  assert_eq(terminal.cell_fg(t, 3, 0), cell.rgb(4, 5, 6))
+  assert_eq(terminal.cell_bg(t, 4, 0), cell.palette(9))
+  assert_eq(terminal.cell_fg(t, 5, 0), cell.COLOR_DEFAULT)
+  assert_eq(terminal.cell_bg(t, 5, 0), cell.COLOR_DEFAULT)
+}
+
+test "SGR attributes set and clear" {
+  let t = run(10, 2, "\x1b[1;4;7ma\x1b[22;24mb\x1b[4:0mc")
+  assert_eq(terminal.cell_attrs(t, 0, 0), cell.ATTR_BOLD + cell.ATTR_UNDERLINE + cell.ATTR_INVERSE)
+  assert_eq(terminal.cell_attrs(t, 1, 0), cell.ATTR_INVERSE)
+  assert_eq(terminal.cell_attrs(t, 2, 0), cell.ATTR_INVERSE)
+}
+
+test "erase takes the current background" {
+  let t = run(4, 2, "\x1b[44m\x1b[2J")
+  assert_eq(terminal.cell_bg(t, 3, 1), cell.palette(4))
+}
+
+test "wide chars take two cells and wrap as a unit" {
+  let t = run(5, 3, "ab日本語")
+  assert_eq(terminal.screen_text(t), "ab日\n本語")
+  assert_eq((t.x, t.y), (4, 1))
+}
+
+test "overwriting half of a wide char blanks the other half" {
+  let t = run(6, 2, "日本\x1b[1;2Hx")
+  assert_eq(terminal.screen_text(t), " x本")
+}
+
+test "combining marks join the previous cell" {
+  let t = run(6, 2, "e\u{0301}x")
+  assert_eq(terminal.screen_text(t), "e\u{0301}x")
+  assert_eq(t.x, 2)
+}
+
+test "UTF-8 and CSI split across reads" {
+  var t = terminal.new(10, 2)
+  let b = bytes.from_string("\x1b[31mあ")
+  terminal.feed(t, bytes.slice(b, 0, 3))
+  terminal.feed(t, bytes.slice(b, 3, 7))
+  terminal.feed(t, bytes.slice(b, 7, bytes.len(b)))
+  assert_eq(terminal.screen_text(t), "あ")
+  assert_eq(terminal.cell_fg(t, 0, 0), cell.palette(1))
+}
+
+test "invalid UTF-8 shows the replacement char" {
+  var t = terminal.new(10, 2)
+  terminal.feed(t, bytes.from_list([0x61, 0xE3, 0x81, 0x62, 0xFF]))
+  assert_eq(terminal.screen_text(t), "a\u{FFFD}b\u{FFFD}")
+}
+
+test "lines leaving the top go to scrollback" {
+  let t = run(10, 2, "one\r\ntwo\r\nthree\r\nfour")
+  assert_eq(terminal.screen_text(t), "three\nfour")
+  assert_eq(scrollback.texts(t.sb), ["one", "two"])
+}
+
+test "scrolling inside margins keeps scrollback clean" {
+  let t = run(10, 4, "head\x1b[2;3r\x1b[2;1Ha\r\nb\r\nc\r\nd")
+  assert_eq(terminal.screen_text(t), "head\nc\nd")
+  assert_eq(scrollback.texts(t.sb), [])
+}
+
+test "reverse index at the top margin scrolls down" {
+  let t = run(10, 3, "a\r\nb\r\nc\x1b[1;1H\x1bMz")
+  assert_eq(terminal.screen_text(t), "z\na\nb")
+}
+
+test "insert and delete lines" {
+  let t = run(5, 4, "1\r\n2\r\n3\r\n4\x1b[2;1H\x1b[L")
+  assert_eq(terminal.screen_text(t), "1\n\n2\n3")
+  var u = t
+  terminal.feed_string(u, "\x1b[2M")
+  assert_eq(terminal.screen_text(u), "1\n3")
+}
+
+test "insert and delete chars" {
+  let t = run(8, 1, "abcdef\x1b[1;2H\x1b[2@")
+  assert_eq(terminal.screen_text(t), "a  bcdef")
+  var u = t
+  terminal.feed_string(u, "\x1b[3P")
+  assert_eq(terminal.screen_text(u), "acdef")
+}
+
+test "the alternate screen leaves the main screen as it was" {
+  var t = run(10, 3, "main\r\nscreen")
+  terminal.feed_string(t, "\x1b[?1049h\x1b[Halt")
+  assert_eq(terminal.screen_text(t), "alt")
+  terminal.feed_string(t, "\x1b[?1049l")
+  assert_eq(terminal.screen_text(t), "main\nscreen")
+  assert_eq((t.x, t.y), (6, 1))
+}
+
+test "the alternate screen writes nothing to scrollback" {
+  let t = run(10, 2, "\x1b[?1049h1\r\n2\r\n3\r\n4")
+  assert_eq(scrollback.texts(t.sb), [])
+}
+
+test "device status and attributes are answered" {
+  var t = run(10, 5, "\x1b[3;4H\x1b[6n\x1b[c\x1b[>c")
+  assert_eq(terminal.take_replies(t), "\x1b[3;4R\x1b[?62;22c\x1b[>1;10;0c")
+  assert_eq(t.replies, "")
+}
+
+test "OSC title ends with BEL or ST" {
+  let t = run(10, 2, "\x1b]0;first\x07x\x1b]2;second\x1b\\y")
+  assert_eq(t.title, "second")
+  assert_eq(terminal.screen_text(t), "xy")
+}
+
+test "DCS and APC strings are skipped" {
+  let t = run(10, 2, "a\x1bP+q544e\x1b\\b\x1b_Gf=24;AAAA\x1b\\c")
+  assert_eq(terminal.screen_text(t), "abc")
+}
+
+test "DEC special graphics draw boxes" {
+  let t = run(10, 2, "\x1b(0lqk\x1b(Bq")
+  assert_eq(terminal.screen_text(t), "┌─┐q")
+}
+
+test "tabs stop every 8 columns" {
+  let t = run(20, 1, "a\tb\tc")
+  assert_eq(terminal.screen_text(t), "a       b       c")
+}
+
+test "save and restore cursor keep the pen" {
+  let t = run(10, 3, "\x1b[2;3H\x1b[31m\x1b7\x1b[H\x1b[0m\x1b8x")
+  assert_eq((t.x, t.y), (3, 1))
+  assert_eq(terminal.cell_fg(t, 2, 1), cell.palette(1))
+}
+
+test "scrollback memory stays inside its budget under endless output" {
+  let limit = 200000
+  var t = terminal.with_scrollback(80, 24, limit)
+  for i in 0..<20000 {
+    terminal.feed_string(t, "\x1b[1;36m⏺\x1b[0m line ${int.to_string(i)} 日本語 👩‍💻 e\u{0301} \x1b[38;2;200;100;50mcolored\x1b[0m\r\n")
+    assert(scrollback.bytes_used(t.sb) <= limit)
+  }
+  assert(t.sb.evicted_lines > 0)
+  assert_eq(scrollback.line_count(t.sb) + t.sb.evicted_lines, 20000 - 23)
+}

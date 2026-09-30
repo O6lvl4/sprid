@@ -1,0 +1,16 @@
+// PTY — @extern(rust) declarations, backed by native/pty.rs
+
+@extern(rust, "crate::pty", "spawn")
+fn spawn(program: String, cols: Int, rows: Int) -> Int = _
+
+@extern(rust, "crate::pty", "read")
+fn read(fd: Int, timeout_ms: Int) -> Bytes = _
+
+@extern(rust, "crate::pty", "eof")
+fn eof() -> Bool = _
+
+@extern(rust, "crate::pty", "write")
+fn write(fd: Int, data: String) -> Bool = _
+
+@extern(rust, "crate::pty", "resize")
+fn resize(fd: Int, cols: Int, rows: Int) -> Bool = _

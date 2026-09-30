@@ -1,0 +1,58 @@
+// Cell layout shared by the grid and scrollback.
+//
+// A grid is one flat Bytes of rows * cols cells, SIZE bytes each:
+//
+//   0  u32  codepoint (0 = never written, shown as a blank)
+//   4  u32  foreground color
+//   8  u32  background color
+//   12 u16  attributes (ATTR_* bits)
+//   14 u8   width: 1 normal, 2 head of a wide char, 0 tail of a wide char
+//   15 u8   flags (FLAG_* bits)
+//
+// Colors: 0 is the default color, 0x01000000 | n palette entry n,
+// 0x02000000 | 0xRRGGBB a direct color.
+
+import bytes
+
+let SIZE = 16
+
+let OFF_CP = 0
+let OFF_FG = 4
+let OFF_BG = 8
+let OFF_ATTRS = 12
+let OFF_WIDTH = 14
+let OFF_FLAGS = 15
+
+let ATTR_BOLD = 1
+let ATTR_FAINT = 2
+let ATTR_ITALIC = 4
+let ATTR_UNDERLINE = 8
+let ATTR_BLINK = 16
+let ATTR_INVERSE = 32
+let ATTR_HIDDEN = 64
+let ATTR_STRIKE = 128
+let ATTR_DOUBLE_UNDERLINE = 256
+let ATTR_OVERLINE = 512
+
+/// The cell carries extra codepoints (combining marks, ZWJ sequences) in its
+/// screen's grapheme map.
+let FLAG_GRAPHEME = 1
+
+let COLOR_DEFAULT = 0
+
+fn palette(n: Int) -> Int = int.bor(0x01000000, int.band(n, 0xFF))
+
+fn rgb(r: Int, g: Int, b: Int) -> Int =
+  int.bor(0x02000000, int.bor(int.bshl(int.band(r, 0xFF), 16), int.bor(int.bshl(int.band(g, 0xFF), 8), int.band(b, 0xFF))))
+
+/// A row of `cols` blank cells on background `bg`. Erasing copies this over
+/// the row, so an erased cell takes the current background (xterm's
+/// background color erase).
+fn blank_row(cols: Int, bg: Int) -> Bytes = {
+  var row = bytes.new(cols * SIZE)
+  for x in 0..<cols {
+    bytes.set_u32_le(row, x * SIZE + OFF_BG, bg)
+    bytes.set_u8(row, x * SIZE + OFF_WIDTH, 1)
+  }
+  row
+}

@@ -1,0 +1,7 @@
+// Process facts — @extern(rust) declarations, backed by native/sys.rs
+
+@extern(rust, "crate::sys", "footprint")
+fn footprint() -> Int = _
+
+@extern(rust, "crate::sys", "now_ms")
+fn now_ms() -> Int = _

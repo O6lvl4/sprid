@@ -1,0 +1,287 @@
+// Scrollback with a hard memory budget.
+//
+// Rows that scroll off the top of the main screen are encoded into compact
+// line records and appended to fixed-size blocks. When the blocks outgrow the
+// budget, the oldest block is dropped whole.
+//
+// Why this shape: Ghostty <= 1.2 leaked memory in exactly this component. Its
+// scrollback reused "pages" from a pool, and a page grown past the standard
+// size to hold graphemes was, once reused, mistaken for a pooled page and
+// never unmapped. Here nothing is pooled or reused:
+//
+//   * a line record owns everything it needs — text, combining marks, styles —
+//     inline, so there is no side table to fall out of sync with it;
+//   * a block is a plain Bytes, freed by reference counting the moment it is
+//     dropped from `sealed`;
+//   * the budget is checked against the bytes the blocks actually hold (a
+//     sealed block is trimmed to its used length), so `bytes_used` is the
+//     memory scrollback holds, not an estimate of it.
+//
+// Line record (all integers little-endian):
+//
+//   u32 payload length
+//   u16 columns used   u8 wrapped (the row continued onto the next)
+//   runs, each:  u32 fg  u32 bg  u16 attrs  u32 text length  UTF-8 text
+
+import bytes
+import self.cell
+
+let DEFAULT_BLOCK = 65536
+
+type Scrollback = {
+  limit: Int,
+  block_size: Int,
+  sealed: List[Bytes],
+  sealed_lines: List[Int],
+  sealed_bytes: Int,
+  cur: Bytes,
+  cur_len: Int,
+  cur_lines: Int,
+  evicted_lines: Int,
+}
+
+/// Scrollback holding at most `limit` bytes of lines (plus the one block being
+/// filled, when `limit` is smaller than a block).
+fn new(limit: Int) -> Scrollback = with_block(limit, DEFAULT_BLOCK)
+
+fn with_block(limit: Int, block_size: Int) -> Scrollback = Scrollback {
+  limit: limit,
+  block_size: block_size,
+  sealed: [],
+  sealed_lines: [],
+  sealed_bytes: 0,
+  cur: bytes.new(0),
+  cur_len: 0,
+  cur_lines: 0,
+  evicted_lines: 0,
+}
+
+/// Memory the stored lines occupy, in bytes.
+fn bytes_used(sb: Scrollback) -> Int = sb.sealed_bytes + bytes.len(sb.cur)
+
+fn line_count(sb: Scrollback) -> Int = list.sum(sb.sealed_lines) + sb.cur_lines
+
+// ── Writing ───────────────────────────────────────────────────────────────
+
+/// Append one encoded line record (see `encode_row`).
+fn push(mut sb: Scrollback, record: Bytes) -> Unit = {
+  let n = bytes.len(record)
+  if n > sb.block_size then {
+    // Larger than a block: it becomes a block of its own, exactly its size.
+    seal(sb)
+    sb.sealed = sb.sealed + [record]
+    sb.sealed_lines = sb.sealed_lines + [1]
+    sb.sealed_bytes = sb.sealed_bytes + n
+  } else {
+    if sb.cur_len + n > bytes.len(sb.cur) then {
+      seal(sb)
+      sb.cur = bytes.new(sb.block_size)
+    }
+    bytes.copy_from(sb.cur, record, sb.cur_len, 0, n)
+    sb.cur_len = sb.cur_len + n
+    sb.cur_lines = sb.cur_lines + 1
+  }
+  evict(sb)
+}
+
+/// Move the block being filled, trimmed to its used length, to `sealed`.
+fn seal(mut sb: Scrollback) -> Unit = {
+  if sb.cur_lines > 0 then {
+    let block = bytes.slice(sb.cur, 0, sb.cur_len)
+    sb.sealed = sb.sealed + [block]
+    sb.sealed_lines = sb.sealed_lines + [sb.cur_lines]
+    sb.sealed_bytes = sb.sealed_bytes + sb.cur_len
+  }
+  sb.cur = bytes.new(0)
+  sb.cur_len = 0
+  sb.cur_lines = 0
+}
+
+/// Drop the oldest blocks until what is stored fits the budget.
+fn evict(mut sb: Scrollback) -> Unit = {
+  while bytes_used(sb) > sb.limit and list.len(sb.sealed) > 0 {
+    let dropped = bytes.len(sb.sealed[0])
+    sb.evicted_lines = sb.evicted_lines + sb.sealed_lines[0]
+    sb.sealed = list.drop(sb.sealed, 1)
+    sb.sealed_lines = list.drop(sb.sealed_lines, 1)
+    sb.sealed_bytes = sb.sealed_bytes - dropped
+  }
+}
+
+/// Forget every line.
+fn clear(mut sb: Scrollback) -> Unit = {
+  sb.evicted_lines = sb.evicted_lines + line_count(sb)
+  let no_blocks: List[Bytes] = []
+  let no_counts: List[Int] = []
+  sb.sealed = no_blocks
+  sb.sealed_lines = no_counts
+  sb.sealed_bytes = 0
+  sb.cur = bytes.new(0)
+  sb.cur_len = 0
+  sb.cur_lines = 0
+}
+
+// ── Encoding ──────────────────────────────────────────────────────────────
+
+/// Encode `cols` cells of `row` (one grid row, `cell.SIZE` bytes per cell) as a
+/// line record. `extras` maps a column to the codepoints that combine with its
+/// cell. Trailing blank cells with the default background are dropped.
+fn encode_row(row: Bytes, cols: Int, wrapped: Bool, extras: Map[Int, String]) -> Bytes = {
+  let used = used_cols(row, cols)
+  var out = bytes.new(0)
+  bytes.append_u32_le(out, 0)
+  bytes.append_u16_le(out, used)
+  bytes.append_u8(out, if wrapped then 1 else 0)
+  var x = 0
+  while x < used {
+    let fg = bytes.read_u32_le(row, x * cell.SIZE + cell.OFF_FG)
+    let bg = bytes.read_u32_le(row, x * cell.SIZE + cell.OFF_BG)
+    let attrs = bytes.read_u16_le(row, x * cell.SIZE + cell.OFF_ATTRS)
+    var text = ""
+    var more = true
+    while more and x < used {
+      let o = x * cell.SIZE
+      if bytes.read_u32_le(row, o + cell.OFF_FG) == fg and bytes.read_u32_le(row, o + cell.OFF_BG) == bg and bytes.read_u16_le(row, o + cell.OFF_ATTRS) == attrs then {
+        text = text + cell_text(row, x, extras)
+        x = x + 1
+      } else {
+        more = false
+      }
+    }
+    let t = bytes.from_string(text)
+    bytes.append_u32_le(out, fg)
+    bytes.append_u32_le(out, bg)
+    bytes.append_u16_le(out, attrs)
+    bytes.append_u32_le(out, bytes.len(t))
+    out = bytes.concat(out, t)
+  }
+  bytes.set_u32_le(out, 0, bytes.len(out) - 4)
+  out
+}
+
+/// Text of cell `x`: nothing for the tail of a wide char, a space for a cell
+/// never written.
+fn cell_text(row: Bytes, x: Int, extras: Map[Int, String]) -> String = {
+  let o = x * cell.SIZE
+  let width = bytes.read_u8(row, o + cell.OFF_WIDTH)
+  let cp = bytes.read_u32_le(row, o + cell.OFF_CP)
+  if width == 0 then ""
+  else if cp == 0 then " "
+  else {
+    let base = string.from_codepoint(cp)
+    if int.band(bytes.read_u8(row, o + cell.OFF_FLAGS), cell.FLAG_GRAPHEME) != 0 then base + map.get_or(extras, x, "")
+    else base
+  }
+}
+
+/// Columns up to and including the last cell that shows something.
+fn used_cols(row: Bytes, cols: Int) -> Int = {
+  var n = cols
+  var blank = true
+  while blank and n > 0 {
+    let o = (n - 1) * cell.SIZE
+    if bytes.read_u32_le(row, o + cell.OFF_CP) == 0 and bytes.read_u32_le(row, o + cell.OFF_BG) == cell.COLOR_DEFAULT and bytes.read_u16_le(row, o + cell.OFF_ATTRS) == 0 then {
+      n = n - 1
+    } else {
+      blank = false
+    }
+  }
+  n
+}
+
+// ── Reading ───────────────────────────────────────────────────────────────
+
+/// Every stored line as plain text, oldest first.
+fn texts(sb: Scrollback) -> List[String] = {
+  var out: List[String] = []
+  for block in sb.sealed {
+    out = out + block_texts(block, bytes.len(block))
+  }
+  out + block_texts(sb.cur, sb.cur_len)
+}
+
+fn block_texts(block: Bytes, len: Int) -> List[String] = {
+  var out: List[String] = []
+  var p = 0
+  while p < len {
+    let n = bytes.read_u32_le(block, p)
+    out = out + [record_text(block, p + 4, p + 4 + n)]
+    p = p + 4 + n
+  }
+  out
+}
+
+fn record_text(block: Bytes, start: Int, end: Int) -> String = {
+  var p = start + 3
+  var s = ""
+  while p < end {
+    let n = bytes.read_u32_le(block, p + 10)
+    s = s + bytes.read_string_at(block, p + 14, n)
+    p = p + 14 + n
+  }
+  s
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────
+
+fn row_of(text: String, cols: Int) -> Bytes = {
+  var row = cell.blank_row(cols, cell.COLOR_DEFAULT)
+  var x = 0
+  for ch in string.chars(text) {
+    bytes.set_u32_le(row, x * cell.SIZE + cell.OFF_CP, string.codepoint(ch) ?? 32)
+    x = x + 1
+  }
+  row
+}
+
+test "a row round-trips through a line record" {
+  let rec = encode_row(row_of("hello", 10), 10, false, [:])
+  var sb = new(1000000)
+  push(sb, rec)
+  assert_eq(texts(sb), ["hello"])
+}
+
+test "combining marks travel inside the record" {
+  var row = row_of("e", 4)
+  bytes.set_u8(row, cell.OFF_FLAGS, cell.FLAG_GRAPHEME)
+  var sb = new(1000000)
+  push(sb, encode_row(row, 4, false, [0: "\u{0301}"]))
+  assert_eq(texts(sb), ["e\u{0301}"])
+}
+
+test "runs split where the style changes" {
+  var row = row_of("abcd", 4)
+  bytes.set_u32_le(row, 2 * cell.SIZE + cell.OFF_FG, cell.palette(1))
+  bytes.set_u32_le(row, 3 * cell.SIZE + cell.OFF_FG, cell.palette(1))
+  let rec = encode_row(row, 4, false, [:])
+  // header 4 + 3, then two runs of 14 + 2 bytes of text each
+  assert_eq(bytes.len(rec), 7 + 16 + 16)
+}
+
+test "the budget holds however many lines arrive" {
+  let limit = 20000
+  var sb = with_block(limit, 4096)
+  for i in 0..<5000 {
+    push(sb, encode_row(row_of("line ${int.to_string(i)} with some text", 80), 80, false, [:]))
+    assert(bytes_used(sb) <= limit)
+  }
+  assert(sb.evicted_lines > 0)
+  assert_eq(line_count(sb) + sb.evicted_lines, 5000)
+  let t = texts(sb)
+  assert_eq(list.last(t), some("line 4999 with some text"))
+}
+
+test "a line larger than a block is stored and later evicted" {
+  var sb = with_block(3000, 256)
+  var long = ""
+  for _ in 0..<200 {
+    long = long + "x"
+  }
+  push(sb, encode_row(row_of(long, 200), 200, false, [:]))
+  assert_eq(texts(sb), [long])
+  for _ in 0..<200 {
+    push(sb, encode_row(row_of("short", 80), 80, false, [:]))
+  }
+  assert(bytes_used(sb) <= 3000)
+  assert(not list.contains(texts(sb), long))
+}

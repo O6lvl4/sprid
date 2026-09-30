@@ -1,0 +1,81 @@
+// taibhse, headless.
+//
+//   taibhse run <command>     run <command> on a PTY, then print the screen
+//   taibhse bench [MB]        stream MB of Claude-Code-like output through a
+//                             terminal and report memory as it goes
+//
+// The window comes later; everything here drives the same terminal core.
+
+import bytes
+import process
+import self.pty
+import self.scrollback
+import self.sys
+import self.terminal
+
+let COLS = 100
+let ROWS = 30
+
+effect fn main() -> Unit = {
+  let args = process.args()
+  match list.get(args, 1) ?? "" {
+    "run" => run(list.join(list.drop(args, 2), " "))!,
+    "bench" => bench(int.parse(list.get(args, 2) ?? "512") ?? 512)!,
+    _ => println("usage: taibhse run <command> | taibhse bench [MB]"),
+  }
+}
+
+effect fn run(command: String) -> Unit = {
+  let fd = pty.spawn(command, COLS, ROWS)
+  guard fd >= 0 else println("could not start ${command}")
+  var t = terminal.new(COLS, ROWS)
+  while not pty.eof() {
+    terminal.feed(t, pty.read(fd, 50))
+    let replies = terminal.take_replies(t)
+    if replies != "" then {
+      let _ = pty.write(fd, replies)
+    }
+  }
+  println(terminal.screen_text(t))
+  println("── ${int.to_string(scrollback.line_count(t.sb))} lines in scrollback, ${int.to_string(scrollback.bytes_used(t.sb))} bytes")
+}
+
+/// One chunk of output shaped like a Claude Code session: styled bullets,
+/// wide chars, emoji ZWJ sequences, combining marks, direct colors, box
+/// drawing — the content that made Ghostty <= 1.2 leak.
+fn chunk(i: Int) -> Bytes = {
+  var s = ""
+  for j in 0..<64 {
+    let n = int.to_string(i * 64 + j)
+    s = s + "\x1b[1;38;2;215;119;87m⏺\x1b[0m Update(src/terminal.almd) #${n}\r\n"
+    s = s + "  ⎿  \x1b[48;2;34;78;45m+ 日本語のテキスト 👩‍💻 café e\u{0301}\x1b[0m ✻ Thinking… (${n}s · ↓ 1.2k tokens)\r\n"
+    s = s + "\x1b[2m╭──────────────────────────────────────────────╮\x1b[0m\r\n"
+  }
+  bytes.from_string(s)
+}
+
+effect fn bench(mb: Int) -> Unit = {
+  var t = terminal.new(COLS, ROWS)
+  let start = sys.now_ms()
+  let base = sys.footprint()
+  println("budget ${int.to_string(terminal.DEFAULT_SCROLLBACK / 1000000)} MB of scrollback; footprint at start ${mib(base)}")
+  println("fed MB   footprint   scrollback   lines kept   MB/s")
+  var fed = 0
+  var i = 0
+  var next_report = 0
+  while fed < mb * 1000000 {
+    let c = chunk(i)
+    terminal.feed(t, c)
+    fed = fed + bytes.len(c)
+    i = i + 1
+    if fed >= next_report then {
+      let secs = int.to_float(int.max(sys.now_ms() - start, 1)) / 1000.0
+      println("${pad(int.to_string(fed / 1000000), 6)}   ${pad(mib(sys.footprint()), 9)}   ${pad(mib(scrollback.bytes_used(t.sb)), 10)}   ${pad(int.to_string(scrollback.line_count(t.sb)), 10)}   ${float.to_string(int.to_float(fed / 100000) / 10.0 / secs)}")
+      next_report = next_report + mb * 1000000 / 8
+    }
+  }
+}
+
+fn mib(n: Int) -> String = "${int.to_string(n / 1048576)} MiB"
+
+fn pad(s: String, n: Int) -> String = string.pad_start(s, n, " ")

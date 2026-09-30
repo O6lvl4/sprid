@@ -1,0 +1,998 @@
+// The terminal: a VT parser feeding a screen.
+//
+// `feed` takes bytes from the PTY and applies them. Nothing here touches the
+// OS or draws: the state is a grid of cells (see cell.almd) plus a cursor,
+// modes and scrollback, and what the terminal must answer (device status,
+// device attributes) collects in `replies` for the caller to write back.
+//
+// The parser is the DEC VT500 state machine (vt100.net/emu/dec_ansi_parser)
+// with UTF-8 decoded in the ground state. Its state lives in the Terminal
+// record, so a sequence split across two reads continues where it stopped,
+// and parsing allocates nothing per printed character.
+//
+// The grid is a ring: row y is stored at physical row (top + y) % rows, so
+// scrolling the whole screen — what streaming output does on every line — is
+// one row clear, not a copy of the screen. Scrolling inside margins copies
+// rows.
+
+import bytes
+import self.cell
+import self.scrollback
+import self.width
+
+// Parser states.
+let GROUND = 0
+let ESCAPE = 1
+let ESCAPE_INTERMEDIATE = 2
+let CSI_ENTRY = 3
+let CSI_PARAM = 4
+let CSI_INTERMEDIATE = 5
+let CSI_IGNORE = 6
+let OSC_STRING = 7
+/// DCS, SOS, PM and APC: consumed and ignored up to their terminator.
+let IGNORED_STRING = 8
+
+/// Longest OSC string kept; the rest is dropped so a runaway sequence can't
+/// grow memory.
+let OSC_MAX = 4096
+let MAX_PARAMS = 32
+
+/// Default scrollback budget: 10 MB, the same as Ghostty's default.
+let DEFAULT_SCROLLBACK = 10000000
+
+type Saved = { x: Int, y: Int, fg: Int, bg: Int, attrs: Int, origin: Bool, pending_wrap: Bool, dec_graphics: Bool }
+
+type Terminal = {
+  cols: Int,
+  rows: Int,
+  // Active screen, and the other one (main or alternate).
+  grid: Bytes,
+  top: Int,
+  wrapped: Bytes,
+  graphemes: Map[Int, String],
+  other_grid: Bytes,
+  other_top: Int,
+  other_wrapped: Bytes,
+  other_graphemes: Map[Int, String],
+  alt: Bool,
+  // Cursor and pen.
+  x: Int,
+  y: Int,
+  pending_wrap: Bool,
+  fg: Int,
+  bg: Int,
+  attrs: Int,
+  saved: Saved,
+  saved_main: Saved,
+  last_x: Int,
+  last_y: Int,
+  last_cp: Int,
+  // Margins and modes.
+  margin_top: Int,
+  margin_bottom: Int,
+  autowrap: Bool,
+  origin: Bool,
+  insert: Bool,
+  cursor_visible: Bool,
+  cursor_shape: Int,
+  app_cursor: Bool,
+  app_keypad: Bool,
+  bracketed_paste: Bool,
+  focus_events: Bool,
+  mouse_mode: Int,
+  mouse_sgr: Bool,
+  sync_output: Bool,
+  dec_graphics: Bool,
+  tabs: Bytes,
+  blank: Bytes,
+  blank_bg: Int,
+  // Outside world.
+  title: String,
+  replies: String,
+  bells: Int,
+  sb: scrollback.Scrollback,
+  // Parser.
+  state: Int,
+  params: List[Int],
+  colons: List[Bool],
+  param: Int,
+  colon: Bool,
+  private: Int,
+  intermediate: Int,
+  osc: Bytes,
+  utf8_need: Int,
+  utf8_cp: Int,
+}
+
+fn new(cols: Int, rows: Int) -> Terminal = with_scrollback(cols, rows, DEFAULT_SCROLLBACK)
+
+fn with_scrollback(cols: Int, rows: Int, limit: Int) -> Terminal = {
+  let home = Saved { x: 0, y: 0, fg: 0, bg: 0, attrs: 0, origin: false, pending_wrap: false, dec_graphics: false }
+  let blank = cell.blank_row(cols, cell.COLOR_DEFAULT)
+  Terminal {
+    cols: cols,
+    rows: rows,
+    grid: bytes.repeat(blank, rows),
+    top: 0,
+    wrapped: bytes.new(rows),
+    graphemes: [:],
+    other_grid: bytes.repeat(blank, rows),
+    other_top: 0,
+    other_wrapped: bytes.new(rows),
+    other_graphemes: [:],
+    alt: false,
+    x: 0,
+    y: 0,
+    pending_wrap: false,
+    fg: 0,
+    bg: 0,
+    attrs: 0,
+    saved: home,
+    saved_main: home,
+    last_x: -1,
+    last_y: -1,
+    last_cp: 32,
+    margin_top: 0,
+    margin_bottom: rows - 1,
+    autowrap: true,
+    origin: false,
+    insert: false,
+    cursor_visible: true,
+    cursor_shape: 0,
+    app_cursor: false,
+    app_keypad: false,
+    bracketed_paste: false,
+    focus_events: false,
+    mouse_mode: 0,
+    mouse_sgr: false,
+    sync_output: false,
+    dec_graphics: false,
+    tabs: default_tabs(cols),
+    blank: blank,
+    blank_bg: 0,
+    title: "",
+    replies: "",
+    bells: 0,
+    sb: scrollback.new(limit),
+    state: GROUND,
+    params: [],
+    colons: [],
+    param: -1,
+    colon: false,
+    private: 0,
+    intermediate: 0,
+    osc: bytes.new(0),
+    utf8_need: 0,
+    utf8_cp: 0,
+  }
+}
+
+fn default_tabs(cols: Int) -> Bytes = {
+  var tabs = bytes.new(cols)
+  for x in 0..<cols {
+    if x > 0 and x % 8 == 0 then bytes.set_u8(tabs, x, 1)
+  }
+  tabs
+}
+
+// ── Grid addressing ───────────────────────────────────────────────────────
+
+fn phys(t: Terminal, y: Int) -> Int = (t.top + y) % t.rows
+
+fn row_off(t: Terminal, y: Int) -> Int = phys(t, y) * t.cols * cell.SIZE
+
+fn cell_off(t: Terminal, x: Int, y: Int) -> Int = row_off(t, y) + x * cell.SIZE
+
+fn cell_index(t: Terminal, x: Int, y: Int) -> Int = phys(t, y) * t.cols + x
+
+/// The blank row for the current background, rebuilt only when it changes.
+fn ensure_blank(mut t: Terminal) -> Unit = {
+  if t.blank_bg != t.bg then {
+    t.blank = cell.blank_row(t.cols, t.bg)
+    t.blank_bg = t.bg
+  }
+}
+
+/// Blank cells [x0, x1) of row y with the current background.
+fn erase_cells(mut t: Terminal, y: Int, x0: Int, x1: Int) -> Unit = {
+  let a = int.max(0, x0)
+  let b = int.min(t.cols, x1)
+  if b > a then {
+    ensure_blank(t)
+    let dst = cell_off(t, a, y)
+    bytes.copy_from(t.grid, t.blank, dst, 0, (b - a) * cell.SIZE)
+  }
+}
+
+fn erase_row(mut t: Terminal, y: Int) -> Unit = {
+  erase_cells(t, y, 0, t.cols)
+  let p = phys(t, y)
+  bytes.set_u8(t.wrapped, p, 0)
+}
+
+fn mark_wrapped(mut t: Terminal) -> Unit = {
+  let p = phys(t, t.y)
+  bytes.set_u8(t.wrapped, p, 1)
+}
+
+/// Copy row `from` over row `to`, carrying its combining marks along.
+fn copy_row(mut t: Terminal, from: Int, to: Int) -> Unit = {
+  let src = row_off(t, from)
+  let dst = row_off(t, to)
+  bytes.copy_within(t.grid, src, src + t.cols * cell.SIZE, dst)
+  let dst_row = phys(t, to)
+  let src_wrapped = bytes.read_u8(t.wrapped, phys(t, from))
+  bytes.set_u8(t.wrapped, dst_row, src_wrapped)
+  for x in 0..<t.cols {
+    if int.band(bytes.read_u8(t.grid, cell_off(t, x, to) + cell.OFF_FLAGS), cell.FLAG_GRAPHEME) != 0 then {
+      let key = cell_index(t, x, to)
+      let marks = map.get_or(t.graphemes, cell_index(t, x, from), "")
+      map.insert(t.graphemes, key, marks)
+    }
+  }
+}
+
+/// Combining marks of row y, keyed by column, for the scrollback record.
+fn row_extras(t: Terminal, y: Int) -> Map[Int, String] = {
+  var extras: Map[Int, String] = [:]
+  for x in 0..<t.cols {
+    if int.band(bytes.read_u8(t.grid, cell_off(t, x, y) + cell.OFF_FLAGS), cell.FLAG_GRAPHEME) != 0 then
+      map.insert(extras, x, map.get_or(t.graphemes, cell_index(t, x, y), ""))
+  }
+  extras
+}
+
+// ── Scrolling ─────────────────────────────────────────────────────────────
+
+/// Scroll the lines of the margins up by `n`; lines leaving the top of the
+/// full main screen go to scrollback.
+fn scroll_up(mut t: Terminal, n: Int) -> Unit = {
+  let height = t.margin_bottom - t.margin_top + 1
+  let count = int.min(n, height)
+  if t.margin_top == 0 and t.margin_bottom == t.rows - 1 then {
+    for _ in 0..<count {
+      if not t.alt then {
+        let off = row_off(t, 0)
+        let row = bytes.slice(t.grid, off, off + t.cols * cell.SIZE)
+        let wrapped = bytes.read_u8(t.wrapped, phys(t, 0)) == 1
+        let record = scrollback.encode_row(row, t.cols, wrapped, row_extras(t, 0))
+        scrollback.push(t.sb, record)
+      }
+      t.top = (t.top + 1) % t.rows
+      erase_row(t, t.rows - 1)
+    }
+  } else {
+    for y in t.margin_top..<(t.margin_bottom - count + 1) {
+      copy_row(t, y + count, y)
+    }
+    for y in (t.margin_bottom - count + 1)...t.margin_bottom {
+      erase_row(t, y)
+    }
+  }
+}
+
+/// Scroll the lines of the margins down by `n`, blank lines entering at the
+/// top margin.
+fn scroll_down(mut t: Terminal, n: Int) -> Unit = {
+  let height = t.margin_bottom - t.margin_top + 1
+  let count = int.min(n, height)
+  var y = t.margin_bottom
+  while y >= t.margin_top + count {
+    copy_row(t, y - count, y)
+    y = y - 1
+  }
+  for r in t.margin_top..<(t.margin_top + count) {
+    erase_row(t, r)
+  }
+}
+
+/// Insert (`n` > 0) blank lines at the cursor row, pushing the lines below
+/// it down within the bottom margin.
+fn insert_lines(mut t: Terminal, n: Int) -> Unit = {
+  if t.y >= t.margin_top and t.y <= t.margin_bottom then {
+    let saved_top = t.margin_top
+    t.margin_top = t.y
+    scroll_down(t, n)
+    t.margin_top = saved_top
+    t.x = 0
+    t.pending_wrap = false
+  }
+}
+
+fn delete_lines(mut t: Terminal, n: Int) -> Unit = {
+  if t.y >= t.margin_top and t.y <= t.margin_bottom then {
+    let saved_top = t.margin_top
+    t.margin_top = t.y
+    // Deleting lines never feeds scrollback, even from the first row.
+    let saved_alt = t.alt
+    t.alt = true
+    scroll_up_region(t, n)
+    t.alt = saved_alt
+    t.margin_top = saved_top
+    t.x = 0
+    t.pending_wrap = false
+  }
+}
+
+/// `scroll_up` limited to copying rows: the ring fast path only applies to
+/// the whole screen, which `delete_lines` from row 0 is too, so it is routed
+/// here to keep the lines out of scrollback.
+fn scroll_up_region(mut t: Terminal, n: Int) -> Unit = {
+  let count = int.min(n, t.margin_bottom - t.margin_top + 1)
+  for y in t.margin_top..<(t.margin_bottom - count + 1) {
+    copy_row(t, y + count, y)
+  }
+  for y in (t.margin_bottom - count + 1)...t.margin_bottom {
+    erase_row(t, y)
+  }
+}
+
+// ── Cursor ────────────────────────────────────────────────────────────────
+
+fn index(mut t: Terminal) -> Unit = {
+  if t.y == t.margin_bottom then scroll_up(t, 1)
+  else if t.y < t.rows - 1 then t.y = t.y + 1
+}
+
+fn reverse_index(mut t: Terminal) -> Unit = {
+  if t.y == t.margin_top then scroll_down(t, 1)
+  else if t.y > 0 then t.y = t.y - 1
+}
+
+fn move_to(mut t: Terminal, x: Int, y: Int) -> Unit = {
+  let (lo, hi) = if t.origin then (t.margin_top, t.margin_bottom) else (0, t.rows - 1)
+  t.x = int.clamp(x, 0, t.cols - 1)
+  t.y = int.clamp(y + (if t.origin then t.margin_top else 0), lo, hi)
+  t.pending_wrap = false
+}
+
+/// Vertical moves stop at the margins when the cursor is inside them.
+fn move_vertical(mut t: Terminal, dy: Int) -> Unit = {
+  let lo = if t.y >= t.margin_top then t.margin_top else 0
+  let hi = if t.y <= t.margin_bottom then t.margin_bottom else t.rows - 1
+  t.y = int.clamp(t.y + dy, lo, hi)
+  t.pending_wrap = false
+}
+
+fn tab_forward(mut t: Terminal, n: Int) -> Unit = {
+  for _ in 0..<n {
+    var x = t.x + 1
+    while x < t.cols - 1 and bytes.read_u8(t.tabs, x) == 0 {
+      x = x + 1
+    }
+    t.x = int.min(x, t.cols - 1)
+  }
+  t.pending_wrap = false
+}
+
+fn tab_backward(mut t: Terminal, n: Int) -> Unit = {
+  for _ in 0..<n {
+    var x = t.x - 1
+    while x > 0 and bytes.read_u8(t.tabs, x) == 0 {
+      x = x - 1
+    }
+    t.x = int.max(x, 0)
+  }
+  t.pending_wrap = false
+}
+
+fn save_cursor(t: Terminal) -> Saved =
+  Saved { x: t.x, y: t.y, fg: t.fg, bg: t.bg, attrs: t.attrs, origin: t.origin, pending_wrap: t.pending_wrap, dec_graphics: t.dec_graphics }
+
+fn restore_cursor(mut t: Terminal, s: Saved) -> Unit = {
+  t.x = int.min(s.x, t.cols - 1)
+  t.y = int.min(s.y, t.rows - 1)
+  t.fg = s.fg
+  t.bg = s.bg
+  t.attrs = s.attrs
+  t.origin = s.origin
+  t.pending_wrap = s.pending_wrap
+  t.dec_graphics = s.dec_graphics
+}
+
+// ── Printing ──────────────────────────────────────────────────────────────
+
+/// DEC Special Graphics (ESC ( 0): line drawing in place of 0x60..0x7E.
+fn dec_graphic(cp: Int) -> Int = match cp {
+  0x60 => 0x25C6, 0x61 => 0x2592, 0x66 => 0x00B0, 0x67 => 0x00B1,
+  0x6A => 0x2518, 0x6B => 0x2510, 0x6C => 0x250C, 0x6D => 0x2514,
+  0x6E => 0x253C, 0x6F => 0x23BA, 0x70 => 0x23BB, 0x71 => 0x2500,
+  0x72 => 0x23BC, 0x73 => 0x23BD, 0x74 => 0x251C, 0x75 => 0x2524,
+  0x76 => 0x2534, 0x77 => 0x252C, 0x78 => 0x2502, 0x79 => 0x2264,
+  0x7A => 0x2265, 0x7B => 0x03C0, 0x7C => 0x2260, 0x7D => 0x00A3,
+  0x7E => 0x00B7, _ => cp,
+}
+
+fn print(mut t: Terminal, raw: Int) -> Unit = {
+  let cp = if t.dec_graphics and raw >= 0x60 and raw <= 0x7E then dec_graphic(raw) else raw
+  let w = width.of(cp)
+  if w == 0 then attach(t, cp)
+  else {
+    if t.pending_wrap and t.autowrap then {
+      mark_wrapped(t)
+      t.x = 0
+      index(t)
+    }
+    t.pending_wrap = false
+    if w == 2 and t.x == t.cols - 1 then {
+      // A wide char does not fit in the last column: wrap first.
+      if t.autowrap then {
+        erase_cells(t, t.y, t.x, t.cols)
+        mark_wrapped(t)
+        t.x = 0
+        index(t)
+      } else t.x = t.cols - 2
+    }
+    if t.insert then shift_right(t, t.x, w)
+    put(t, t.x, cp, w)
+    t.last_x = t.x
+    t.last_y = t.y
+    t.last_cp = cp
+    if t.x + w >= t.cols then {
+      t.x = t.cols - 1
+      t.pending_wrap = true
+    } else t.x = t.x + w
+  }
+}
+
+/// Write `cp` of width `w` at column x of the cursor row, first splitting any
+/// wide char it overwrites half of.
+fn put(mut t: Terminal, x: Int, cp: Int, w: Int) -> Unit = {
+  clear_wide_at(t, x)
+  if w == 2 then clear_wide_at(t, x + 1)
+  let o = cell_off(t, x, t.y)
+  bytes.set_u32_le(t.grid, o + cell.OFF_CP, cp)
+  bytes.set_u32_le(t.grid, o + cell.OFF_FG, t.fg)
+  bytes.set_u32_le(t.grid, o + cell.OFF_BG, t.bg)
+  bytes.set_u16_le(t.grid, o + cell.OFF_ATTRS, t.attrs)
+  bytes.set_u8(t.grid, o + cell.OFF_WIDTH, w)
+  bytes.set_u8(t.grid, o + cell.OFF_FLAGS, 0)
+  if w == 2 then {
+    let o2 = o + cell.SIZE
+    bytes.set_u32_le(t.grid, o2 + cell.OFF_CP, 0)
+    bytes.set_u32_le(t.grid, o2 + cell.OFF_FG, t.fg)
+    bytes.set_u32_le(t.grid, o2 + cell.OFF_BG, t.bg)
+    bytes.set_u16_le(t.grid, o2 + cell.OFF_ATTRS, t.attrs)
+    bytes.set_u8(t.grid, o2 + cell.OFF_WIDTH, 0)
+    bytes.set_u8(t.grid, o2 + cell.OFF_FLAGS, 0)
+  }
+}
+
+/// If column x holds half of a wide char, blank the other half.
+fn clear_wide_at(mut t: Terminal, x: Int) -> Unit = {
+  if x >= 0 and x < t.cols then {
+    let w = bytes.read_u8(t.grid, cell_off(t, x, t.y) + cell.OFF_WIDTH)
+    if w == 0 and x > 0 then erase_cells(t, t.y, x - 1, x)
+    else if w == 2 and x + 1 < t.cols then erase_cells(t, t.y, x + 1, x + 2)
+  }
+}
+
+/// A zero-width codepoint joins the cell printed last.
+fn attach(mut t: Terminal, cp: Int) -> Unit = {
+  if t.last_x >= 0 and t.last_y == t.y then {
+    let o = cell_off(t, t.last_x, t.last_y)
+    let i = cell_index(t, t.last_x, t.last_y)
+    let flags = bytes.read_u8(t.grid, o + cell.OFF_FLAGS)
+    let prev = if int.band(flags, cell.FLAG_GRAPHEME) != 0 then map.get_or(t.graphemes, i, "") else ""
+    // Bound what one cell can collect; past this the marks are dropped.
+    if string.len(prev) < 32 then {
+      map.insert(t.graphemes, i, prev + string.from_codepoint(cp))
+      bytes.set_u8(t.grid, o + cell.OFF_FLAGS, int.bor(flags, cell.FLAG_GRAPHEME))
+    }
+  }
+}
+
+fn shift_right(mut t: Terminal, x: Int, n: Int) -> Unit = {
+  let row = row_off(t, t.y)
+  let keep = t.cols - x - n
+  if keep > 0 then bytes.copy_within(t.grid, row + x * cell.SIZE, row + (x + keep) * cell.SIZE, row + (x + n) * cell.SIZE)
+  erase_cells(t, t.y, x, x + n)
+}
+
+fn delete_chars(mut t: Terminal, n: Int) -> Unit = {
+  let count = int.min(n, t.cols - t.x)
+  let row = row_off(t, t.y)
+  let keep = t.cols - t.x - count
+  if keep > 0 then bytes.copy_within(t.grid, row + (t.x + count) * cell.SIZE, row + t.cols * cell.SIZE, row + t.x * cell.SIZE)
+  erase_cells(t, t.y, t.cols - count, t.cols)
+  t.pending_wrap = false
+}
+
+// ── Feeding bytes ─────────────────────────────────────────────────────────
+
+/// Apply output from the PTY.
+fn feed(mut t: Terminal, data: Bytes) -> Unit = {
+  let n = bytes.len(data)
+  var i = 0
+  while i < n {
+    step(t, bytes.read_u8(data, i))
+    i = i + 1
+  }
+}
+
+fn feed_string(mut t: Terminal, s: String) -> Unit = feed(t, bytes.from_string(s))
+
+fn step(mut t: Terminal, b: Int) -> Unit = {
+  if t.utf8_need > 0 and (b < 0x80 or b > 0xBF) then {
+    // A sequence cut short: show the replacement, then take b afresh.
+    t.utf8_need = 0
+    print(t, 0xFFFD)
+  }
+  if t.utf8_need > 0 then {
+    t.utf8_cp = int.bor(int.bshl(t.utf8_cp, 6), int.band(b, 0x3F))
+    t.utf8_need = t.utf8_need - 1
+    if t.utf8_need == 0 then print(t, t.utf8_cp)
+  } else if b == 0x18 or b == 0x1A then t.state = GROUND
+  else if b == 0x1B then {
+    if t.state == OSC_STRING then osc_dispatch(t)
+    enter_escape(t)
+  }
+  else if t.state == GROUND then ground(t, b)
+  else if t.state == OSC_STRING then osc_byte(t, b)
+  else if t.state == IGNORED_STRING then { () }
+  else if b < 0x20 then execute(t, b)
+  else if t.state == ESCAPE then escape(t, b)
+  else if t.state == ESCAPE_INTERMEDIATE then escape_intermediate(t, b)
+  else csi(t, b)
+}
+
+fn enter_escape(mut t: Terminal) -> Unit = {
+  t.state = ESCAPE
+  t.intermediate = 0
+}
+
+fn ground(mut t: Terminal, b: Int) -> Unit = {
+  if b < 0x20 then execute(t, b)
+  else if b < 0x7F then print(t, b)
+  else if b == 0x7F then { () }
+  else if b >= 0xC2 and b <= 0xDF then { t.utf8_need = 1; t.utf8_cp = int.band(b, 0x1F) }
+  else if b >= 0xE0 and b <= 0xEF then { t.utf8_need = 2; t.utf8_cp = int.band(b, 0x0F) }
+  else if b >= 0xF0 and b <= 0xF4 then { t.utf8_need = 3; t.utf8_cp = int.band(b, 0x07) }
+  else print(t, 0xFFFD)
+}
+
+fn execute(mut t: Terminal, b: Int) -> Unit = match b {
+  0x07 => { t.bells = t.bells + 1 },
+  0x08 => {
+    if t.x > 0 then t.x = t.x - 1
+    t.pending_wrap = false
+  },
+  0x09 => tab_forward(t, 1),
+  0x0A | 0x0B | 0x0C => index(t),
+  0x0D => {
+    t.x = 0
+    t.pending_wrap = false
+  },
+  0x0E | 0x0F => { () },
+  _ => { () },
+}
+
+fn escape(mut t: Terminal, b: Int) -> Unit = {
+  if b >= 0x20 and b <= 0x2F then {
+    t.intermediate = b
+    t.state = ESCAPE_INTERMEDIATE
+  } else {
+    t.state = GROUND
+    match b {
+      0x5B => { // [
+        t.state = CSI_ENTRY
+        let no_params: List[Int] = []
+        let no_colons: List[Bool] = []
+        t.params = no_params
+        t.colons = no_colons
+        t.param = -1
+        t.colon = false
+        t.private = 0
+        t.intermediate = 0
+      },
+      0x5D => { // ]
+        t.state = OSC_STRING
+        bytes.clear(t.osc)
+      },
+      0x50 | 0x58 | 0x5E | 0x5F => { t.state = IGNORED_STRING }, // P X ^ _
+      0x37 => { t.saved = save_cursor(t) },            // 7 DECSC
+      0x38 => restore_cursor(t, t.saved),              // 8 DECRC
+      0x44 => index(t),                                // D IND
+      0x45 => { t.x = 0; t.pending_wrap = false; index(t) }, // E NEL
+      0x4D => reverse_index(t),                        // M RI
+      0x48 => bytes.set_u8(t.tabs, t.x, 1),            // H HTS
+      0x63 => reset(t),                                // c RIS
+      0x3D => { t.app_keypad = true },                 // =
+      0x3E => { t.app_keypad = false },                // >
+      _ => { () },
+    }
+  }
+}
+
+fn escape_intermediate(mut t: Terminal, b: Int) -> Unit = {
+  if b >= 0x20 and b <= 0x2F then t.intermediate = b
+  else {
+    t.state = GROUND
+    if t.intermediate == 0x28 then t.dec_graphics = b == 0x30          // ( 0 / ( B
+    else if t.intermediate == 0x23 and b == 0x38 then align_test(t)   // # 8 DECALN
+  }
+}
+
+fn csi(mut t: Terminal, b: Int) -> Unit = {
+  if t.state == CSI_IGNORE then {
+    if b >= 0x40 and b <= 0x7E then t.state = GROUND
+  } else if b >= 0x30 and b <= 0x39 then {
+    if t.state == CSI_INTERMEDIATE then t.state = CSI_IGNORE
+    else {
+      t.state = CSI_PARAM
+      t.param = int.min(if t.param < 0 then b - 0x30 else t.param * 10 + b - 0x30, 65535)
+    }
+  } else if b == 0x3B or b == 0x3A then {
+    if t.state == CSI_INTERMEDIATE then t.state = CSI_IGNORE
+    else {
+      t.state = CSI_PARAM
+      push_param(t)
+      t.colon = b == 0x3A
+    }
+  } else if b >= 0x3C and b <= 0x3F then {
+    if t.state == CSI_ENTRY then {
+      t.private = b
+      t.state = CSI_PARAM
+    } else t.state = CSI_IGNORE
+  } else if b >= 0x20 and b <= 0x2F then {
+    t.intermediate = b
+    t.state = CSI_INTERMEDIATE
+  } else if b >= 0x40 and b <= 0x7E then {
+    push_param(t)
+    t.state = GROUND
+    csi_dispatch(t, b)
+  } else t.state = CSI_IGNORE
+}
+
+/// End the parameter being read. `colons[i]` says parameter i was introduced
+/// by ':' — a sub-parameter of the one before it.
+fn push_param(mut t: Terminal) -> Unit = {
+  if list.len(t.params) < MAX_PARAMS then {
+    t.params = t.params + [t.param]
+    t.colons = t.colons + [t.colon]
+  }
+  t.param = -1
+  t.colon = false
+}
+
+/// Parameter i, or `default` when missing or 0.
+fn arg(t: Terminal, i: Int, default: Int) -> Int = {
+  let v = list.get(t.params, i) ?? -1
+  if v <= 0 then default else v
+}
+
+/// Parameter i, or 0 when missing.
+fn arg0(t: Terminal, i: Int) -> Int = int.max(list.get(t.params, i) ?? 0, 0)
+
+fn csi_dispatch(mut t: Terminal, final: Int) -> Unit = {
+  if t.private == 0 and t.intermediate == 0 then csi_plain(t, final)
+  else if t.private == 0x3F and t.intermediate == 0 then {
+    if final == 0x68 then set_private_modes(t, true)
+    else if final == 0x6C then set_private_modes(t, false)
+    else if final == 0x75 then reply(t, "\x1b[?0u")          // kitty keyboard: no flags
+  } else if t.private == 0x3E and final == 0x63 then reply(t, "\x1b[>1;10;0c")   // DA2
+  else if t.intermediate == 0x20 and final == 0x71 then t.cursor_shape = arg0(t, 0) // DECSCUSR
+  else if t.intermediate == 0x21 and final == 0x70 then soft_reset(t)             // DECSTR
+}
+
+fn csi_plain(mut t: Terminal, final: Int) -> Unit = match final {
+  0x40 => { shift_right(t, t.x, int.min(arg(t, 0, 1), t.cols - t.x)); t.pending_wrap = false }, // @ ICH
+  0x41 => move_vertical(t, 0 - arg(t, 0, 1)),                        // A CUU
+  0x42 | 0x65 => move_vertical(t, arg(t, 0, 1)),                     // B CUD, e VPR
+  0x43 | 0x61 => { t.x = int.min(t.x + arg(t, 0, 1), t.cols - 1); t.pending_wrap = false }, // C CUF, a HPR
+  0x44 => { t.x = int.max(t.x - arg(t, 0, 1), 0); t.pending_wrap = false }, // D CUB
+  0x45 => { move_vertical(t, arg(t, 0, 1)); t.x = 0 },               // E CNL
+  0x46 => { move_vertical(t, 0 - arg(t, 0, 1)); t.x = 0 },           // F CPL
+  0x47 | 0x60 => { t.x = int.clamp(arg(t, 0, 1) - 1, 0, t.cols - 1); t.pending_wrap = false }, // G CHA, ` HPA
+  0x48 | 0x66 => move_to(t, arg(t, 1, 1) - 1, arg(t, 0, 1) - 1),     // H CUP, f HVP
+  0x49 => tab_forward(t, arg(t, 0, 1)),                              // I CHT
+  0x4A => erase_display(t, arg0(t, 0)),                              // J ED
+  0x4B => erase_line(t, arg0(t, 0)),                                 // K EL
+  0x4C => insert_lines(t, arg(t, 0, 1)),                             // L IL
+  0x4D => delete_lines(t, arg(t, 0, 1)),                             // M DL
+  0x50 => delete_chars(t, arg(t, 0, 1)),                             // P DCH
+  0x53 => scroll_up_region(t, arg(t, 0, 1)),                         // S SU
+  0x54 => scroll_down(t, arg(t, 0, 1)),                              // T SD
+  0x58 => { erase_cells(t, t.y, t.x, t.x + arg(t, 0, 1)); t.pending_wrap = false }, // X ECH
+  0x5A => tab_backward(t, arg(t, 0, 1)),                             // Z CBT
+  0x62 => {                                                          // b REP
+    for _ in 0..<int.min(arg(t, 0, 1), 65535) {
+      print(t, t.last_cp)
+    }
+  },
+  0x63 => { if arg0(t, 0) == 0 then reply(t, "\x1b[?62;22c") },     // c DA1
+  0x64 => {                                                          // d VPA
+    t.y = int.clamp(arg(t, 0, 1) - 1, 0, t.rows - 1)
+    t.pending_wrap = false
+  },
+  0x67 => {                                                          // g TBC
+    let mode = arg0(t, 0)
+    if mode == 0 then bytes.set_u8(t.tabs, t.x, 0)
+    else if mode == 3 then bytes.fill(t.tabs, 0)
+  },
+  0x68 => { if arg0(t, 0) == 4 then t.insert = true },               // h SM
+  0x6C => { if arg0(t, 0) == 4 then t.insert = false },              // l RM
+  0x6D => sgr(t),                                                    // m SGR
+  0x6E => {                                                          // n DSR
+    let mode = arg0(t, 0)
+    if mode == 5 then reply(t, "\x1b[0n")
+    else if mode == 6 then {
+      let row = if t.origin then t.y - t.margin_top else t.y
+      reply(t, "\x1b[${int.to_string(row + 1)};${int.to_string(t.x + 1)}R")
+    }
+  },
+  0x72 => {                                                          // r DECSTBM
+    let top = arg(t, 0, 1) - 1
+    let bottom = int.min(arg(t, 1, t.rows), t.rows) - 1
+    if top < bottom then {
+      t.margin_top = top
+      t.margin_bottom = bottom
+      move_to(t, 0, 0)
+    }
+  },
+  0x73 => { t.saved = save_cursor(t) },                              // s SCOSC
+  0x75 => restore_cursor(t, t.saved),                                // u SCORC
+  _ => { () },
+}
+
+fn reply(mut t: Terminal, s: String) -> Unit = { t.replies = t.replies + s }
+
+fn erase_display(mut t: Terminal, mode: Int) -> Unit = {
+  if mode == 0 then {
+    erase_cells(t, t.y, t.x, t.cols)
+    for y in (t.y + 1)..<t.rows {
+      erase_row(t, y)
+    }
+  } else if mode == 1 then {
+    for y in 0..<t.y {
+      erase_row(t, y)
+    }
+    erase_cells(t, t.y, 0, t.x + 1)
+  } else if mode == 2 then {
+    for y in 0..<t.rows {
+      erase_row(t, y)
+    }
+  } else if mode == 3 then scrollback.clear(t.sb)
+  t.pending_wrap = false
+}
+
+fn erase_line(mut t: Terminal, mode: Int) -> Unit = {
+  if mode == 0 then erase_cells(t, t.y, t.x, t.cols)
+  else if mode == 1 then erase_cells(t, t.y, 0, t.x + 1)
+  else if mode == 2 then erase_cells(t, t.y, 0, t.cols)
+  t.pending_wrap = false
+}
+
+// ── SGR ───────────────────────────────────────────────────────────────────
+
+fn sgr(mut t: Terminal) -> Unit = {
+  let n = list.len(t.params)
+  var i = 0
+  while i < n {
+    let p = int.max(t.params[i], 0)
+    // Parameters that are sub-parameters of this one (introduced by ':').
+    var subs = 0
+    while i + subs + 1 < n and t.colons[i + subs + 1] {
+      subs = subs + 1
+    }
+    if p == 38 or p == 48 or p == 58 then {
+      let (color, used) = if subs > 0 then extended_color_colon(t, i, subs) else extended_color(t, i)
+      if p == 38 then t.fg = color else if p == 48 then t.bg = color
+      i = i + 1 + (if subs > 0 then subs else used)
+    } else {
+      sgr_one(t, p, if subs > 0 then int.max(t.params[i + 1], 0) else -1)
+      i = i + 1 + subs
+    }
+  }
+}
+
+/// `38;5;n` / `38;2;r;g;b`: the color and how many parameters follow 38.
+fn extended_color(t: Terminal, i: Int) -> (Int, Int) = {
+  let kind = arg0(t, i + 1)
+  if kind == 5 then (cell.palette(arg0(t, i + 2)), 2)
+  else if kind == 2 then (cell.rgb(arg0(t, i + 2), arg0(t, i + 3), arg0(t, i + 4)), 4)
+  else (cell.COLOR_DEFAULT, 1)
+}
+
+/// `38:5:n` / `38:2:r:g:b` / `38:2:colorspace:r:g:b`.
+fn extended_color_colon(t: Terminal, i: Int, subs: Int) -> (Int, Int) = {
+  let kind = arg0(t, i + 1)
+  if kind == 5 then (cell.palette(arg0(t, i + 2)), subs)
+  else if kind == 2 then {
+    let first = if subs >= 5 then i + 3 else i + 2
+    (cell.rgb(arg0(t, first), arg0(t, first + 1), arg0(t, first + 2)), subs)
+  } else (cell.COLOR_DEFAULT, subs)
+}
+
+/// One SGR parameter; `sub` is its first sub-parameter, or -1.
+fn sgr_one(mut t: Terminal, p: Int, sub: Int) -> Unit = {
+  if p == 0 then { t.fg = 0; t.bg = 0; t.attrs = 0 }
+  else if p == 1 then set_attr(t, cell.ATTR_BOLD, true)
+  else if p == 2 then set_attr(t, cell.ATTR_FAINT, true)
+  else if p == 3 then set_attr(t, cell.ATTR_ITALIC, true)
+  else if p == 4 then {
+    set_attr(t, cell.ATTR_UNDERLINE, sub != 0)
+    set_attr(t, cell.ATTR_DOUBLE_UNDERLINE, sub == 2)
+  }
+  else if p == 5 or p == 6 then set_attr(t, cell.ATTR_BLINK, true)
+  else if p == 7 then set_attr(t, cell.ATTR_INVERSE, true)
+  else if p == 8 then set_attr(t, cell.ATTR_HIDDEN, true)
+  else if p == 9 then set_attr(t, cell.ATTR_STRIKE, true)
+  else if p == 21 then set_attr(t, cell.ATTR_DOUBLE_UNDERLINE, true)
+  else if p == 22 then { set_attr(t, cell.ATTR_BOLD, false); set_attr(t, cell.ATTR_FAINT, false) }
+  else if p == 23 then set_attr(t, cell.ATTR_ITALIC, false)
+  else if p == 24 then { set_attr(t, cell.ATTR_UNDERLINE, false); set_attr(t, cell.ATTR_DOUBLE_UNDERLINE, false) }
+  else if p == 25 then set_attr(t, cell.ATTR_BLINK, false)
+  else if p == 27 then set_attr(t, cell.ATTR_INVERSE, false)
+  else if p == 28 then set_attr(t, cell.ATTR_HIDDEN, false)
+  else if p == 29 then set_attr(t, cell.ATTR_STRIKE, false)
+  else if p >= 30 and p <= 37 then t.fg = cell.palette(p - 30)
+  else if p == 39 then t.fg = cell.COLOR_DEFAULT
+  else if p >= 40 and p <= 47 then t.bg = cell.palette(p - 40)
+  else if p == 49 then t.bg = cell.COLOR_DEFAULT
+  else if p == 53 then set_attr(t, cell.ATTR_OVERLINE, true)
+  else if p == 55 then set_attr(t, cell.ATTR_OVERLINE, false)
+  else if p >= 90 and p <= 97 then t.fg = cell.palette(p - 90 + 8)
+  else if p >= 100 and p <= 107 then t.bg = cell.palette(p - 100 + 8)
+}
+
+fn set_attr(mut t: Terminal, bit: Int, on: Bool) -> Unit = {
+  t.attrs = if on then int.bor(t.attrs, bit) else int.band(t.attrs, int.bnot(bit))
+}
+
+// ── Modes ─────────────────────────────────────────────────────────────────
+
+fn set_private_modes(mut t: Terminal, on: Bool) -> Unit = {
+  for p in t.params {
+    match p {
+      1 => { t.app_cursor = on },
+      6 => {
+        t.origin = on
+        move_to(t, 0, 0)
+      },
+      7 => { t.autowrap = on },
+      25 => { t.cursor_visible = on },
+      47 | 1047 => switch_screen(t, on, false),
+      1049 => switch_screen(t, on, true),
+      1000 | 1002 | 1003 => { t.mouse_mode = if on then p else 0 },
+      1004 => { t.focus_events = on },
+      1006 => { t.mouse_sgr = on },
+      2004 => { t.bracketed_paste = on },
+      2026 => { t.sync_output = on },
+      _ => { () },
+    }
+  }
+}
+
+/// Enter (`on`) or leave the alternate screen. The alternate screen has no
+/// scrollback and is cleared on entry; 1049 also saves and restores the
+/// cursor of the main screen.
+fn switch_screen(mut t: Terminal, on: Bool, with_cursor: Bool) -> Unit = {
+  if on != t.alt then {
+    if on and with_cursor then t.saved_main = save_cursor(t)
+    let grid = t.grid
+    let top = t.top
+    let wrapped = t.wrapped
+    let graphemes = t.graphemes
+    t.grid = t.other_grid
+    t.top = t.other_top
+    t.wrapped = t.other_wrapped
+    t.graphemes = t.other_graphemes
+    t.other_grid = grid
+    t.other_top = top
+    t.other_wrapped = wrapped
+    t.other_graphemes = graphemes
+    t.alt = on
+    if on then {
+      for y in 0..<t.rows {
+        erase_row(t, y)
+      }
+      map.clear(t.graphemes)
+    } else if with_cursor then restore_cursor(t, t.saved_main)
+  }
+}
+
+fn soft_reset(mut t: Terminal) -> Unit = {
+  t.cursor_visible = true
+  t.insert = false
+  t.origin = false
+  t.autowrap = true
+  t.app_cursor = false
+  t.app_keypad = false
+  t.margin_top = 0
+  t.margin_bottom = t.rows - 1
+  t.fg = 0
+  t.bg = 0
+  t.attrs = 0
+  t.dec_graphics = false
+  t.pending_wrap = false
+}
+
+fn reset(mut t: Terminal) -> Unit = {
+  switch_screen(t, false, false)
+  soft_reset(t)
+  for y in 0..<t.rows {
+    erase_row(t, y)
+  }
+  map.clear(t.graphemes)
+  t.x = 0
+  t.y = 0
+  t.tabs = default_tabs(t.cols)
+  t.bracketed_paste = false
+  t.mouse_mode = 0
+  t.mouse_sgr = false
+  t.focus_events = false
+  t.sync_output = false
+  t.title = ""
+}
+
+/// DECALN: fill the screen with 'E'.
+fn align_test(mut t: Terminal) -> Unit = {
+  t.margin_top = 0
+  t.margin_bottom = t.rows - 1
+  let saved_y = t.y
+  for y in 0..<t.rows {
+    t.y = y
+    for x in 0..<t.cols {
+      put(t, x, 0x45, 1)
+    }
+  }
+  t.y = saved_y
+  move_to(t, 0, 0)
+}
+
+// ── OSC ───────────────────────────────────────────────────────────────────
+
+fn osc_byte(mut t: Terminal, b: Int) -> Unit = {
+  if b == 0x07 then {
+    osc_dispatch(t)
+    t.state = GROUND
+  } else if b >= 0x20 and bytes.len(t.osc) < OSC_MAX then bytes.push(t.osc, b)
+}
+
+fn osc_dispatch(mut t: Terminal) -> Unit = {
+  let s = bytes.to_string_lossy(t.osc)
+  let parts = string.split(s, ";")
+  let cmd = list.get(parts, 0) ?? ""
+  if cmd == "0" or cmd == "2" then t.title = string.drop(s, string.len(cmd) + 1)
+  bytes.clear(t.osc)
+}
+
+// ── Reading the screen ────────────────────────────────────────────────────
+
+/// Row y as text, trailing blanks trimmed.
+fn row_text(t: Terminal, y: Int) -> String = {
+  let off = row_off(t, y)
+  let row = bytes.slice(t.grid, off, off + t.cols * cell.SIZE)
+  let extras = row_extras(t, y)
+  var s = ""
+  for x in 0..<t.cols {
+    s = s + scrollback.cell_text(row, x, extras)
+  }
+  string.trim_end(s)
+}
+
+/// The screen as text, one line per row, trailing empty rows dropped.
+fn screen_text(t: Terminal) -> String = {
+  var lines = list.map(0..<t.rows, (y) => row_text(t, y))
+  while list.len(lines) > 0 and list.last(lines) == some("") {
+    lines = list.drop_end(lines, 1)
+  }
+  list.join(lines, "\n")
+}
+
+/// Everything the terminal holds, scrollback first.
+fn full_text(t: Terminal) -> String =
+  list.join(scrollback.texts(t.sb) + [screen_text(t)], "\n")
+
+/// Attributes of the cell at (x, y), for tests and renderers.
+fn cell_fg(t: Terminal, x: Int, y: Int) -> Int = bytes.read_u32_le(t.grid, cell_off(t, x, y) + cell.OFF_FG)
+fn cell_bg(t: Terminal, x: Int, y: Int) -> Int = bytes.read_u32_le(t.grid, cell_off(t, x, y) + cell.OFF_BG)
+fn cell_attrs(t: Terminal, x: Int, y: Int) -> Int = bytes.read_u16_le(t.grid, cell_off(t, x, y) + cell.OFF_ATTRS)
+
+/// Take the pending replies.
+fn take_replies(mut t: Terminal) -> String = {
+  let r = t.replies
+  t.replies = ""
+  r
+}
