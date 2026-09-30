@@ -76,8 +76,8 @@ What works:
   click on the tab bar. A tab is titled by its program's title, else its
   directory; double-click it to name it (Enter keeps, Escape drops, an empty
   name goes back to the automatic title). Closing a tab whose shell is running a
-  program (Claude Code, a build) asks first, as does closing the window
-  with any; a tab at its prompt closes at once.
+  program (Claude Code, a build) asks first, as do closing the window and
+  quitting (Cmd+Q, the Dock) with any; a tab at its prompt closes at once.
 - **Resize**: the main screen reflows — lines a program wrapped, on screen
   and in scrollback, are wrapped again at the new width, wide characters
   whole, the cursor at its place in its line. While the window is dragged
