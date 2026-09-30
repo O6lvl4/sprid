@@ -5,3 +5,9 @@ fn footprint() -> Int = _
 
 @extern(rust, "crate::sys", "now_ms")
 fn now_ms() -> Int = _
+
+@extern(rust, "crate::sys", "login_shell")
+fn login_shell() -> String = _
+
+@extern(rust, "crate::sys", "cwd")
+fn cwd() -> String = _

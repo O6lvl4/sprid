@@ -28,3 +28,18 @@ pub fn now_ms() -> i64 {
     thread_local! { static START: Instant = Instant::now(); }
     START.with(|s| s.elapsed().as_millis() as i64)
 }
+
+/// The user's login shell from the password database: what a program
+/// started from Finder has instead of $SHELL.
+pub fn login_shell() -> String {
+    unsafe {
+        let pw = libc::getpwuid(libc::getuid());
+        if pw.is_null() || (*pw).pw_shell.is_null() { return String::new(); }
+        std::ffi::CStr::from_ptr((*pw).pw_shell).to_string_lossy().into_owned()
+    }
+}
+
+/// The directory this process runs in.
+pub fn cwd() -> String {
+    std::env::current_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()
+}

@@ -34,6 +34,11 @@ See `src/scrollback.almd`.
 
 ## Status: M3 — a window you can use
 
+As a Mac app: `scripts/make-app.sh --install` builds `Sprid.app` (icon from
+`scripts/make-icon.py`) and puts it in `~/Applications`, for Finder, Spotlight
+and the Dock. Started that way it takes the login shell from the password
+database and opens at home.
+
 ```
 sprid                    open a window running your login shell
 sprid run <command>      run <command> on a PTY headless, print the screen

@@ -80,13 +80,19 @@ effect fn run(capture: Option[String]) -> Unit = {
     float.to_int(PAD_X * scale), float.to_int(PAD_Y * scale), CELL_HEIGHT)
   var width = window.width()
   var height = window.height()
-  let shell = env.get("SHELL") ?? "/bin/zsh"
+  // Started from Finder there is no $SHELL and the directory is /: take the
+  // shell from the password database and start at home, as Ghostty does.
+  let shell = match env.get("SHELL") {
+    some(s) => s,
+    none => if sys.login_shell() != "" then sys.login_shell() else "/bin/zsh",
+  }
   let login = "exec ${shell} -l"
   let first = match capture { some(_) => env.get("SPRID_CAPTURE_CMD") ?? login, none => login }
+  let start_dir = if sys.cwd() == "/" or sys.cwd() == "" then env.get("HOME") ?? "" else ""
 
   var tabs: List[Tab] = []
   var active = 0
-  match open_tab(r, width, height, 1, first, "") {
+  match open_tab(r, width, height, 1, first, start_dir) {
     some(tb) => list.push(tabs, tb),
     none => (),
   }
