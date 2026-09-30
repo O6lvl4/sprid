@@ -85,9 +85,6 @@ type Terminal = {
   // while it redraws (full-screen programs do, a line editor does), so
   // hidden it is mid-update (see `mid_update`).
   cursor_pairs: Bool,
-  // The alternate screen was entered and the cursor hasn't been shown
-  // since: a full-screen program drawing its first screen.
-  first_screen: Bool,
   cursor_shape: Int,
   app_cursor: Bool,
   app_keypad: Bool,
@@ -165,7 +162,6 @@ fn with_scrollback(cols: Int, rows: Int, limit: Int) -> Terminal = {
     insert: false,
     cursor_visible: true,
     cursor_pairs: false,
-    first_screen: false,
     cursor_shape: 0,
     app_cursor: false,
     app_keypad: false,
@@ -995,7 +991,6 @@ fn set_private_modes(mut t: Terminal, on: Bool) -> Unit = {
       7 => { t.autowrap = on },
       25 => {
         if on and not t.cursor_visible then t.cursor_pairs = true
-        if on then t.first_screen = false
         t.cursor_visible = on
       },
       47 | 1047 => switch_screen(t, on, false),
@@ -1014,7 +1009,6 @@ fn set_private_modes(mut t: Terminal, on: Bool) -> Unit = {
 /// scrollback and is cleared on entry; 1049 also saves and restores the
 /// cursor of the main screen.
 fn switch_screen(mut t: Terminal, on: Bool, with_cursor: Bool) -> Unit = {
-  if on != t.alt then t.first_screen = on
   if on != t.alt then {
     if on and with_cursor then t.saved_main = save_cursor(t)
     let grid = t.grid
@@ -1040,13 +1034,11 @@ fn switch_screen(mut t: Terminal, on: Bool, with_cursor: Bool) -> Unit = {
 }
 
 /// Whether the program is part way through drawing a screen: inside a
-/// synchronized update (mode 2026), or with the cursor hidden — by a program
-/// known to hide it while it draws, or by one drawing its first full
-/// screen, which it shows the cursor on when done. A program writes a large
+/// synchronized update (mode 2026), or — for a program that hides the
+/// cursor while it draws — with the cursor hidden. A program writes a large
 /// screen in pieces, sometimes tens of ms apart; drawn in between, the
 /// screen shows its top half new and its bottom half old.
-fn mid_update(t: Terminal) -> Bool =
-  t.sync_output or (not t.cursor_visible and (t.cursor_pairs or t.first_screen))
+fn mid_update(t: Terminal) -> Bool = t.sync_output or (t.cursor_pairs and not t.cursor_visible)
 
 fn soft_reset(mut t: Terminal) -> Unit = {
   t.cursor_visible = true
@@ -1475,22 +1467,4 @@ test "a program that hides the cursor while it draws is mid-update while it is h
   assert_eq(mid_update(t), false)
   feed_string(t, "\x1b[?2026h")
   assert_eq(mid_update(t), true)
-}
-
-test "a full-screen program's first screen is mid-update until it shows the cursor" {
-  var t = new(10, 3)
-  // As a program starts: the cursor hidden, then the alternate screen.
-  feed_string(t, "\x1b[?25l\x1b[?1049h\x1b[Htop")
-  assert_eq(mid_update(t), true)
-  feed_string(t, "\x1b[3;1Hbottom\x1b[?25h")
-  assert_eq(mid_update(t), false)
-  // Showing the cursor also made it known to pair them.
-  feed_string(t, "\x1b[?25l")
-  assert_eq(mid_update(t), true)
-}
-
-test "the main screen with a hidden cursor is not held" {
-  var t = new(10, 3)
-  feed_string(t, "\x1b[?25l\x1b[?1049h\x1b[?1049l")
-  assert_eq(mid_update(t), false)
 }

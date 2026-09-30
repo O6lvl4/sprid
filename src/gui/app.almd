@@ -57,8 +57,6 @@ let SETTLE_MS = 300
 let SYNC_LIMIT = 150
 /// Longest the screen waits while a program has hidden the cursor to draw, ms.
 let HIDDEN_LIMIT = 100
-/// Longest the screen waits for a full-screen program's first screen, ms.
-let FIRST_SCREEN_LIMIT = 1000
 
 /// One tab: a terminal, the PTY its program runs on, and how it is viewed.
 type Tab = {
@@ -400,7 +398,6 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
             if cur.sync_since < 0 then cur.sync_since = clock
           } else cur.sync_since = -1
           let held = cur.sync_since >= 0 and clock - cur.sync_since < hold_limit(cur.t)
-          if trace and held then eprintln("held ${int.to_string(clock)} since ${int.to_string(cur.sync_since)}")
           if not held then {
             let t0 = sys.now_ms()
             render.draw(r, cur.t, cur.back, cur.shift, cur.sel, ui.preedit, width, height, titles, active,
@@ -534,12 +531,8 @@ fn take(mut tabs: List[Tab], i: Int) -> Option[Tab] = {
 }
 
 /// Longest a screen is held for its program to finish drawing it, ms: a
-/// synchronized update is asked for, a hidden cursor only suggests one — but
-/// a program's first full screen comes while it is still starting up, its
-/// pieces hundreds of ms apart, and until it is whole the screen before it
-/// is the better one to show.
-fn hold_limit(t: terminal.Terminal) -> Int =
-  if t.sync_output then SYNC_LIMIT else if t.first_screen then FIRST_SCREEN_LIMIT else HIDDEN_LIMIT
+/// synchronized update is asked for, a hidden cursor only suggests one.
+fn hold_limit(t: terminal.Terminal) -> Int = if t.sync_output then SYNC_LIMIT else HIDDEN_LIMIT
 
 /// How long the active tab's open synchronized update may still hold the
 /// frame, ms (0 when none is open).
