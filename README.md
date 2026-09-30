@@ -65,6 +65,11 @@ What works:
   arrow keys, or wheel reports if they asked for the mouse), Shift+PageUp /
   PageDown by pages. The view stays put while new output arrives below.
 - **Selection**: drag to select, across scrollback and screen; Cmd+C copies.
+- **Tabs**: Cmd+T opens one in the current tab's directory, Cmd+W closes,
+  Cmd+1-9, Ctrl+Tab / Ctrl+Shift+Tab or Cmd+Shift+[ ] switch, and so does a
+  click on the tab bar. A tab is titled by its program's title, else its
+  directory; double-click it to name it (Enter keeps, Escape drops, an empty
+  name goes back to the automatic title).
 - **Resize**: the grid follows the window (content is cut, not reflowed).
 - **Synchronized output** (mode 2026), which Claude Code uses, holds the
   frame until the update is complete.
@@ -74,34 +79,50 @@ What works:
 `scripts/bench_vs.py` runs sprid and Ghostty 1.3.1 (the current release,
 with its memory leak fixed) the same way: started as apps (`open -n -a`),
 same font (UDEV Gothic 35NFLG 14.5), same grid (100 x 30), same 10 MB
-scrollback, same script, timed by the script itself. Three sessions on an
-M-series Mac, each a median of 3-5 runs; where the sessions disagree, the
-range is given.
+scrollback, same script. A run ends when the script has stamped its marker
+file AND the terminal's window is on screen (`scripts/window_shown.c`), so a
+terminal that starts its program first is not ready before it shows. The
+peak is the kernel's own record (`phys_footprint_peak`), not a sample. Two
+sessions on an M-series Mac, each a median of 5 runs.
 
 | | sprid | Ghostty 1.3.1 |
 |---|---|---|
-| Start to first command | 0.26-0.34 s | 0.28-0.33 s |
-| `cat` 21 MB of Claude-Code-like output | 0.17-0.27 s (80-130 MB/s) | 0.27-0.42 s (50-80 MB/s) |
-| Peak footprint during that `cat` | 188-190 MB | 131-132 MB |
-| CPU, idle (10-30 s after start) | 0.00 % | 0.00-0.05 %, once 1.2 % |
-| Footprint, idle | 52-53 MB | 63 MB, once 114 MB |
+| Start: window shown, first command run | 0.23-0.25 s | 0.35-0.37 s |
+| `cat` 21 MB of Claude-Code-like output | 0.25-0.26 s | 0.25-0.28 s |
+| Peak footprint by the end of that `cat` | 111-112 MB | 130-132 MB |
+| CPU, idle (10-30 s after start) | 0.05-0.10 % | 0.00-0.05 % |
+| Footprint, idle | 40 MB | 62 MB |
 
-sprid is ahead on throughput and idle memory, level on start and idle CPU,
-and behind on memory while output streams: about 40 MB more of GPU memory
-in use, which follows from drawing (it is gone when frames aren't drawn) and
-not from uploads or frame rate (neither changed it). That is the next thing
-to find.
+Idle CPU is at the resolution of the measurement (one 10 ms tick in 20 s):
+sampled, every sprid thread is asleep. `cat` is level; the parser is next —
+rows scrolled into scrollback are a third of its time.
 
-How it got here: the parser is 5x what it was (rows scrolled off are encoded
+What moved memory and start:
+
+- **No GPU transfer commands.** On Metal, the first blit of a process makes
+  the driver hold ~46 MB for about a second, again whenever drawing resumes
+  after idle. snaidhm writes buffers through mappings (per-frame vertices in
+  a ring of mapped copies, the glyph atlas as a mapped storage buffer instead
+  of a texture) and zeroes them at creation on the CPU. wgpu itself clears
+  its internal zero buffer with a blit on the first submit; the peak above
+  is with a wgpu-core patch that zeroes it through a mapping on integrated
+  GPUs (see `almide-graphics/wgpu`, branch `v24-zero-buffer-on-cpu`). Without
+  it, the peak is ~150 MB.
+- **Fonts are mapped, not read.** Their pages are the file's, clean, and not
+  counted against sprid — as with Core Text. `native/mapped.rs` is a global
+  allocator that owns those mappings, so they can be ordinary `Vec<u8>`s.
+- **The shell starts before the window**, and the window shows with its
+  first frame, not empty while the GPU gets ready.
+
+Earlier: the parser is 5x what it was (rows scrolled off are encoded
 straight into scrollback, a width table, ASCII runs, one store per field
 pair, CSI parameters in fixed buffers), a PTY read no longer allocates and
-zeroes 64 KB per 1 KB it returns, the window sleeps on its PTYs and events at
-once instead of polling (snaidhm's `wait_fds`), and only the grid face is
-read at start — bold and fallbacks when first needed.
+zeroes 64 KB per 1 KB it returns, and the window sleeps on its PTYs and
+events at once instead of polling (snaidhm's `wait_fds`).
 
 Not yet: reflow on resize, colour emoji (snaidhm reads outlines, not
-bitmaps), mouse clicks reported to programs, the window title, a config file,
-tabs and splits.
+bitmaps), mouse clicks reported to programs, the window title, a config
+file, splits.
 
 ## Milestones
 
