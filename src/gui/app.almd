@@ -57,6 +57,10 @@ let SETTLE_MS = 300
 let SYNC_LIMIT = 150
 /// Longest the screen waits while a program has hidden the cursor to draw, ms.
 let HIDDEN_LIMIT = 100
+/// Longest a read waits for the rest of a screen a program is drawing, ms.
+let MID_UPDATE_GAP_MS = 10
+/// Longest the screen waits for a full-screen program's first screen, ms.
+let FIRST_SCREEN_LIMIT = 1000
 
 /// One tab: a terminal, the PTY its program runs on, and how it is viewed.
 type Tab = {
@@ -67,24 +71,42 @@ type Tab = {
   back: Int,
   shift: Int,
   sel: Option[view.Selection],
-  // When a synchronized update began, -1 when none is open.
-  sync_since: Int,
+  // The program's updates the frame is held for, and when each began.
+  up: Updates,
   // The name the user gave it; "" for the automatic title.
   name: String,
 }
+
+/// The latest synchronized update and redraw with the cursor hidden that
+/// the tab's program began — by the terminal's counts of them — and when
+/// each was first seen, ms. A hold is timed from the start of the update it
+/// is for: timed from the first of a run of them, a program that keeps the
+/// cursor hidden, drawing in synchronized updates, would soon have none of
+/// them held, and its half-drawn screens shown.
+type Updates = { syncs: Int, sync_at: Int, hides: Int, hide_at: Int }
 
 /// Window-wide input state.
 type Ui = {
   preedit: List[Int],
   wheel_acc: Float,
+  // Selecting with the pointer: by cell, word or line (`view.unit_span`),
+  // from what the press took — its first and last cell.
   dragging: Bool,
+  unit: Int,
   anchor_line: Int,
   anchor_col: Int,
+  anchor_end_line: Int,
+  anchor_end_col: Int,
+  // Presses on the grid in a row, to tell a double and a triple click: how
+  // many, and the cell of the last.
+  clicks: Int,
+  click_line: Int,
+  click_col: Int,
   dirty: Bool,
   // Renaming the active tab: what its name reads so far.
   renaming: Bool,
   draft: String,
-  // The last press on the tab bar, to tell a double click: when, which tab.
+  // The last press, when; on the tab bar, which tab (-1: on the grid).
   click_ms: Int,
   click_tab: Int,
   // The button held in a press reported to the program, -1 when none, and
@@ -184,7 +206,7 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
 
   let (cols, rows) = render.grid_size(r, width, height, 1)
   if (cols, rows) != expected then { let _ = pty.resize(first_fd, cols, rows) } else ()
-  var tabs: List[Tab] = [Tab { t: terminal.new(cols, rows), fd: first_fd, back: 0, shift: 0, sel: none, sync_since: -1, name: "" }]
+  var tabs: List[Tab] = [Tab { t: terminal.new(cols, rows), fd: first_fd, back: 0, shift: 0, sel: none, up: Updates { syncs: 0, sync_at: 0, hides: 0, hide_at: 0 }, name: "" }]
   var active = 0
   // For captures of the tab bar: more tabs running the login shell.
   let extra = match capture { some(_) => int.parse(env.get("SPRID_CAPTURE_TABS") ?? "1") ?? 1, none => 1 }
@@ -201,7 +223,8 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
   let home = env.get("HOME") ?? ""
   // Questions in Japanese on a Japanese system.
   let ja = string.starts_with(env.get("LANG") ?? "", "ja")
-  var ui = Ui { preedit: [], wheel_acc: 0.0, dragging: false, anchor_line: 0, anchor_col: 0, dirty: true,
+  var ui = Ui { preedit: [], wheel_acc: 0.0, dragging: false, unit: 0, anchor_line: 0, anchor_col: 0,
+                anchor_end_line: 0, anchor_end_col: 0, clicks: 0, click_line: 0, click_col: 0, dirty: true,
                 renaming: false, draft: "", click_ms: 0, click_tab: -1, home: home, finding: false, find: search.empty(),
                 field: field.of(""), find_focus: false, field_drag: false, scroll_drag: false, scroll_grab: 0,
                 ime_ending: false, ghost_until: -1, ime_x: -1, ime_y: -1,
@@ -223,6 +246,10 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
   // When the window last changed size, while scrollback waits to be
   // reflowed; -1 when it doesn't.
   var resized_at = -1
+  // Debug: SPRID_AUTOSCROLL="dy,start ms,end ms,every ms" turns the wheel by
+  // itself, for measuring scrolling without a hand on the trackpad.
+  let auto = list.map(string.split(env.get("SPRID_AUTOSCROLL") ?? "", ","), (x) => float.parse(x) ?? 0.0)
+  var auto_next = if list.len(auto) == 4 then float.to_int(auto[1]) else -1
   while alive {
     // Sleep until input, output on any tab, or the next frame is due: with
     // nothing to draw that is indefinitely, so an idle window costs nothing.
@@ -232,7 +259,8 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
     let settle_wait = if resized_at < 0 then -1 else int.max(0, resized_at + SETTLE_MS - now)
     let drawn_wait = if ui.dirty then int.max(frame_wait, sync_wait(tabs, active, now)) else idle
     let ghost_wait = if ui.ghost_until < 0 then -1 else int.max(0, ui.ghost_until - now)
-    let timeout = sooner(sooner(drawn_wait, settle_wait), ghost_wait)
+    let auto_wait = if auto_next < 0 then -1 else int.max(0, auto_next - now)
+    let timeout = sooner(sooner(sooner(drawn_wait, settle_wait), ghost_wait), auto_wait)
     // With no time to wait, just take the window's events: arming the fd
     // watcher on every turn of a streaming loop costs more than it saves.
     alive = if timeout == 0 then window.pump() else window.wait_fds(list.map(tabs, (tb) => tb.fd), timeout)
@@ -271,6 +299,8 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
     if kind != window.NONE and input_at < 0 then input_at = sys.now_ms()
     while kind != window.NONE {
       var act = Stay
+      if trace and (kind == window.COMPOSE or kind == window.TEXT or kind == window.KEY) then
+        eprintln("input ${int.to_string(sys.now_ms())} kind ${int.to_string(kind)} code ${int.to_string(window.event_code())} text \"${window.event_text()}\" preedit ${int.to_string(list.len(ui.preedit))}")
       // Counted before the active tab is taken out of the list: with it out,
       // two tabs looked like one — no tab bar to click, and every click
       // below it placed a tab bar's height too low.
@@ -348,6 +378,20 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
     // goes at once; one committed to the program stays till its echo.
     if ui.ime_ending and (ui.ghost_until < 0 or sys.now_ms() >= ui.ghost_until) then end_composition(ui)
 
+    if auto_next >= 0 and sys.now_ms() >= auto_next then {
+      match take(tabs, active) {
+        some(tb) => {
+          var cur = tb
+          wheel(cur, ui, r, scale, auto[0], 40, 10)
+          if trace then eprintln("wheel ${int.to_string(sys.now_ms())}")
+          list.push(tabs, cur)
+          tabs = list.swap(tabs, active, list.len(tabs) - 1)
+        },
+        none => (),
+      }
+      auto_next = if sys.now_ms() >= float.to_int(auto[2]) then -1 else auto_next + float.to_int(auto[3])
+    }
+
     // Every tab's output, the active tab's with the longer budget.
     streaming = false
     for i in 0..<list.len(tabs) {
@@ -394,10 +438,9 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
           // The program is mid-update (mode 2026, or its cursor hidden while
           // it draws): show the screen when it is done, or after a limit if
           // it never says so.
-          if terminal.mid_update(cur.t) then {
-            if cur.sync_since < 0 then cur.sync_since = clock
-          } else cur.sync_since = -1
-          let held = cur.sync_since >= 0 and clock - cur.sync_since < hold_limit(cur.t)
+          note_updates(cur, clock)
+          let held = hold_left(cur, clock) > 0
+          if trace and held then eprintln("held ${int.to_string(clock)} for ${int.to_string(hold_left(cur, clock))} ms")
           if not held then {
             let t0 = sys.now_ms()
             render.draw(r, cur.t, cur.back, cur.shift, cur.sel, ui.preedit, width, height, titles, active,
@@ -445,6 +488,11 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
             var cur = tb
             cur.back = int.clamp(int.parse(env.get("SPRID_CAPTURE_BACK") ?? "0") ?? 0, 0, view.max_back(cur.t))
             cur.shift = int.clamp(int.parse(env.get("SPRID_CAPTURE_SHIFT") ?? "0") ?? 0, 0, r.cell_h - 1)
+            // A composition at the cursor, as the input method shows one.
+            match env.get("SPRID_CAPTURE_PREEDIT") {
+              some(p) => { ui.preedit = text.code_points(p) },
+              none => (),
+            }
             // The find bar searching for this, stepped up SPRID_CAPTURE_FIND_UP times.
             match env.get("SPRID_CAPTURE_FIND") {
               some(q) => {
@@ -530,14 +578,29 @@ fn take(mut tabs: List[Tab], i: Int) -> Option[Tab] = {
   list.pop(tabs)
 }
 
-/// Longest a screen is held for its program to finish drawing it, ms: a
-/// synchronized update is asked for, a hidden cursor only suggests one.
-fn hold_limit(t: terminal.Terminal) -> Int = if t.sync_output then SYNC_LIMIT else HIDDEN_LIMIT
+/// Note the updates `tb`'s program has begun since last looked at, as
+/// beginning `now`.
+fn note_updates(mut tb: Tab, now: Int) -> Unit = {
+  let t = tb.t
+  if t.sync_starts != tb.up.syncs then tb.up = { ...tb.up, syncs: t.sync_starts, sync_at: now }
+  if t.hide_starts != tb.up.hides then tb.up = { ...tb.up, hides: t.hide_starts, hide_at: now }
+}
 
-/// How long the active tab's open synchronized update may still hold the
-/// frame, ms (0 when none is open).
+/// How much longer the frame is held for `tb`'s program to finish drawing,
+/// ms; 0 when it isn't. A synchronized update is asked for, a hidden cursor
+/// only suggests one — but a program's first full screen comes while it is
+/// still starting up, its pieces hundreds of ms apart, and until it is whole
+/// the screen before it is the better one to show.
+fn hold_left(tb: Tab, now: Int) -> Int = {
+  let t = tb.t
+  let sync = if t.sync_output then tb.up.sync_at + SYNC_LIMIT - now else 0
+  let hidden = if terminal.drawing_hidden(t) then tb.up.hide_at + (if t.first_screen then FIRST_SCREEN_LIMIT else HIDDEN_LIMIT) - now else 0
+  int.max(0, int.max(sync, hidden))
+}
+
+/// How long the active tab's program may still hold the frame, ms.
 fn sync_wait(tabs: List[Tab], active: Int, now: Int) -> Int = match list.get(tabs, active) {
-  some(tb) => if tb.sync_since >= 0 and terminal.mid_update(tb.t) then int.max(0, tb.sync_since + hold_limit(tb.t) - now) else 0,
+  some(tb) => hold_left(tb, now),
   none => 0,
 }
 
@@ -561,7 +624,7 @@ fn open_tab(r: render.Renderer, width: Int, height: Int, count: Int, command: St
   let (cols, rows) = render.grid_size(r, width, height, count)
   let fd = pty.spawn(command, cwd, cols, rows)
   if fd < 0 then none
-  else some(Tab { t: terminal.new(cols, rows), fd: fd, back: 0, shift: 0, sel: none, sync_since: -1, name: "" })
+  else some(Tab { t: terminal.new(cols, rows), fd: fd, back: 0, shift: 0, sel: none, up: Updates { syncs: 0, sync_at: 0, hides: 0, hide_at: 0 }, name: "" })
 }
 
 /// Close tab `i` and its program, keeping the other tabs in order.
@@ -647,9 +710,15 @@ fn drain(mut tb: Tab, budget_ms: Int) -> (Bool, Bool) = {
   while bytes.len(data) > 0 {
     terminal.feed(tb.t, data)
     got = true
+    note_updates(tb, sys.now_ms())
     // Wait a moment for more: a writer refills the PTY 1 KB at a time, and
-    // giving up in the gap costs a whole turn of the loop.
-    data = if sys.now_ms() < until then pty.read(tb.fd, 1) else {
+    // giving up in the gap costs a whole turn of the loop. In the middle of
+    // a screen the frame is held for (see `hold_left`) the rest is surely
+    // coming, and a program that writes only as fast as it is read — a
+    // full-screen redraw comes 1 KB per turn — is kept waiting by every turn
+    // not spent reading.
+    let gap = if hold_left(tb, sys.now_ms()) > 0 then MID_UPDATE_GAP_MS else 1
+    data = if sys.now_ms() < until then pty.read(tb.fd, gap) else {
       more = true
       bytes.new(0)
     }
@@ -799,41 +868,9 @@ effect fn handle(mut cur: Tab, mut ui: Ui, kind: Int, r: render.Renderer, scale:
       }
       Stay
     }
-  } else if kind == window.WHEEL and not (t.mouse_mode != 0 and t.mouse_sgr) and not t.alt then {
-    // Scrollback follows the wheel by the pixel: a trackpad moves the text
-    // with the fingers, not a line at a time once a line's worth adds up.
-    ui.wheel_acc = ui.wheel_acc + window.event_dy() * scale
-    let px = float.to_int(ui.wheel_acc)
-    ui.wheel_acc = ui.wheel_acc - int.to_float(px)
-    if px < 0 then terminal.settle(cur.t)
-    let pos = int.clamp(cur.back * r.cell_h + cur.shift - px, 0, view.max_back(cur.t) * r.cell_h)
-    if pos != cur.back * r.cell_h + cur.shift then {
-      cur.back = pos / r.cell_h
-      cur.shift = pos % r.cell_h
-      ui.dirty = true
-    }
-    Stay
   } else if kind == window.WHEEL then {
-    ui.wheel_acc = ui.wheel_acc + window.event_dy()
-    let line_px = int.to_float(r.cell_h) / scale
-    let lines = float.to_int(ui.wheel_acc / line_px)
-    ui.wheel_acc = ui.wheel_acc - int.to_float(lines) * line_px
-    if lines != 0 then {
-      let (col, row) = cell_at(r, t, scale, tabs)
-      if t.mouse_mode != 0 and t.mouse_sgr then {
-        // The program asked for the mouse: tell it about the wheel.
-        let button = if lines < 0 then 64 else 65
-        for _ in 0..<int.abs(lines) {
-          let _ = pty.write(cur.fd, "\x1b[<${int.to_string(button)};${int.to_string(col + 1)};${int.to_string(row + 1)}M")
-        }
-      } else {
-        // A full-screen program without the mouse scrolls by arrow keys.
-        let key = keys.encode(keys.KEY, if lines < 0 then keys.KEY_UP else keys.KEY_DOWN, 0, t.app_cursor)
-        for _ in 0..<int.abs(lines) {
-          let _ = pty.write(cur.fd, key)
-        }
-      }
-    }
+    let (col, row) = cell_at(r, t, scale, tabs)
+    wheel(cur, ui, r, scale, window.event_dy(), col, row)
     Stay
   } else if kind == window.MOUSE_DOWN and ui.finding and window.event_code() == 0
       and render.on_bar(r, bar(ui), tabs, width, float.to_int(window.event_x() * scale), float.to_int(window.event_y() * scale)) then {
@@ -912,6 +949,7 @@ effect fn handle(mut cur: Tab, mut ui: Ui, kind: Int, r: render.Renderer, scale:
       let double = i == ui.click_tab and now - ui.click_ms < DOUBLE_CLICK_MS
       ui.click_ms = if double then 0 else now
       ui.click_tab = i
+      ui.clicks = 0
       if double then {
         ui.renaming = true
         ui.draft = title_of(cur, ui.home)
@@ -919,21 +957,45 @@ effect fn handle(mut cur: Tab, mut ui: Ui, kind: Int, r: render.Renderer, scale:
         Stay
       } else GoTo(i)
     } else {
-      let (col, row) = cell_at(r, t, scale, tabs)
-      ui.anchor_line = pointer_line(r, cur, scale, tabs)
-      ui.anchor_col = col
+      let (col, _) = cell_at(r, t, scale, tabs)
+      let line = pointer_line(r, cur, scale, tabs)
+      let now = sys.now_ms()
+      // A press on the cell just pressed, soon enough, counts on: the
+      // second selects the word there, the third the line; a fourth stays
+      // with the line.
+      let again = ui.click_tab < 0 and ui.clicks > 0 and now - ui.click_ms < DOUBLE_CLICK_MS
+        and line == ui.click_line and col == ui.click_col
+      ui.clicks = if again then int.min(ui.clicks + 1, 3) else 1
+      ui.click_ms = now
+      ui.click_tab = -1
+      ui.click_line = line
+      ui.click_col = col
+      ui.unit = ui.clicks - 1
+      let (l0, c0, l1, c1) = view.unit_span(cur.t, ui.unit, line, col)
+      ui.anchor_line = l0
+      ui.anchor_col = c0
+      ui.anchor_end_line = l1
+      ui.anchor_end_col = c1
       ui.dragging = true
-      if cur.sel != none then ui.dirty = true
-      cur.sel = none
+      let sel = if ui.unit == 0 then none
+        else some(view.Selection { anchor_line: l0, anchor_col: c0, head_line: l1, head_col: c1 })
+      if sel != cur.sel then ui.dirty = true
+      cur.sel = sel
       Stay
     }
   } else if kind == window.MOUSE_MOVE and ui.dragging then {
-    let (col, row) = cell_at(r, t, scale, tabs)
+    let (col, _) = cell_at(r, t, scale, tabs)
     let line = pointer_line(r, cur, scale, tabs)
-    // A click that wobbles within its cell selects nothing: a selection
-    // starts once the pointer reaches another cell.
-    let sel = if line == ui.anchor_line and col == ui.anchor_col then none
-      else some(view.Selection { anchor_line: ui.anchor_line, anchor_col: ui.anchor_col, head_line: line, head_col: col })
+    // By cell, a click that wobbles within its cell selects nothing: a
+    // selection starts once the pointer reaches another cell. By word or
+    // line, the selection spans what the press took and what the pointer is
+    // on, whole.
+    let (h0, c0, h1, c1) = view.unit_span(cur.t, ui.unit, line, col)
+    let before = h0 < ui.anchor_line or (h0 == ui.anchor_line and c0 < ui.anchor_col)
+    let sel = if ui.unit == 0 and line == ui.anchor_line and col == ui.anchor_col then none
+      else if ui.unit == 0 then some(view.Selection { anchor_line: ui.anchor_line, anchor_col: ui.anchor_col, head_line: line, head_col: col })
+      else if before then some(view.Selection { anchor_line: ui.anchor_end_line, anchor_col: ui.anchor_end_col, head_line: h0, head_col: c0 })
+      else some(view.Selection { anchor_line: ui.anchor_line, anchor_col: ui.anchor_col, head_line: h1, head_col: c1 })
     if sel != cur.sel then {
       cur.sel = sel
       ui.dirty = true
@@ -1142,6 +1204,39 @@ fn finish_rename(mut cur: Tab, mut ui: Ui, keep: Bool) -> Unit = {
   ui.renaming = false
   ui.draft = ""
   ui.dirty = true
+}
+
+/// The wheel moved `dy` logical pixels (positive: toward the end) over cell
+/// (`col`, `row`). Scrollback follows it by the pixel — a trackpad moves the
+/// text with the fingers, not a line at a time once a line's worth adds up.
+/// A program that asked for the mouse is told of it a line at a time, and a
+/// full-screen one without the mouse gets arrow keys.
+fn wheel(mut cur: Tab, mut ui: Ui, r: render.Renderer, scale: Float, dy: Float, col: Int, row: Int) -> Unit = {
+  let t = cur.t
+  let reports = t.mouse_mode != 0 and t.mouse_sgr
+  if not reports and not t.alt then {
+    ui.wheel_acc = ui.wheel_acc + dy * scale
+    let px = float.to_int(ui.wheel_acc)
+    ui.wheel_acc = ui.wheel_acc - int.to_float(px)
+    if px < 0 then terminal.settle(cur.t)
+    let pos = int.clamp(cur.back * r.cell_h + cur.shift - px, 0, view.max_back(cur.t) * r.cell_h)
+    if pos != cur.back * r.cell_h + cur.shift then {
+      cur.back = pos / r.cell_h
+      cur.shift = pos % r.cell_h
+      ui.dirty = true
+    }
+  } else {
+    ui.wheel_acc = ui.wheel_acc + dy
+    let line_px = int.to_float(r.cell_h) / scale
+    let lines = float.to_int(ui.wheel_acc / line_px)
+    ui.wheel_acc = ui.wheel_acc - int.to_float(lines) * line_px
+    if lines != 0 then {
+      // All of a move in one write: the program reads them together.
+      let one = if reports then "\x1b[<${int.to_string(if lines < 0 then 64 else 65)};${int.to_string(col + 1)};${int.to_string(row + 1)}M"
+        else keys.encode(keys.KEY, if lines < 0 then keys.KEY_UP else keys.KEY_DOWN, 0, t.app_cursor)
+      let _ = pty.write(cur.fd, string.repeat(one, int.abs(lines)))
+    }
+  }
 }
 
 /// Scroll to where the pointer puts the scrollbar's thumb.

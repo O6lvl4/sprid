@@ -395,7 +395,19 @@ fn draw(mut r: Renderer, t: terminal.Terminal, back: Int, shift: Int, sel: Optio
   let top_line = view.top_line(t, back) - extra
   let shown = t.rows + extra
   let row_y = gy - (if extra == 1 then r.cell_h - shift else 0)
-  let lines = list.map(0..<shown, (y) => view.line_at(t, top_line + y))
+  // A composition at the cursor is shown inserted there: the rest of the
+  // cursor's line moves right to make room, as the text will once it is
+  // committed, instead of showing through beside it.
+  let composing = list.len(preedit) > 0 and (match find { some(b) => not b.focused, none => true })
+  let gap = if composing then cols_of(preedit) else 0
+  let cursor_y = view.screen_line(t) + t.y - top_line
+  let lines = list.map(0..<shown, (y) => {
+    let line = view.line_at(t, top_line + y)
+    if gap > 0 and y == cursor_y then match line {
+      some(row) => some(with_gap(row, t.x, gap, t.cols)),
+      none => none,
+    } else line
+  })
   let query = match find { some(b) => b.find.query, none => "" }
   // The matches on each row, and the current one's columns where it is.
   let found = list.map(lines, (line) => match line {
@@ -489,8 +501,7 @@ fn draw(mut r: Renderer, t: terminal.Terminal, back: Int, shift: Int, sel: Optio
   if cursor_row >= extra and cursor_row < shown then {
     let cx = r.pad_x + t.x * r.cell_w
     let ctop = row_y + cursor_row * r.cell_h
-    let in_bar = match find { some(b) => b.focused, none => false }
-    if list.len(preedit) > 0 and not in_bar then {
+    if composing then {
       var px = cx
       for cp in preedit {
         let w = r.cell_w * int.max(1, cell_width.of(cp))
@@ -692,6 +703,21 @@ fn marks(row: scrollback.Row, x: Int) -> List[Int] =
   if int.band(bytes.read_u8(row.cells, x * cell.SIZE + cell.OFF_FLAGS), cell.FLAG_GRAPHEME) == 0 then []
   else text.code_points(map.get_or(row.extras, x, ""))
     |> list.filter((cp) => cp != 0x200D and (cp < 0xFE00 or cp > 0xFE0F))
+
+/// `row` with `n` blank cells inserted at column `at`, the cells after them
+/// moved right and those pushed past `cols` dropped.
+fn with_gap(row: scrollback.Row, at: Int, n: Int, cols: Int) -> scrollback.Row = {
+  let x = int.clamp(at, 0, cols)
+  let keep = int.max(0, cols - x - n)
+  let cells = bytes.concat(bytes.concat(bytes.slice(row.cells, 0, x * cell.SIZE), cell.blank_row(int.min(n, cols - x), cell.COLOR_DEFAULT)),
+    bytes.slice(row.cells, x * cell.SIZE, (x + keep) * cell.SIZE))
+  var extras: Map[Int, String] = [:]
+  for k in map.keys(row.extras) {
+    let to = if k >= x then k + n else k
+    if to < cols then map.insert(extras, to, map.get_or(row.extras, k, ""))
+  }
+  scrollback.Row { cells: cells, extras: extras, wrapped: row.wrapped }
+}
 
 /// A row's find matches: their columns, and the current one's (`from` -1
 /// when it isn't on the row).
