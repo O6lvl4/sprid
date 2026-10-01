@@ -71,6 +71,8 @@ type Terminal = {
   bg: Int,
   attrs: Int,
   saved: Saved,
+  // DECSC's slot of the screen not in front.
+  saved_other: Saved,
   saved_main: Saved,
   last_x: Int,
   last_y: Int,
@@ -134,6 +136,9 @@ type Terminal = {
   intermediate: Int,
   osc: Bytes,
   utf8_need: Int,
+  // The least code point the sequence being read may encode: less is an
+  // overlong form.
+  utf8_min: Int,
   utf8_cp: Int,
 }
 
@@ -161,6 +166,7 @@ fn with_scrollback(cols: Int, rows: Int, limit: Int) -> Terminal = {
     bg: 0,
     attrs: 0,
     saved: home,
+    saved_other: home,
     saved_main: home,
     last_x: -1,
     last_y: -1,
@@ -205,6 +211,7 @@ fn with_scrollback(cols: Int, rows: Int, limit: Int) -> Terminal = {
     intermediate: 0,
     osc: bytes.new(0),
     utf8_need: 0,
+    utf8_min: 0,
     utf8_cp: 0,
   }
 }
@@ -394,11 +401,13 @@ fn scroll_up_region(mut t: Terminal, n: Int) -> Unit = {
 // ── Cursor ────────────────────────────────────────────────────────────────
 
 fn index(mut t: Terminal) -> Unit = {
+  t.pending_wrap = false
   if t.y == t.margin_bottom then scroll_up(t, 1)
   else if t.y < t.rows - 1 then t.y = t.y + 1
 }
 
 fn reverse_index(mut t: Terminal) -> Unit = {
+  t.pending_wrap = false
   if t.y == t.margin_top then scroll_down(t, 1)
   else if t.y > 0 then t.y = t.y - 1
 }
@@ -545,6 +554,8 @@ fn attach(mut t: Terminal, cp: Int) -> Unit = {
 }
 
 fn shift_right(mut t: Terminal, x: Int, n: Int) -> Unit = {
+  clear_wide_at(t, x)
+  move_marks(t, x, t.cols, n)
   let row = row_off(t, t.y)
   let keep = t.cols - x - n
   if keep > 0 then bytes.copy_within(t.grid, row + x * cell.SIZE, row + (x + keep) * cell.SIZE, row + (x + n) * cell.SIZE)
@@ -553,6 +564,10 @@ fn shift_right(mut t: Terminal, x: Int, n: Int) -> Unit = {
 
 fn delete_chars(mut t: Terminal, n: Int) -> Unit = {
   let count = int.min(n, t.cols - t.x)
+  clear_wide_at(t, t.x)
+  clear_wide_at(t, t.x + count - 1)
+  forget_cells(t, t.y, t.x, t.x + count)
+  move_marks(t, t.x + count, t.cols, 0 - count)
   let row = row_off(t, t.y)
   let keep = t.cols - t.x - count
   if keep > 0 then bytes.copy_within(t.grid, row + (t.x + count) * cell.SIZE, row + t.cols * cell.SIZE, row + t.x * cell.SIZE)
@@ -648,7 +663,7 @@ fn step(mut t: Terminal, b: Int) -> Unit = {
   if t.utf8_need > 0 then {
     t.utf8_cp = int.bor(int.bshl(t.utf8_cp, 6), int.band(b, 0x3F))
     t.utf8_need = t.utf8_need - 1
-    if t.utf8_need == 0 then print(t, t.utf8_cp)
+    if t.utf8_need == 0 then print(t, valid_cp(t.utf8_cp, t.utf8_min))
   } else if b == 0x18 or b == 0x1A then t.state = GROUND
   else if b == 0x1B then {
     if t.state == OSC_STRING then osc_dispatch(t)
@@ -673,10 +688,16 @@ fn ground(mut t: Terminal, b: Int) -> Unit = {
   else if b < 0x7F then print(t, b)
   else if b == 0x7F then { () }
   else if b >= 0xC2 and b <= 0xDF then { t.utf8_need = 1; t.utf8_cp = int.band(b, 0x1F) }
-  else if b >= 0xE0 and b <= 0xEF then { t.utf8_need = 2; t.utf8_cp = int.band(b, 0x0F) }
-  else if b >= 0xF0 and b <= 0xF4 then { t.utf8_need = 3; t.utf8_cp = int.band(b, 0x07) }
+  else if b >= 0xE0 and b <= 0xEF then { t.utf8_need = 2; t.utf8_cp = int.band(b, 0x0F); t.utf8_min = 0x800 }
+  else if b >= 0xF0 and b <= 0xF4 then { t.utf8_need = 3; t.utf8_cp = int.band(b, 0x07); t.utf8_min = 0x10000 }
   else print(t, 0xFFFD)
 }
+
+/// `cp` if UTF-8 may encode it in a sequence for at least `min`: else the
+/// replacement character — overlong forms, surrogates and past U+10FFFF are
+/// not characters, and `cat` of a binary file shows them as such.
+fn valid_cp(cp: Int, min: Int) -> Int =
+  if cp < min or (cp >= 0xD800 and cp <= 0xDFFF) or cp > 0x10FFFF then 0xFFFD else cp
 
 fn execute(mut t: Terminal, b: Int) -> Unit = match b {
   0x07 => { t.bells = t.bells + 1 },
@@ -843,7 +864,7 @@ fn csi_plain(mut t: Terminal, final: Int) -> Unit = match final {
   0x50 => delete_chars(t, arg(t, 0, 1)),                             // P DCH
   0x53 => scroll_up_region(t, arg(t, 0, 1)),                         // S SU
   0x54 => scroll_down(t, arg(t, 0, 1)),                              // T SD
-  0x58 => { erase_cells(t, t.y, t.x, t.x + arg(t, 0, 1)); t.pending_wrap = false }, // X ECH
+  0x58 => { erase_span(t, t.x, t.x + arg(t, 0, 1)); t.pending_wrap = false }, // X ECH
   0x5A => tab_backward(t, arg(t, 0, 1)),                             // Z CBT
   0x62 => {                                                          // b REP
     for _ in 0..<int.min(arg(t, 0, 1), 65535) {
@@ -851,10 +872,7 @@ fn csi_plain(mut t: Terminal, final: Int) -> Unit = match final {
     }
   },
   0x63 => { if arg0(t, 0) == 0 then reply(t, "\x1b[?62;22c") },     // c DA1
-  0x64 => {                                                          // d VPA
-    t.y = int.clamp(arg(t, 0, 1) - 1, 0, t.rows - 1)
-    t.pending_wrap = false
-  },
+  0x64 => { move_to(t, t.x, arg(t, 0, 1) - 1) },                     // d VPA
   0x67 => {                                                          // g TBC
     let mode = arg0(t, 0)
     if mode == 0 then bytes.set_u8(t.tabs, t.x, 0)
@@ -889,7 +907,8 @@ fn reply(mut t: Terminal, s: String) -> Unit = { t.replies = t.replies + s }
 
 fn erase_display(mut t: Terminal, mode: Int) -> Unit = {
   if mode == 0 then {
-    erase_cells(t, t.y, t.x, t.cols)
+    erase_span(t, t.x, t.cols)
+    bytes.set_u8(t.wrapped, phys(t, t.y), 0)
     for y in (t.y + 1)..<t.rows {
       erase_row(t, y)
     }
@@ -897,7 +916,7 @@ fn erase_display(mut t: Terminal, mode: Int) -> Unit = {
     for y in 0..<t.y {
       erase_row(t, y)
     }
-    erase_cells(t, t.y, 0, t.x + 1)
+    erase_span(t, 0, t.x + 1)
   } else if mode == 2 then {
     for y in 0..<t.rows {
       erase_row(t, y)
@@ -907,10 +926,56 @@ fn erase_display(mut t: Terminal, mode: Int) -> Unit = {
 }
 
 fn erase_line(mut t: Terminal, mode: Int) -> Unit = {
-  if mode == 0 then erase_cells(t, t.y, t.x, t.cols)
-  else if mode == 1 then erase_cells(t, t.y, 0, t.x + 1)
-  else if mode == 2 then erase_cells(t, t.y, 0, t.cols)
+  if mode == 0 then erase_span(t, t.x, t.cols)
+  else if mode == 1 then erase_span(t, 0, t.x + 1)
+  else if mode == 2 then erase_span(t, 0, t.cols)
+  // Erased to its end, the line no longer runs on into the next: copied or
+  // reflowed, the two stay separate lines.
+  if mode == 0 or mode == 2 then bytes.set_u8(t.wrapped, phys(t, t.y), 0)
   t.pending_wrap = false
+}
+
+/// Erase columns [x0, x1) of the cursor's row and the combining marks on
+/// them; a wide character cut by either edge goes whole.
+fn erase_span(mut t: Terminal, x0: Int, x1: Int) -> Unit = {
+  let a = int.max(0, x0)
+  let b = int.min(t.cols, x1)
+  if b > a then {
+    clear_wide_at(t, a)
+    clear_wide_at(t, b - 1)
+    erase_cells(t, t.y, a, b)
+    forget_cells(t, t.y, a, b)
+  }
+}
+
+/// Move the combining marks of columns [x0, x1) of the cursor's row by `by`
+/// columns, as their cells move; those moved off the row are dropped.
+fn move_marks(mut t: Terminal, x0: Int, x1: Int, by: Int) -> Unit = {
+  if map.len(t.graphemes) > 0 and by != 0 then {
+    var moved: List[(Int, String)] = []
+    for x in x0..<x1 {
+      let i = cell_index(t, x, t.y)
+      match map.get(t.graphemes, i) {
+        some(m) => {
+          list.push(moved, (x + by, m))
+          map.delete(t.graphemes, i)
+        },
+        none => (),
+      }
+    }
+    for e in moved {
+      if e.0 >= 0 and e.0 < t.cols then map.insert(t.graphemes, cell_index(t, e.0, t.y), e.1)
+    }
+  }
+}
+
+/// Drop the combining marks of columns [x0, x1) of row `y`.
+fn forget_cells(mut t: Terminal, y: Int, x0: Int, x1: Int) -> Unit = {
+  if map.len(t.graphemes) > 0 then {
+    for x in x0..<x1 {
+      map.delete(t.graphemes, cell_index(t, x, y))
+    }
+  }
 }
 
 // ── SGR ───────────────────────────────────────────────────────────────────
@@ -1031,18 +1096,11 @@ fn switch_screen(mut t: Terminal, on: Bool, with_cursor: Bool) -> Unit = {
   if on and not t.alt then t.hide_starts = t.hide_starts + 1
   if on != t.alt then {
     if on and with_cursor then t.saved_main = save_cursor(t)
-    let grid = t.grid
-    let top = t.top
-    let wrapped = t.wrapped
-    let graphemes = t.graphemes
-    t.grid = t.other_grid
-    t.top = t.other_top
-    t.wrapped = t.other_wrapped
-    t.graphemes = t.other_graphemes
-    t.other_grid = grid
-    t.other_top = top
-    t.other_wrapped = wrapped
-    t.other_graphemes = graphemes
+    // Each screen keeps its own DECSC slot, as xterm's do.
+    let saved = t.saved
+    t.saved = t.saved_other
+    t.saved_other = saved
+    swap_screens(t)
     t.alt = on
     if on then {
       for y in 0..<t.rows {
@@ -1051,6 +1109,22 @@ fn switch_screen(mut t: Terminal, on: Bool, with_cursor: Bool) -> Unit = {
       map.clear(t.graphemes)
     } else if with_cursor then restore_cursor(t, t.saved_main)
   }
+}
+
+/// Put the other screen in front: grids, wrap marks and combining marks.
+fn swap_screens(mut t: Terminal) -> Unit = {
+  let grid = t.grid
+  let top = t.top
+  let wrapped = t.wrapped
+  let graphemes = t.graphemes
+  t.grid = t.other_grid
+  t.top = t.other_top
+  t.wrapped = t.other_wrapped
+  t.graphemes = t.other_graphemes
+  t.other_grid = grid
+  t.other_top = top
+  t.other_wrapped = wrapped
+  t.other_graphemes = graphemes
 }
 
 /// Whether the program is part way through drawing a screen: inside a
@@ -1066,6 +1140,8 @@ fn mid_update(t: Terminal) -> Bool = t.sync_output or drawing_hidden(t)
 fn drawing_hidden(t: Terminal) -> Bool = not t.cursor_visible and (t.cursor_pairs or t.first_screen)
 
 fn soft_reset(mut t: Terminal) -> Unit = {
+  // The saved cursor goes back home with the rest, as xterm's DECSTR does.
+  t.saved = Saved { x: 0, y: 0, fg: 0, bg: 0, attrs: 0, origin: false, pending_wrap: false, dec_graphics: false }
   t.cursor_visible = true
   t.insert = false
   t.origin = false
@@ -1147,8 +1223,34 @@ type Screen = { grid: Bytes, wrapped: Bytes, graphemes: Map[Int, String] }
 /// is cut or padded instead: the program on it redraws it for the new size.
 /// When only the height changes, the lines above the cursor that no longer
 /// fit move to scrollback, so the cursor's line stays on screen.
-fn resize(mut t: Terminal, cols: Int, rows: Int) -> Unit = {
-  if cols > 0 and rows > 0 and cols != t.cols and not t.alt then reflow(t, cols, rows, true)
+fn resize(mut t: Terminal, cols: Int, rows: Int) -> Unit = resize_with(t, cols, rows, false)
+
+/// `resize`, or `resize_live` when `live`. With the alternate screen in
+/// front, the main screen behind it is resized as it would be in front —
+/// reflowed, scrollback with it, its cursor the one saved on leaving it —
+/// rather than cut, which would lose what a resize under vim cut off.
+fn resize_with(mut t: Terminal, cols: Int, rows: Int, live: Bool) -> Unit = {
+  if t.alt and cols > 0 and rows > 0 and (cols != t.cols or rows != t.rows) then {
+    let alt_cursor = save_cursor(t)
+    swap_screens(t)
+    t.alt = false
+    restore_cursor(t, t.saved_main)
+    resize_front(t, cols, rows, live)
+    t.saved_main = save_cursor(t)
+    swap_screens(t)
+    t.alt = true
+    restore_cursor(t, alt_cursor)
+  } else resize_front(t, cols, rows, live)
+}
+
+/// Resize the screen in front (the other one is cut or padded with it).
+fn resize_front(mut t: Terminal, cols: Int, rows: Int, live: Bool) -> Unit = {
+  if cols > 0 and rows > 0 and cols != t.cols and not t.alt then {
+    if live then {
+      reflow(t, cols, rows, false)
+      t.reflow_pending = true
+    } else reflow(t, cols, rows, true)
+  }
   else if cols > 0 and rows > 0 and (cols != t.cols or rows != t.rows) then {
     t.margin_top = 0
     t.margin_bottom = t.rows - 1
@@ -1264,16 +1366,24 @@ fn emit_row(mut w: Rewrap, a: Int, b: Int, wrapped: Bool) -> Unit = {
 /// widths they had until `settle`. Joining lines needs only the marks of
 /// where they wrapped, so wrapping through the sizes in between loses
 /// nothing.
-fn resize_live(mut t: Terminal, cols: Int, rows: Int) -> Unit = {
-  if cols > 0 and rows > 0 and cols != t.cols and not t.alt then {
-    reflow(t, cols, rows, false)
-    t.reflow_pending = true
-  } else resize(t, cols, rows)
-}
+fn resize_live(mut t: Terminal, cols: Int, rows: Int) -> Unit = resize_with(t, cols, rows, true)
 
-/// Reflow scrollback too, after `resize_live`.
+/// Reflow scrollback too, after `resize_live` — behind the alternate screen
+/// when that is in front.
 fn settle(mut t: Terminal) -> Unit = {
-  if t.reflow_pending and not t.alt then reflow(t, t.cols, t.rows, true)
+  if t.reflow_pending then {
+    if t.alt then {
+      let alt_cursor = save_cursor(t)
+      swap_screens(t)
+      t.alt = false
+      restore_cursor(t, t.saved_main)
+      reflow(t, t.cols, t.rows, true)
+      t.saved_main = save_cursor(t)
+      swap_screens(t)
+      t.alt = true
+      restore_cursor(t, alt_cursor)
+    } else reflow(t, t.cols, t.rows, true)
+  }
   t.reflow_pending = false
 }
 

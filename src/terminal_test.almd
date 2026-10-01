@@ -311,3 +311,70 @@ test "XTVERSION and the colour scheme are answered" {
   var t = run(10, 2, "\x1b[>0q\x1b[?996n")
   assert_eq(terminal.take_replies(t), "\x1bP>|sprid ${terminal.VERSION}\x1b\\\x1b[?997;1n")
 }
+
+test "LF, IND and RI end the pending wrap" {
+  let t = run(5, 4, "abcde\nX")
+  assert_eq(terminal.screen_text(t), "abcde\n    X")
+  let u = run(5, 4, "\r\nabcde\x1bMX")
+  assert_eq(terminal.screen_text(u), "    X\nabcde")
+}
+
+test "erasing a line to its end ends its wrap" {
+  var t = run(5, 4, "abcdefgh")
+  assert_eq(bytes.read_u8(t.wrapped, terminal.phys(t, 0)), 1)
+  terminal.feed_string(t, "\x1b[1;1H\x1b[K")
+  assert_eq(bytes.read_u8(t.wrapped, terminal.phys(t, 0)), 0)
+  var u = run(5, 4, "abcdefgh\x1b[1;3H\x1b[J")
+  assert_eq(bytes.read_u8(u.wrapped, terminal.phys(u, 0)), 0)
+}
+
+test "a resize under the alternate screen keeps the main screen's lines" {
+  var t = run(10, 6, "1\r\n2\r\n3\r\n4\r\n5\r\n$ vim\x1b[?1049h")
+  terminal.resize(t, 10, 3)
+  terminal.feed_string(t, "\x1b[?1049l")
+  assert_eq(terminal.screen_text(t), "4\n5\n$ vim")
+  assert_eq(scrollback.line_count(t.sb), 3)
+}
+
+test "a resize under the alternate screen reflows the main screen" {
+  var t = run(10, 3, "0123456789abc\x1b[?1049h")
+  terminal.resize(t, 5, 3)
+  terminal.resize(t, 10, 3)
+  terminal.feed_string(t, "\x1b[?1049l")
+  assert_eq(terminal.screen_text(t), "0123456789\nabc")
+}
+
+test "deleting and inserting characters carries combining marks" {
+  let t = run(10, 2, "aéb\x1b[1;1H\x1b[P")
+  assert_eq(terminal.screen_text(t), "éb")
+  let u = run(10, 2, "aéb\x1b[1;1H\x1b[@")
+  assert_eq(terminal.screen_text(u), " aéb")
+}
+
+test "erases take a wide character whole" {
+  let t = run(10, 2, "a日b\x1b[1;3H\x1b[K")
+  assert_eq(terminal.screen_text(t), "a")
+  let u = run(10, 2, "a日b\x1b[1;3H\x1b[X")
+  assert_eq(terminal.screen_text(u), "a  b")
+}
+
+test "each screen keeps its own saved cursor" {
+  let t = run(10, 4, "ab\x1b7\x1b[?1049h\x1b[3;3H\x1b7\x1b[?1049l\x1b8X")
+  assert_eq(terminal.screen_text(t), "abX")
+}
+
+test "VPA counts from the top margin in origin mode" {
+  let t = run(5, 6, "\x1b[3;5r\x1b[?6h\x1b[1dX")
+  assert_eq(terminal.screen_text(t), "\n\nX")
+}
+
+test "invalid UTF-8 shows the replacement character" {
+  var t = terminal.new(10, 2)
+  terminal.feed(t, bytes.from_list([0x61, 0xED, 0xA0, 0x80, 0x62, 0xF4, 0x90, 0x80, 0x80, 0x63, 0xE0, 0x80, 0xAF]))
+  assert_eq(terminal.screen_text(t), "a\u{FFFD}b\u{FFFD}c\u{FFFD}")
+}
+
+test "DECSTR sends the saved cursor home" {
+  let t = run(10, 4, "\x1b[3;5H\x1b7\x1b[!p\x1b8X")
+  assert_eq(terminal.screen_text(t), "X")
+}
