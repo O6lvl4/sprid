@@ -1,0 +1,162 @@
+// What the config file sets, as values with their defaults: the parsed file
+// (`config.almd`) read into the settings sprid runs with, each value that
+// doesn't parse reported and left at its default.
+
+import self.config
+import self.theme
+
+type Settings = {
+  // A font by family name ("" for sprid's choice), its size in points, the
+  // cell height as a multiple of the font's line, padding in points.
+  font_family: String,
+  font_size: Float,
+  cell_height: Float,
+  pad_x: Float,
+  pad_y: Float,
+  // The themes for a light and a dark system appearance.
+  theme_light: String,
+  theme_dark: String,
+  scrollback: Int,
+  // The cursor until a program sets one: DECSCUSR's numbers (1 blinking
+  // block .. 6 steady bar); 0 leaves it to sprid's default (steady block).
+  cursor_shape: Int,
+  // Which Option keys type as Alt: 0 neither, 1 both, 2 left, 3 right.
+  option_as_alt: Int,
+  // The file as parsed, for the colours it sets over the theme.
+  file: config.Config,
+  problems: List[String],
+}
+
+let DEFAULT_FONT_SIZE = 14.5
+let DEFAULT_CELL_HEIGHT = 1.15
+let DEFAULT_THEME = "Tokyo Night Storm"
+let DEFAULT_SCROLLBACK = 10000000
+
+fn defaults() -> Settings = {
+  let problems: List[String] = []
+  Settings {
+    font_family: "", font_size: DEFAULT_FONT_SIZE, cell_height: DEFAULT_CELL_HEIGHT, pad_x: 12.0, pad_y: 8.0,
+    theme_light: DEFAULT_THEME, theme_dark: DEFAULT_THEME, scrollback: DEFAULT_SCROLLBACK,
+    cursor_shape: 0, option_as_alt: 0, file: config.empty(), problems: problems,
+  }
+}
+
+/// The settings `c` makes, from the defaults.
+fn from(c: config.Config) -> Settings = {
+  var s = { ...defaults(), file: c }
+  var problems = c.problems
+  for k in config.unknown(c) {
+    list.push(problems, "unknown key: ${k}")
+  }
+  let bad = (key: String, v: String) => "${key}: can't use \"${v}\""
+  match config.get(c, "font-family") { some(v) => { s.font_family = v }, none => () }
+  match config.get(c, "font-size") {
+    some(v) => match float.parse(v) {
+      ok(f) => if f >= 4.0 and f <= 200.0 then { s.font_size = f } else list.push(problems, bad("font-size", v)),
+      err(_) => list.push(problems, bad("font-size", v)),
+    },
+    none => (),
+  }
+  match config.get(c, "adjust-cell-height") {
+    some(v) => match percent(v) {
+      some(p) => { s.cell_height = DEFAULT_CELL_HEIGHT * (1.0 + p / 100.0) },
+      none => list.push(problems, bad("adjust-cell-height", v)),
+    },
+    none => (),
+  }
+  match config.get(c, "window-padding-x") {
+    some(v) => match float.parse(v) { ok(f) => { s.pad_x = float.max(0.0, f) }, err(_) => list.push(problems, bad("window-padding-x", v)) },
+    none => (),
+  }
+  match config.get(c, "window-padding-y") {
+    some(v) => match float.parse(v) { ok(f) => { s.pad_y = float.max(0.0, f) }, err(_) => list.push(problems, bad("window-padding-y", v)) },
+    none => (),
+  }
+  match config.get(c, "theme") {
+    some(v) => {
+      let (light, dark) = config.theme_pair(v)
+      s.theme_light = light
+      s.theme_dark = dark
+    },
+    none => (),
+  }
+  match config.get(c, "scrollback-limit") {
+    some(v) => match config.bytes_of(v) { some(n) => { s.scrollback = n }, none => list.push(problems, bad("scrollback-limit", v)) },
+    none => (),
+  }
+  let blink = match config.get(c, "cursor-style-blink") {
+    some(v) => match config.flag(v) {
+      some(b) => b,
+      none => {
+        list.push(problems, bad("cursor-style-blink", v))
+        false
+      },
+    },
+    none => false,
+  }
+  match config.get(c, "cursor-style") {
+    some(v) => {
+      let shape = if v == "block" then 2 else if v == "underline" then 4 else if v == "bar" then 6 else 0
+      if shape == 0 then list.push(problems, bad("cursor-style", v))
+      else { s.cursor_shape = if blink then shape - 1 else shape }
+    },
+    none => if blink then { s.cursor_shape = 1 },
+  }
+  match config.get(c, "macos-option-as-alt") {
+    some(v) => {
+      let mode = if v == "left" then 2 else if v == "right" then 3 else match config.flag(v) {
+        some(true) => 1,
+        some(false) => 0,
+        none => -1,
+      }
+      if mode < 0 then list.push(problems, bad("macos-option-as-alt", v)) else { s.option_as_alt = mode }
+    },
+    none => (),
+  }
+  { ...s, problems: problems }
+}
+
+/// `15%` or `15` as 15.0.
+fn percent(v: String) -> Option[Float] = {
+  let n = if string.ends_with(v, "%") then string.drop_end(v, 1) else v
+  match float.parse(string.trim(n)) {
+    ok(f) => if f > -50.0 and f < 400.0 then some(f) else none,
+    err(_) => none,
+  }
+}
+
+/// The theme for the system appearance: a built-in one by name (or what
+/// `load` makes of the name, say from a theme file), with the colours the
+/// config sets over it.
+fn theme_for(s: Settings, dark: Bool, load: (String) -> Option[theme.Theme]) -> theme.Theme = {
+  let name = if dark then s.theme_dark else s.theme_light
+  let base = match theme.named(name) {
+    some(t) => t,
+    none => load(name) ?? theme.default(),
+  }
+  theme.apply(base, s.file)
+}
+
+test "defaults when the file sets nothing" {
+  let s = from(config.parse(""))
+  assert_eq((s.font_size, s.theme_dark, s.scrollback, s.option_as_alt, s.cursor_shape), (14.5, "Tokyo Night Storm", 10000000, 0, 0))
+}
+
+test "values from the file, problems for the rest" {
+  let s = from(config.parse("font-size = 16\ntheme = light:Almide Light,dark:Dracula\nscrollback-limit = 20MB\ncursor-style = bar\ncursor-style-blink = true\nmacos-option-as-alt = left\nfont-size2 = 3\nwindow-padding-x = x"))
+  assert_eq((s.font_size, s.theme_light, s.theme_dark), (16.0, "Almide Light", "Dracula"))
+  assert_eq((s.scrollback, s.cursor_shape, s.option_as_alt), (20971520, 5, 2))
+  assert_eq(s.problems, ["unknown key: font-size2", "window-padding-x: can't use \"x\""])
+}
+
+test "the theme for each appearance, with the file's colours over it" {
+  let s = from(config.parse("theme = light:Almide Light,dark:Dracula\nbackground = #000000"))
+  let none_loaded = (n: String) => {
+    let missing: Option[theme.Theme] = none
+    missing
+  }
+  assert_eq(theme_for(s, true, none_loaded).name, "Dracula")
+  assert_eq(theme_for(s, false, none_loaded).bg, 0x000000)
+  let unknown = from(config.parse("theme = Nonesuch"))
+  assert_eq(theme_for(unknown, true, none_loaded).name, "Tokyo Night Storm")
+}

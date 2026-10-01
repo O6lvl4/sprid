@@ -185,3 +185,106 @@ pub fn open_window(cwd: &str) -> bool {
 pub fn ignore_sigpipe() {
     unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) };
 }
+
+/// Watch the file at `path` — and its directory, as an editor may save by
+/// writing a new file over it — for changes: an fd that becomes readable
+/// when one happens (for `wait_fds`), or -1. `watch_changed` says whether
+/// one did, and re-arms the watch.
+pub fn watch(path: &str) -> i64 {
+    #[cfg(target_os = "macos")]
+    unsafe {
+        let kq = libc::kqueue();
+        if kq < 0 {
+            return -1;
+        }
+        libc::fcntl(kq, libc::F_SETFD, libc::FD_CLOEXEC);
+        WATCH.with(|w| w.borrow_mut().insert(kq as i64, (path.to_string(), -1, -1)));
+        arm(kq as i64);
+        kq as i64
+    }
+    #[cfg(target_os = "linux")]
+    unsafe {
+        let fd = libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC);
+        if fd < 0 {
+            return -1;
+        }
+        let dir = std::path::Path::new(path).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+        if let Ok(d) = std::ffi::CString::new(dir) {
+            let mask = libc::IN_CLOSE_WRITE | libc::IN_MOVED_TO | libc::IN_CREATE | libc::IN_DELETE | libc::IN_MODIFY;
+            libc::inotify_add_watch(fd, d.as_ptr(), mask);
+        }
+        fd as i64
+    }
+}
+
+#[cfg(target_os = "macos")]
+thread_local! {
+    /// Per kqueue: the watched path, and the fds of the file and its
+    /// directory being watched (-1 when not open).
+    static WATCH: std::cell::RefCell<std::collections::HashMap<i64, (String, i32, i32)>> = std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// (Re)open the file and its directory and add them to kqueue `kq`.
+#[cfg(target_os = "macos")]
+fn arm(kq: i64) {
+    WATCH.with(|w| {
+        let mut map = w.borrow_mut();
+        let Some((path, file_fd, dir_fd)) = map.get_mut(&kq) else { return };
+        let open = |p: &str| -> i32 {
+            std::ffi::CString::new(p).map_or(-1, |c| unsafe { libc::open(c.as_ptr(), libc::O_EVTONLY | libc::O_CLOEXEC) })
+        };
+        let add = |fd: i32| unsafe {
+            let ev = libc::kevent {
+                ident: fd as usize,
+                filter: libc::EVFILT_VNODE,
+                flags: libc::EV_ADD | libc::EV_CLEAR,
+                fflags: libc::NOTE_WRITE | libc::NOTE_DELETE | libc::NOTE_RENAME | libc::NOTE_EXTEND | libc::NOTE_ATTRIB,
+                data: 0,
+                udata: std::ptr::null_mut(),
+            };
+            libc::kevent(kq as i32, &ev, 1, std::ptr::null_mut(), 0, std::ptr::null());
+        };
+        if *file_fd >= 0 {
+            unsafe { libc::close(*file_fd) };
+        }
+        *file_fd = open(path);
+        if *file_fd >= 0 {
+            add(*file_fd);
+        }
+        if *dir_fd < 0 {
+            let dir = std::path::Path::new(path.as_str()).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+            *dir_fd = open(&dir);
+            if *dir_fd >= 0 {
+                add(*dir_fd);
+            }
+        }
+    });
+}
+
+/// Whether the watched file (see `watch`) may have changed since the last
+/// call; never waits. The watch is re-armed for the next change.
+pub fn watch_changed(fd: i64) -> bool {
+    if fd < 0 {
+        return false;
+    }
+    #[cfg(target_os = "macos")]
+    unsafe {
+        let mut evs: [libc::kevent; 8] = std::mem::zeroed();
+        let zero = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+        let n = libc::kevent(fd as i32, std::ptr::null(), 0, evs.as_mut_ptr(), 8, &zero);
+        if n > 0 {
+            // The file may have been replaced: watch the new one.
+            arm(fd);
+        }
+        n > 0
+    }
+    #[cfg(target_os = "linux")]
+    unsafe {
+        let mut buf = [0u8; 4096];
+        let mut any = false;
+        while libc::read(fd as i32, buf.as_mut_ptr() as *mut _, buf.len()) > 0 {
+            any = true;
+        }
+        any
+    }
+}

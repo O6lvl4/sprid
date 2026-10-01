@@ -69,10 +69,15 @@ fn mix(a: Int, b: Int, t: Float) -> Int = {
 
 // ── Built in ──────────────────────────────────────────────────────────────
 
-fn tokyo_night_storm() -> Theme = make("Tokyo Night Storm", 0x24283B, 0xC0CAF5, 0xC0CAF5, 0x364A82, [
-  0x1D202F, 0xF7768E, 0x9ECE6A, 0xE0AF68, 0x7AA2F7, 0xBB9AF7, 0x7DCFFF, 0xA9B1D6,
-  0x414868, 0xF7768E, 0x9ECE6A, 0xE0AF68, 0x7AA2F7, 0xBB9AF7, 0x7DCFFF, 0xC0CAF5,
-])
+/// sprid's own: its window colours chosen by hand rather than worked out.
+fn tokyo_night_storm() -> Theme = {
+  let t = make("Tokyo Night Storm", 0x24283B, 0xC0CAF5, 0xC0CAF5, 0x364A82, [
+    0x1D202F, 0xF7768E, 0x9ECE6A, 0xE0AF68, 0x7AA2F7, 0xBB9AF7, 0x7DCFFF, 0xA9B1D6,
+    0x414868, 0xF7768E, 0x9ECE6A, 0xE0AF68, 0x7AA2F7, 0xBB9AF7, 0x7DCFFF, 0xC0CAF5,
+  ])
+  { ...t, tab_bar: 0x1F2335, tab_dim: 0x737AA2, tab_rule: 0x3B4261, match_bg: 0x5E4E2C,
+    match_current: 0xFF9E64, match_fg: 0x1A1B26, no_match: 0xF7768E }
+}
 
 /// Almide's colours: its navy and the shell's teals, on white.
 fn almide_light() -> Theme = make("Almide Light", 0xF8FAFB, 0x1F3A5F, 0x0E7E86, 0xCBE6E9, [
@@ -129,6 +134,7 @@ fn fold_name(s: String) -> String = string.replace(string.replace(string.to_lowe
 /// selection-background and palette (`N=#rrggbb`).
 fn apply(base: Theme, c: config.Config) -> Theme = {
   var t = base
+  let before = (t.bg, t.fg, t.ansi)
   match config.get(c, "background") |> option.flat_map((v) => config.color(v)) { some(v) => { t.bg = v }, none => () }
   match config.get(c, "foreground") |> option.flat_map((v) => config.color(v)) { some(v) => { t.fg = v }, none => () }
   match config.get(c, "cursor-color") |> option.flat_map((v) => config.color(v)) { some(v) => { t.cursor = v }, none => () }
@@ -144,7 +150,9 @@ fn apply(base: Theme, c: config.Config) -> Theme = {
     }
   }
   t.ansi = ansi
-  finish(t)
+  // The window's colours follow the theme's own only when those changed: a
+  // theme's hand-picked ones stay otherwise.
+  if (t.bg, t.fg, t.ansi) != before then finish(t) else t
 }
 
 test "built-in themes by name" {

@@ -13,6 +13,7 @@
 
 import bytes
 import env
+import fs
 import snaidhm.native.window as window
 import snaidhm.native.frame as frame
 import snaidhm.text as text
@@ -25,15 +26,15 @@ import self.pty
 import self.scrollback
 import self.search
 import self.field
+import self.config
+import self.settings
+import self.theme
 import self.sys
 import self.terminal
 import self.view
 
-/// Font size in points, counted as logical pixels.
-let FONT_SIZE = 14.5
-let PAD_X = 12.0
-let PAD_Y = 8.0
-let CELL_HEIGHT = 1.15
+/// How often a blinking cursor turns on or off, ms.
+let BLINK_MS = 530
 /// Cmd+Minus and Cmd+Plus go no further than these, points.
 let MIN_FONT_SIZE = 6.0
 let MAX_FONT_SIZE = 72.0
@@ -146,27 +147,86 @@ type Ui = {
 type Options = { command: Option[String], cols: Int, rows: Int, capture: Option[String] }
 
 /// What an input asks of the tabs.
-/// `Zoom` changes the font size by that many points, or with 0 resets it.
-type Act = | Stay | NewTab | CloseTab | NextTab | PrevTab | GoTo(Int) | NewWindow | CloseWindow | Zoom(Int)
+/// `Zoom` changes the font size by that many points, or with 0 resets it;
+/// `Restyle` follows the system's light or dark appearance; `Focus` the
+/// window gaining or losing the keyboard.
+type Act = | Stay | NewTab | CloseTab | NextTab | PrevTab | GoTo(Int) | NewWindow | CloseWindow | Zoom(Int) | Restyle | Focus(Bool)
 
 effect fn run(opts: Options) -> Unit = {
   // Before anything starts a program: the shell, the clipboard's tools.
   sys.ensure_utf8_locale()
   sys.ignore_sigpipe()
-  run_fonts(opts)!
+  let st = load_settings()!
+  run_fonts(opts, st)!
 }
 
-effect fn run_fonts(opts: Options) -> Unit = match fonts.find()! {
-  some(faces) => run_with(opts, faces)!,
+effect fn run_fonts(opts: Options, st: settings.Settings) -> Unit = match fonts.find(st.font_family)! {
+  some(faces) => run_with(opts, faces, st)!,
   none => println("sprid: no font found"),
 }
 
-effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
+// ── Config ────────────────────────────────────────────────────────────────
+
+/// Where config lives: $XDG_CONFIG_HOME/sprid, else ~/.config/sprid.
+effect fn config_dir() -> String = match env.get("XDG_CONFIG_HOME") {
+  some(d) => if d != "" then d + "/sprid" else (env.get("HOME") ?? "") + "/.config/sprid",
+  none => (env.get("HOME") ?? "") + "/.config/sprid",
+}
+
+effect fn config_path() -> String = config_dir()! + "/config"
+
+/// The settings in the config file (the defaults when there is none); what
+/// is wrong with it goes to stderr.
+effect fn load_settings() -> settings.Settings = {
+  let text = match fs.read_text_if_exists(config_path()!) {
+    ok(found) => found ?? "",
+    err(_) => "",
+  }
+  let st = settings.from(config.parse(text))
+  for p in st.problems {
+    eprintln("sprid: ${config_path()!}: ${p}")
+  }
+  st
+}
+
+/// A theme file in the config's format (background, foreground, palette,
+/// ...): `name` as a path, or a file of that name in the config's `themes`
+/// directory.
+effect fn theme_file(name: String) -> Option[theme.Theme] = {
+  let path = if string.contains(name, "/") then fonts.expand(name)! else config_dir()! + "/themes/" + name
+  match fs.read_text_if_exists(path) {
+    ok(found) => match found {
+      some(text) => some({ ...theme.apply(theme.default(), config.parse(text)), name: name }),
+      none => none,
+    },
+    err(_) => none,
+  }
+}
+
+/// The theme for the system's appearance now.
+effect fn pick_theme(st: settings.Settings, dark: Bool) -> theme.Theme = {
+  let name = if dark then st.theme_dark else st.theme_light
+  let file = if theme.named(name) == none then theme_file(name)! else none
+  settings.theme_for(st, dark, (n) => file)
+}
+
+/// `r` dressed by the settings: the theme for the appearance now, the
+/// cursor's default shape; the window's uncovered edge in the theme's
+/// background.
+effect fn styled(r: render.Renderer, st: settings.Settings) -> render.Renderer = {
+  let t = pick_theme(st, window.dark())!
+  let (bg_r, bg_g, bg_b) = render.rgb_floats(t.bg)
+  window.set_background(bg_r, bg_g, bg_b)
+  { ...render.with_theme(r, t), cursor_default: st.cursor_shape }
+}
+
+effect fn run_with(opts: Options, faces: fonts.Faces, s: settings.Settings) -> Unit = {
   let capture = opts.capture
+  var st = s
   // Sized to a grid, the window is measured before it opens, for a Retina
   // display (the scale is only known once it is open).
-  let (cw, ch) = render.cell_size(faces, float.to_int(float.round(FONT_SIZE * 2.0)), CELL_HEIGHT)
-  let (pad_x, pad_y) = (float.to_int(PAD_X * 2.0), float.to_int(PAD_Y * 2.0))
+  let (cw, ch) = render.cell_size(faces, float.to_int(float.round(st.font_size * 2.0)), st.cell_height)
+  let (pad_x, pad_y) = (float.to_int(st.pad_x * 2.0), float.to_int(st.pad_y * 2.0))
   let (win_w, win_h) = if opts.cols > 0 and opts.rows > 0 then
     ((opts.cols * cw) / 2 + pad_x / 2 + 1, (opts.rows * ch) / 2 + pad_y / 2 + 1)
   else (960, 620)
@@ -194,25 +254,29 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
   // A key's echo shows as soon as it is drawn, not a display refresh or two
   // later.
   gpu.set_low_latency(true)
-  // What a window being resized uncovers, until it is drawn for its size.
-  let (bg_r, bg_g, bg_b) = render.rgb_floats(render.DEFAULT_BG)
-  window.set_background(bg_r, bg_g, bg_b)
+  window.set_option_as_alt(st.option_as_alt)
   let scale = window.scale_factor()
   let device = 1
-  var r = render.new(device, faces, float.to_int(float.round(FONT_SIZE * scale)),
-    float.to_int(PAD_X * scale), float.to_int(PAD_Y * scale), CELL_HEIGHT)
+  // The theme also colours what a window being resized uncovers, until it is
+  // drawn for its size.
+  var r = styled(render.new(device, faces, float.to_int(float.round(st.font_size * scale)),
+    float.to_int(st.pad_x * scale), float.to_int(st.pad_y * scale), st.cell_height), st)!
   var width = window.width()
   var height = window.height()
-  var font_size = FONT_SIZE
+  var font_size = st.font_size
+  // The config file, watched: saved, it applies at once.
+  let config_fd = if capture == none then sys.watch(config_path()!) else -1
+  // A blinking cursor: when it next turns on or off, -1 when it doesn't blink.
+  var blink_at = -1
 
   let (cols, rows) = render.grid_size(r, width, height, 1)
   if (cols, rows) != expected then { let _ = pty.resize(first_fd, cols, rows) } else ()
-  var tabs: List[Tab] = [Tab { t: terminal.new(cols, rows), fd: first_fd, back: 0, shift: 0, sel: none, up: Updates { syncs: 0, sync_at: 0, hides: 0, hide_at: 0 }, name: "" }]
+  var tabs: List[Tab] = [Tab { t: terminal.with_scrollback(cols, rows, st.scrollback), fd: first_fd, back: 0, shift: 0, sel: none, up: Updates { syncs: 0, sync_at: 0, hides: 0, hide_at: 0 }, name: "" }]
   var active = 0
   // For captures of the tab bar: more tabs running the login shell.
   let extra = match capture { some(_) => int.parse(env.get("SPRID_CAPTURE_TABS") ?? "1") ?? 1, none => 1 }
   for _ in 1..<extra {
-    match open_tab(r, width, height, list.len(tabs) + 1, login, "") {
+    match open_tab(r, width, height, list.len(tabs) + 1, login, "", st.scrollback) {
       some(tb) => {
         list.push(tabs, tb)
         relayout(tabs, r, width, height)
@@ -264,10 +328,50 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
     let auto_wait = if auto_next < 0 then -1 else int.max(0, auto_next - now)
     // Input a program hasn't taken yet (a big paste) is offered again soon.
     let write_wait = if list.any(tabs, (tb) => pty.pending(tb.fd)) then WRITE_RETRY_MS else -1
-    let timeout = sooner(sooner(sooner(drawn_wait, settle_wait), auto_wait), write_wait)
+    // A blinking cursor turns on and off while the window has the focus.
+    if r.focused and cursor_blinks(tabs, active, r) then {
+      if blink_at < 0 then blink_at = now + BLINK_MS
+      else if now >= blink_at then {
+        r.blink_off = not r.blink_off
+        blink_at = now + BLINK_MS
+        ui.dirty = true
+      }
+    } else {
+      blink_at = -1
+      r.blink_off = false
+    }
+    let blink_wait = if blink_at < 0 then -1 else int.max(0, blink_at - now)
+    let timeout = sooner(sooner(sooner(sooner(drawn_wait, settle_wait), auto_wait), write_wait), blink_wait)
     // With no time to wait, just take the window's events: arming the fd
     // watcher on every turn of a streaming loop costs more than it saves.
-    alive = if timeout == 0 then window.pump() else window.wait_fds(list.map(tabs, (tb) => tb.fd), timeout)
+    alive = if timeout == 0 then window.pump() else window.wait_fds(list.map(tabs, (tb) => tb.fd) + (if config_fd >= 0 then [config_fd] else []), timeout)
+    // The config file was saved: it applies now — the theme, the font and
+    // its size, the cursor, Option — over what was set before.
+    if sys.watch_changed(config_fd) then {
+      let fresh = load_settings()!
+      let new_faces = fresh.font_family != st.font_family
+      let resize = new_faces or (fresh.font_size, fresh.pad_x, fresh.pad_y, fresh.cell_height) != (st.font_size, st.pad_x, st.pad_y, st.cell_height)
+      st = fresh
+      window.set_option_as_alt(st.option_as_alt)
+      if new_faces then {
+        match fonts.find(st.font_family)! {
+          some(f) => {
+            r = render.new(device, f, float.to_int(float.round(st.font_size * scale)),
+              float.to_int(st.pad_x * scale), float.to_int(st.pad_y * scale), st.cell_height)
+          },
+          none => (),
+        }
+      }
+      r = styled(r, st)!
+      if resize then {
+        font_size = st.font_size
+        r = render.with_size(r, float.to_int(float.round(font_size * scale)),
+          float.to_int(st.pad_x * scale), float.to_int(st.pad_y * scale), st.cell_height)
+        relayout_live(tabs, r, width, height)
+        resized_at = sys.now_ms()
+      }
+      ui.dirty = true
+    }
     // The window's close button: asked first when a program is running.
     if not alive and list.len(tabs) > 0 and capture == none and not may_close_window(tabs, ja) then {
       window.keep_open()
@@ -310,6 +414,11 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
     // Input goes to the active tab; what it asks of the tabs is done after
     // the tab is back in the list.
     var kind = window.next_event()
+    // Typing shows the cursor at once and starts its blink over.
+    if kind == window.KEY or kind == window.TEXT then {
+      r.blink_off = false
+      if blink_at >= 0 then blink_at = sys.now_ms() + BLINK_MS
+    }
     if kind != window.NONE and input_at < 0 then input_at = sys.now_ms()
     while kind != window.NONE {
       var act = Stay
@@ -331,7 +440,7 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
       match act {
         NewTab => {
           let cwd = cwd_of(tabs, active, env.get("HOME") ?? "")
-          match open_tab(r, width, height, list.len(tabs) + 1, login, cwd) {
+          match open_tab(r, width, height, list.len(tabs) + 1, login, cwd, st.scrollback) {
             some(tb) => {
               list.push(tabs, tb)
               active = list.len(tabs) - 1
@@ -364,18 +473,38 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
         },
         CloseWindow => if may_close_window(tabs, ja) then alive = false,
         Zoom(step) => {
-          let size = if step == 0 then FONT_SIZE
+          let size = if step == 0 then st.font_size
             else float.clamp(font_size + int.to_float(step), MIN_FONT_SIZE, MAX_FONT_SIZE)
           if size != font_size then {
             font_size = size
             r = render.with_size(r, float.to_int(float.round(font_size * scale)),
-              float.to_int(PAD_X * scale), float.to_int(PAD_Y * scale), CELL_HEIGHT)
+              float.to_int(st.pad_x * scale), float.to_int(st.pad_y * scale), st.cell_height)
             // As for a resize: the screen now, scrollback once the size
             // holds, so holding Cmd+Plus stays quick.
             relayout_live(tabs, r, width, height)
             resized_at = sys.now_ms()
             ui.dirty = true
           }
+        },
+        Restyle => {
+          r = styled(r, st)!
+          ui.dirty = true
+        },
+        Focus(on) => {
+          r.focused = on
+          // Programs that asked (mode 1004) are told: CSI I, CSI O.
+          match take(tabs, active) {
+            some(tb) => {
+              var cur = tb
+              if cur.t.focus_events then {
+                let _ = pty.write(cur.fd, if on then "\x1b[I" else "\x1b[O")
+              }
+              list.push(tabs, cur)
+              tabs = list.swap(tabs, active, list.len(tabs) - 1)
+            },
+            none => (),
+          }
+          ui.dirty = true
         },
         Stay => (),
       }
@@ -657,11 +786,11 @@ fn cwd_of(tabs: List[Tab], i: Int, home: String) -> String = match list.get(tabs
 }
 
 /// A new tab running `command` in `cwd`, sized for `count` tabs.
-fn open_tab(r: render.Renderer, width: Int, height: Int, count: Int, command: String, cwd: String) -> Option[Tab] = {
+fn open_tab(r: render.Renderer, width: Int, height: Int, count: Int, command: String, cwd: String, scrollback: Int) -> Option[Tab] = {
   let (cols, rows) = render.grid_size(r, width, height, count)
   let fd = pty.spawn(command, cwd, cols, rows)
   if fd < 0 then none
-  else some(Tab { t: terminal.new(cols, rows), fd: fd, back: 0, shift: 0, sel: none, up: Updates { syncs: 0, sync_at: 0, hides: 0, hide_at: 0 }, name: "" })
+  else some(Tab { t: terminal.with_scrollback(cols, rows, scrollback), fd: fd, back: 0, shift: 0, sel: none, up: Updates { syncs: 0, sync_at: 0, hides: 0, hide_at: 0 }, name: "" })
 }
 
 /// Close tab `i` and its program, keeping the other tabs in order.
@@ -1059,7 +1188,9 @@ effect fn handle(mut cur: Tab, mut ui: Ui, kind: Int, r: render.Renderer, scale:
   } else if kind == window.MOUSE_UP and window.event_code() == 0 then {
     ui.dragging = false
     Stay
-  } else if kind == window.DROP then {
+  } else if kind == window.THEME then Restyle
+  else if kind == window.FOCUS then Focus(window.event_code() == 1)
+  else if kind == window.DROP then {
     // A file dropped on the window: its path, escaped, pasted as if typed —
     // the shell takes it as a word, and Claude Code attaches an image.
     let _ = pty.write(cur.fd, keys.paste(keys.shell_escape(window.event_text()) + " ", t.bracketed_paste))
@@ -1217,6 +1348,16 @@ fn follow(mut cur: Tab, f: search.Find) -> Unit = {
 /// The input method's composition, as drawn.
 fn compose_of(ui: Ui) -> render.Compose =
   render.Compose { cps: ui.preedit, caret: ui.preedit_caret, from: ui.preedit_from, to: ui.preedit_to }
+
+/// Whether the cursor of the tab in front blinks: a blinking DECSCUSR shape,
+/// the program's or the config's, shown.
+fn cursor_blinks(tabs: List[Tab], active: Int, r: render.Renderer) -> Bool = match list.get(tabs, active) {
+  some(tb) => {
+    let shape = if tb.t.cursor_shape == 0 then r.cursor_default else tb.t.cursor_shape
+    tb.t.cursor_visible and int.band(shape, 1) == 1
+  },
+  none => false,
+}
 
 /// The sooner of two waits, ms; -1 is no limit.
 fn sooner(a: Int, b: Int) -> Int = if a < 0 then b else if b < 0 then a else int.min(a, b)

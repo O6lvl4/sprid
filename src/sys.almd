@@ -1,5 +1,7 @@
 // Process facts — @extern(rust) declarations, backed by native/sys.rs
 
+import fs
+
 @extern(rust, "crate::sys", "footprint")
 fn footprint() -> Int = _
 
@@ -37,3 +39,29 @@ fn open_window(cwd: String) -> Bool = _
 /// Ignore SIGPIPE (see native/sys.rs).
 @extern(rust, "crate::sys", "ignore_sigpipe")
 fn ignore_sigpipe() -> Unit = _
+
+/// Watch a file for changes: an fd for `wait_fds`, or -1 (see native/sys.rs).
+@extern(rust, "crate::sys", "watch")
+fn watch(path: String) -> Int = _
+
+/// Whether the file watched by `fd` may have changed since last asked.
+@extern(rust, "crate::sys", "watch_changed")
+fn watch_changed(fd: Int) -> Bool = _
+
+test "a watched file's save is seen" {
+  let path = "/tmp/sprid-watch-test-${int.to_string(now_ms())}"
+  let _ = fs.write(path, "a = 1\n")
+  let fd = watch(path)
+  assert_eq(fd >= 0, true)
+  assert_eq(watch_changed(fd), false)
+  let _ = fs.write(path, "a = 2\n")
+  assert_eq(watch_changed(fd), true)
+  assert_eq(watch_changed(fd), false)
+  // Saved the way most editors do: a new file renamed over the old.
+  let _ = fs.write(path + ".new", "a = 3\n")
+  let _ = fs.rename(path + ".new", path)
+  assert_eq(watch_changed(fd), true)
+  let _ = fs.write(path, "a = 4\n")
+  assert_eq(watch_changed(fd), true)
+  let _ = fs.remove(path)
+}

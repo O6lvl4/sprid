@@ -26,31 +26,12 @@ import self.scrollback
 import self.search
 import self.field
 import self.terminal
+import self.theme
 import self.view
 import self.width as cell_width
 
 /// Floats per vertex of the text pipeline: position 2, uv 2, colour 4.
 let VERTEX_FLOATS = 8
-
-/// Tokyo Night Storm.
-let DEFAULT_BG = 0x24283B
-let DEFAULT_FG = 0xC0CAF5
-let CURSOR = 0xC0CAF5
-let SELECTION = 0x364A82
-let TAB_BAR = 0x1F2335
-let TAB_DIM = 0x737AA2
-let TAB_RULE = 0x3B4261
-let ACCENT = 0x7AA2F7
-/// Find: every match (its text keeps its colour), the current one (dark on
-/// orange), and the count when nothing matches.
-let MATCH = 0x5E4E2C
-let MATCH_CURRENT = 0xFF9E64
-let MATCH_FG = 0x1A1B26
-let NO_MATCH = 0xF7768E
-let ANSI = [
-  0x1D202F, 0xF7768E, 0x9ECE6A, 0xE0AF68, 0x7AA2F7, 0xBB9AF7, 0x7DCFFF, 0xA9B1D6,
-  0x414868, 0xF7768E, 0x9ECE6A, 0xE0AF68, 0x7AA2F7, 0xBB9AF7, 0x7DCFFF, 0xC0CAF5,
-]
 
 type Renderer = {
   device: Int,
@@ -72,6 +53,14 @@ type Renderer = {
   pad_x: Int,
   pad_y: Int,
   line_w: Int,
+  // The colours: the theme's, and its 256-colour palette.
+  theme: theme.Theme,
+  // The cursor's shape when the program sets none (DECSCUSR numbers; 0 a
+  // steady bar), whether the window has the focus, and whether a blinking
+  // cursor is in its off phase.
+  cursor_default: Int,
+  focused: Bool,
+  blink_off: Bool,
   palette: List[Int],
   // (code point * 2 + bold) -> glyph cache slot, -1 for no glyph.
   glyphs: Map[Int, Int],
@@ -94,9 +83,12 @@ type Renderer = {
   wanted_emoji: List[Int],
 }
 
+/// `r` in the colours of `t`.
+fn with_theme(r: Renderer, t: theme.Theme) -> Renderer = { ...r, theme: t, palette: palette256(t.ansi) }
+
 /// The 256-colour palette: the 16 of the theme, the 6x6x6 cube, 24 greys.
-fn palette256() -> List[Int] = {
-  var p = ANSI
+fn palette256(ansi: List[Int]) -> List[Int] = {
+  var p = ansi
   let steps = [0, 95, 135, 175, 215, 255]
   for i in 0..<216 {
     let r = steps[i / 36]
@@ -129,7 +121,11 @@ fn new(device: Int, faces: fonts.Faces, size_px: Int, pad_x: Int, pad_y: Int, ce
     pad_x: 0,
     pad_y: 0,
     line_w: 1,
-    palette: palette256(),
+    theme: theme.default(),
+    cursor_default: 0,
+    focused: true,
+    blink_off: false,
+    palette: palette256(theme.default().ansi),
     glyphs: [:],
     emojis: [:],
     sprites: [:],
@@ -272,7 +268,7 @@ fn emoji_quad(r: Renderer, slot: Int, x: Int, top: Int, alpha: Float, sx: Float,
   let atlas = int.to_float(text.COLOR_ATLAS)
   quad(r, int.to_float(x), int.to_float(top), int.to_float(x + w), int.to_float(top + h),
     2.0 + int.to_float(ax) / atlas, int.to_float(ay) / atlas, 2.0 + int.to_float(ax + w) / atlas, int.to_float(ay + h) / atlas,
-    DEFAULT_FG, alpha, sx, sy)
+    r.theme.fg, alpha, sx, sy)
 }
 
 /// The font (index into the layer's fonts) and glyph drawing `cp`: the grid
@@ -572,8 +568,8 @@ fn draw(mut r: Renderer, t: terminal.Terminal, back: Int, shift: Int, sel: Optio
     }
   }
   if extra == 1 then {
-    rect(r, 0, 0, width, gy, DEFAULT_BG, 1.0, sx, sy)
-    rect(r, 0, gy + t.rows * r.cell_h, width, height, DEFAULT_BG, 1.0, sx, sy)
+    rect(r, 0, 0, width, gy, r.theme.bg, 1.0, sx, sy)
+    rect(r, 0, gy + t.rows * r.cell_h, width, height, r.theme.bg, 1.0, sx, sy)
     n = n + 2
   }
 
@@ -595,14 +591,14 @@ fn draw(mut r: Renderer, t: terminal.Terminal, back: Int, shift: Int, sel: Optio
         let cp = preedit[i]
         let w = r.cell_w * cell_cols(cp)
         if i == compose.from then from_x = px
-        rect(r, px, ctop, px + w, ctop + r.cell_h, DEFAULT_BG, 1.0, sx, sy)
+        rect(r, px, ctop, px + w, ctop + r.cell_h, r.theme.bg, 1.0, sx, sy)
         let slot = glyph(r, cp, false)
         if slot >= 0 then {
-          glyph_quad(r, slot, px, ctop + r.baseline, DEFAULT_FG, 1.0, sx, sy)
+          glyph_quad(r, slot, px, ctop + r.baseline, r.theme.fg, 1.0, sx, sy)
           n = n + 1
         }
         let uy = ctop + r.baseline + r.line_w
-        rect(r, px, uy, px + w, uy + r.line_w, DEFAULT_FG, 1.0, sx, sy)
+        rect(r, px, uy, px + w, uy + r.line_w, r.theme.fg, 1.0, sx, sy)
         n = n + 2
         px = px + w
         if i + 1 == compose.to then to_x = px
@@ -611,20 +607,30 @@ fn draw(mut r: Renderer, t: terminal.Terminal, back: Int, shift: Int, sel: Optio
       let lw = int.max(1, r.line_w)
       if compose.from < compose.to and from_x >= 0 then {
         let x1 = if to_x >= 0 then to_x else px
-        rect(r, from_x, ctop, x1, ctop + lw, CURSOR, 1.0, sx, sy)
-        rect(r, from_x, ctop + r.cell_h - lw, x1, ctop + r.cell_h, CURSOR, 1.0, sx, sy)
-        rect(r, from_x, ctop, from_x + lw, ctop + r.cell_h, CURSOR, 1.0, sx, sy)
-        rect(r, x1 - lw, ctop, x1, ctop + r.cell_h, CURSOR, 1.0, sx, sy)
+        rect(r, from_x, ctop, x1, ctop + lw, r.theme.cursor, 1.0, sx, sy)
+        rect(r, from_x, ctop + r.cell_h - lw, x1, ctop + r.cell_h, r.theme.cursor, 1.0, sx, sy)
+        rect(r, from_x, ctop, from_x + lw, ctop + r.cell_h, r.theme.cursor, 1.0, sx, sy)
+        rect(r, x1 - lw, ctop, x1, ctop + r.cell_h, r.theme.cursor, 1.0, sx, sy)
         n = n + 4
       } else if compose.from >= compose.to and caret_x >= 0 then {
-        rect(r, caret_x, ctop, caret_x + int.max(2, r.line_w * 2), ctop + r.cell_h, CURSOR, 1.0, sx, sy)
+        rect(r, caret_x, ctop, caret_x + int.max(2, r.line_w * 2), ctop + r.cell_h, r.theme.cursor, 1.0, sx, sy)
         n = n + 1
       }
     } else if t.cursor_visible then {
-      let shape = t.cursor_shape
-      if shape == 1 or shape == 2 then rect(r, cx, ctop, cx + r.cell_w, ctop + r.cell_h, CURSOR, 0.5, sx, sy)
-      else if shape == 3 or shape == 4 then rect(r, cx, ctop + r.cell_h - 2 * r.line_w, cx + r.cell_w, ctop + r.cell_h, CURSOR, 1.0, sx, sy)
-      else rect(r, cx, ctop, cx + int.max(2, r.line_w * 2), ctop + r.cell_h, CURSOR, 1.0, sx, sy)
+      // The program's shape (DECSCUSR), else the config's.
+      let shape = if t.cursor_shape == 0 then r.cursor_default else t.cursor_shape
+      let lw = int.max(1, r.line_w)
+      if not r.focused then {
+        // Keys go elsewhere: a hollow box.
+        rect(r, cx, ctop, cx + r.cell_w, ctop + lw, r.theme.cursor, 1.0, sx, sy)
+        rect(r, cx, ctop + r.cell_h - lw, cx + r.cell_w, ctop + r.cell_h, r.theme.cursor, 1.0, sx, sy)
+        rect(r, cx, ctop, cx + lw, ctop + r.cell_h, r.theme.cursor, 1.0, sx, sy)
+        rect(r, cx + r.cell_w - lw, ctop, cx + r.cell_w, ctop + r.cell_h, r.theme.cursor, 1.0, sx, sy)
+        n = n + 3
+      } else if r.blink_off and int.band(shape, 1) == 1 then ()
+      else if shape == 1 or shape == 2 then rect(r, cx, ctop, cx + r.cell_w, ctop + r.cell_h, r.theme.cursor, 0.5, sx, sy)
+      else if shape == 3 or shape == 4 then rect(r, cx, ctop + r.cell_h - 2 * r.line_w, cx + r.cell_w, ctop + r.cell_h, r.theme.cursor, 1.0, sx, sy)
+      else rect(r, cx, ctop, cx + int.max(2, r.line_w * 2), ctop + r.cell_h, r.theme.cursor, 1.0, sx, sy)
       n = n + 1
     }
   }
@@ -634,7 +640,7 @@ fn draw(mut r: Renderer, t: terminal.Terminal, back: Int, shift: Int, sel: Optio
   if view.max_back(t) > 0 then {
     let (y0, y1) = thumb(r, t, back, shift, list.len(tabs), height)
     let w = scrollbar_width(r)
-    rect(r, width - w - r.pad_x / 4, y0, width - r.pad_x / 4, y1, DEFAULT_FG, if back > 0 or shift > 0 then 0.4 else 0.2, sx, sy)
+    rect(r, width - w - r.pad_x / 4, y0, width - r.pad_x / 4, y1, r.theme.fg, if back > 0 or shift > 0 then 0.4 else 0.2, sx, sy)
     n = n + 1
   }
 
@@ -648,7 +654,7 @@ fn draw(mut r: Renderer, t: terminal.Terminal, back: Int, shift: Int, sel: Optio
   if n > 0 then gpu.flush_to_buffer(r.device, r.vtx)
   r.count = n * 6
 
-  let (br, bgg, bb) = rgb_floats(DEFAULT_BG)
+  let (br, bgg, bb) = rgb_floats(r.theme.bg)
   let encoder = gpu.begin_encoder(r.device)
   let pass = gpu.begin_render_pass(encoder, br, bgg, bb, 1.0)
   if r.count > 0 then {
@@ -703,17 +709,17 @@ fn draw_tabs(mut r: Renderer, titles: List[List[Int]], active: Int, width: Int, 
   let h = bar_height(r)
   let count = list.len(titles)
   var n = 0
-  rect(r, 0, 0, width, h, TAB_BAR, 1.0, sx, sy)
+  rect(r, 0, 0, width, h, r.theme.tab_bar, 1.0, sx, sy)
   n = n + 1
   for i in 0..<count {
     let x0 = i * width / count
     let x1 = (i + 1) * width / count
     if i == active then {
-      rect(r, x0, 0, x1, h, DEFAULT_BG, 1.0, sx, sy)
-      rect(r, x0, 0, x1, int.max(2, r.line_w), ACCENT, 1.0, sx, sy)
+      rect(r, x0, 0, x1, h, r.theme.bg, 1.0, sx, sy)
+      rect(r, x0, 0, x1, int.max(2, r.line_w), r.theme.accent, 1.0, sx, sy)
       n = n + 2
     } else if i > 0 and i != active + 1 then {
-      rect(r, x0, h / 4, x0 + int.max(1, r.line_w / 2), h - h / 4, TAB_RULE, 1.0, sx, sy)
+      rect(r, x0, h / 4, x0 + int.max(1, r.line_w / 2), h - h / 4, r.theme.tab_rule, 1.0, sx, sy)
       n = n + 1
     }
     // The title, centred, cut to the tab with room to spare on each side.
@@ -726,7 +732,7 @@ fn draw_tabs(mut r: Renderer, titles: List[List[Int]], active: Int, width: Int, 
     }
     var pen = x0 + (x1 - x0 - w) / 2
     let baseline = (h - r.cell_h) / 2 + r.baseline
-    let color = if i == active then DEFAULT_FG else TAB_DIM
+    let color = if i == active then r.theme.fg else r.theme.tab_dim
     for cp in shown {
       let slot = glyph(r, cp, false)
       if slot >= 0 then {
@@ -751,7 +757,7 @@ fn draw_row(mut r: Renderer, row: scrollback.Row, line: Int, sel: Option[view.Se
     while end < cols and colors(r, row, line, end, sel, lit).1 == bg {
       end = end + 1
     }
-    if bg != DEFAULT_BG then {
+    if bg != r.theme.bg then {
       rect(r, r.pad_x + x * r.cell_w, top, r.pad_x + end * r.cell_w, top + r.cell_h, bg, 1.0, sx, sy)
       n = n + 1
     }
@@ -820,15 +826,15 @@ type Lit = { spans: List[(Int, Int)], from: Int, to: Int }
 /// applied, and a find match's or the selection's colour over it.
 fn colors(r: Renderer, row: scrollback.Row, line: Int, x: Int, sel: Option[view.Selection], lit: Lit) -> (Int, Int) = {
   let o = x * cell.SIZE
-  let fg = resolve(r, bytes.read_u32_le(row.cells, o + cell.OFF_FG), DEFAULT_FG)
-  let bg = resolve(r, bytes.read_u32_le(row.cells, o + cell.OFF_BG), DEFAULT_BG)
+  let fg = resolve(r, bytes.read_u32_le(row.cells, o + cell.OFF_FG), r.theme.fg)
+  let bg = resolve(r, bytes.read_u32_le(row.cells, o + cell.OFF_BG), r.theme.bg)
   let attrs = bytes.read_u16_le(row.cells, o + cell.OFF_ATTRS)
   let (f, b) = if int.band(attrs, cell.ATTR_INVERSE) != 0 then (bg, fg) else (fg, bg)
   let (f2, b2) = if int.band(attrs, cell.ATTR_HIDDEN) != 0 then (b, b) else (f, b)
-  if x >= lit.from and x < lit.to then (MATCH_FG, MATCH_CURRENT)
-  else if list.any(lit.spans, (s) => x >= s.0 and x < s.1) then (f2, MATCH)
+  if x >= lit.from and x < lit.to then (r.theme.match_fg, r.theme.match_current)
+  else if list.any(lit.spans, (s) => x >= s.0 and x < s.1) then (f2, r.theme.match_bg)
   else match sel {
-    some(s) => if view.selected(s, line, x) then (f2, SELECTION) else (f2, b2),
+    some(s) => if view.selected(s, line, x) then (f2, r.theme.selection) else (f2, b2),
     none => (f2, b2),
   }
 }
@@ -930,8 +936,8 @@ fn draw_find(mut r: Renderer, b: Bar, preedit: List[Int], gy: Int, width: Int, s
   let box = find_box(r, b, preedit, gy, width)
   let (x0, y0, x1, y1) = box
   let lw = int.max(1, r.line_w)
-  let edge = if b.focused then ACCENT else TAB_RULE
-  rect(r, x0, y0, x1, y1, TAB_BAR, 1.0, sx, sy)
+  let edge = if b.focused then r.theme.accent else r.theme.tab_rule
+  rect(r, x0, y0, x1, y1, r.theme.tab_bar, 1.0, sx, sy)
   rect(r, x0, y0, x1, y0 + lw, edge, 1.0, sx, sy)
   rect(r, x0, y1 - lw, x1, y1, edge, 1.0, sx, sy)
   rect(r, x0, y0, x0 + lw, y1, edge, 1.0, sx, sy)
@@ -942,7 +948,7 @@ fn draw_find(mut r: Renderer, b: Bar, preedit: List[Int], gy: Int, width: Int, s
   let ctop = y0 + r.pad_y / 2
   // The count, right-aligned; red when nothing matches.
   var cx = x1 - r.pad_x / 2 - list.len(count) * r.cell_w
-  let count_color = if b.find.total == 0 then NO_MATCH else TAB_DIM
+  let count_color = if b.find.total == 0 then r.theme.no_match else r.theme.tab_dim
   for cp in count {
     let slot = glyph(r, cp, false)
     if slot >= 0 then {
@@ -968,17 +974,17 @@ fn draw_find(mut r: Renderer, b: Bar, preedit: List[Int], gy: Int, width: Int, s
     let composing = i >= caret and i < caret + pre
     let at = if i < caret then i else i - pre
     if not composing and at >= sel_a and at < sel_b then {
-      rect(r, pen, ctop, pen + w, ctop + r.cell_h, SELECTION, 1.0, sx, sy)
+      rect(r, pen, ctop, pen + w, ctop + r.cell_h, r.theme.selection, 1.0, sx, sy)
       n = n + 1
     }
     let slot = glyph(r, cp, false)
     if slot >= 0 then {
-      glyph_quad(r, slot, pen, baseline, DEFAULT_FG, 1.0, sx, sy)
+      glyph_quad(r, slot, pen, baseline, r.theme.fg, 1.0, sx, sy)
       n = n + 1
     }
     if composing then {
       let uy = baseline + r.line_w
-      rect(r, pen, uy, pen + w, uy + r.line_w, DEFAULT_FG, 1.0, sx, sy)
+      rect(r, pen, uy, pen + w, uy + r.line_w, r.theme.fg, 1.0, sx, sy)
       n = n + 1
     }
     pen = pen + w
@@ -987,7 +993,7 @@ fn draw_find(mut r: Renderer, b: Bar, preedit: List[Int], gy: Int, width: Int, s
   }
   if b.focused and not field.has_selection(b.field) then {
     let x = field_x(r, b, preedit, box, caret + pre)
-    rect(r, x, ctop, x + int.max(2, r.line_w * 2), ctop + r.cell_h, ACCENT, 1.0, sx, sy)
+    rect(r, x, ctop, x + int.max(2, r.line_w * 2), ctop + r.cell_h, r.theme.accent, 1.0, sx, sy)
     n = n + 1
   }
   n

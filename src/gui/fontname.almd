@@ -1,0 +1,126 @@
+// Font names: the family and style of each face in a font file, from its
+// `name` table — how `font-family = UDEV Gothic 35NFLG` in the config finds
+// a file, as the system's font menus would.
+
+import bytes
+import snaidhm.sfnt as sfnt
+
+/// A face of a file: its index in the file (a collection holds several), its
+/// family and its style.
+type Face = { index: Int, family: String, style: String }
+
+/// Every face in `data` with its names; none for data that isn't a font.
+fn faces(data: Bytes) -> List[Face] = {
+  var out: List[Face] = []
+  if bytes.len(data) >= 12 then {
+    let collection = bytes.read_u32_be(data, 0) == sfnt.tag("ttcf")
+    let n = sfnt.face_count(data)
+    for i in 0..<int.min(n, 64) {
+      let dir = if collection then bytes.read_u32_be(data, 12 + i * 4) else 0
+      if dir >= 0 and dir + 12 <= bytes.len(data) then {
+        let at = sfnt.table(data, dir, sfnt.tag("name"))
+        if at > 0 then {
+          let family = pick(data, at, 16, 1)
+          if family != "" then list.push(out, Face { index: i, family: family, style: pick(data, at, 17, 2) })
+        }
+      }
+    }
+  }
+  out
+}
+
+/// Name `id` of the name table at `at`, else name `fallback`: in English
+/// where the table has it, UTF-16 (Windows / Unicode platforms) or Mac Roman.
+fn pick(data: Bytes, at: Int, id: Int, fallback: Int) -> String = {
+  let first = lookup(data, at, id)
+  if first != "" then first else lookup(data, at, fallback)
+}
+
+fn lookup(data: Bytes, at: Int, id: Int) -> String = {
+  let size = bytes.len(data)
+  if at + 6 > size then ""
+  else {
+    let count = bytes.read_u16_be(data, at + 2)
+    let strings = at + bytes.read_u16_be(data, at + 4)
+    var best = ""
+    var best_rank = 0
+    for i in 0..<count {
+      let rec = at + 6 + i * 12
+      if rec + 12 <= size and bytes.read_u16_be(data, rec + 6) == id then {
+        let platform = bytes.read_u16_be(data, rec)
+        let language = bytes.read_u16_be(data, rec + 4)
+        let len = bytes.read_u16_be(data, rec + 8)
+        let off = strings + bytes.read_u16_be(data, rec + 10)
+        // English (US) on Windows first, then any Windows / Unicode name,
+        // then a Mac Roman one.
+        let rank = if platform == 3 and language == 0x409 then 4
+          else if platform == 3 or platform == 0 then 3
+          else if platform == 1 and language == 0 then 2
+          else 0
+        if rank > best_rank and off + len <= size then {
+          let s = if platform == 1 then latin(data, off, len) else utf16(data, off, len)
+          if s != "" then {
+            best = s
+            best_rank = rank
+          }
+        }
+      }
+    }
+    best
+  }
+}
+
+fn utf16(data: Bytes, off: Int, len: Int) -> String = {
+  var s = ""
+  var i = 0
+  while i + 1 < len {
+    let u = bytes.read_u16_be(data, off + i)
+    if u >= 0xD800 and u <= 0xDBFF and i + 3 < len then {
+      let lo = bytes.read_u16_be(data, off + i + 2)
+      s = s + string.from_codepoint(0x10000 + (u - 0xD800) * 1024 + (lo - 0xDC00))
+      i = i + 4
+    } else {
+      s = s + string.from_codepoint(u)
+      i = i + 2
+    }
+  }
+  s
+}
+
+fn latin(data: Bytes, off: Int, len: Int) -> String = {
+  var s = ""
+  for i in 0..<len {
+    let b = bytes.read_u8(data, off + i)
+    s = s + string.from_codepoint(if b < 0x80 then b else 0xFFFD)
+  }
+  s
+}
+
+/// `family`'s regular and bold faces among `found` (path, face), matching
+/// the family name ignoring case: the regular is the face styled Regular
+/// (or Book, Medium, Roman), else the first; the bold the one styled Bold.
+fn choose(found: List[(String, Face)], family: String) -> Option[((String, Int), Option[(String, Int)])] = {
+  let want = string.to_lower(string.trim(family))
+  let mine = list.filter(found, (e) => string.to_lower(e.1.family) == want)
+  if list.len(mine) == 0 then none
+  else {
+    let plain = ["regular", "book", "roman", "medium", "normal"]
+    let regular = list.find(mine, (e) => list.contains(plain, string.to_lower(e.1.style))) ?? mine[0]
+    let bold = list.find(mine, (e) => string.to_lower(e.1.style) == "bold")
+    let bold_at = match bold {
+      some(b) => some((b.0, b.1.index)),
+      none => none,
+    }
+    some(((regular.0, regular.1.index), bold_at))
+  }
+}
+
+test "regular and bold chosen by style" {
+  let found = [
+    ("/f/A-Bold.ttf", Face { index: 0, family: "Mono A", style: "Bold" }),
+    ("/f/A.ttc", Face { index: 1, family: "Mono A", style: "Regular" }),
+    ("/f/B.ttf", Face { index: 0, family: "Other", style: "Regular" }),
+  ]
+  assert_eq(choose(found, "mono a"), some((("/f/A.ttc", 1), some(("/f/A-Bold.ttf", 0)))))
+  assert_eq(choose(found, "none"), none)
+}

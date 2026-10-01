@@ -12,6 +12,7 @@ import env
 import fs
 import snaidhm.sfnt as sfnt
 import self.sys
+import self.gui.fontname
 
 /// The grid face, where its bold is, and where the fallbacks are, in order.
 type Faces = { regular: sfnt.Font, bold_path: String, fallback_paths: List[String] }
@@ -49,13 +50,54 @@ let FALLBACK = [
 effect fn expand(path: String) -> String =
   if string.starts_with(path, "~/") then (env.get("HOME") ?? "") + string.drop(path, 1) else path
 
-/// Face 0 of the font file at `path`, or none.
+/// A face of the font file at `path` — face 0, or `path#n` for face n of a
+/// collection — or none.
 fn load(path: String) -> Option[sfnt.Font] =
   if path == "" then none
   else {
-    let data = sys.read_file(path)
-    if bytes.len(data) == 0 then none else sfnt.load(data, 0)?
+    let (file, face) = match string.split_once(path, "#") {
+      some((f, n)) => (f, int.parse(n) ?? 0),
+      none => (path, 0),
+    }
+    let data = sys.read_file(file)
+    if bytes.len(data) == 0 then none else sfnt.load(data, face)?
   }
+
+/// Where font files are: the user's, then the system's.
+effect fn font_dirs() -> List[String] = [
+  expand("~/Library/Fonts")!, "/Library/Fonts", "/System/Library/Fonts", "/System/Library/Fonts/Supplemental",
+  expand("~/.local/share/fonts")!, expand("~/.fonts")!, "/usr/share/fonts", "/usr/local/share/fonts",
+]
+
+/// The faces of `family`, looked for in every font file there is: the
+/// regular as `path#face`, and the bold's, "" when it has none.
+effect fn by_family(family: String) -> Option[(String, String)] = {
+  var found: List[(String, fontname.Face)] = []
+  for dir in font_dirs()! {
+    if fs.is_dir(dir) then {
+      let files = match fs.walk(dir) {
+        ok(fs_) => fs_,
+        err(_) => [],
+      }
+      for f in files {
+        let lower = string.to_lower(f)
+        if string.ends_with(lower, ".ttf") or string.ends_with(lower, ".otf") or string.ends_with(lower, ".ttc") then {
+          let data = sys.read_file(f)
+          for face in fontname.faces(data) {
+            list.push(found, (f, face))
+          }
+        }
+      }
+    }
+  }
+  match fontname.choose(found, family) {
+    some(((path, face), bold)) => some(("${path}#${int.to_string(face)}", match bold {
+      some((bp, bf)) => "${bp}#${int.to_string(bf)}",
+      none => "",
+    })),
+    none => none,
+  }
+}
 
 /// The first monospace face this system has, with the path of its bold.
 effect fn mono(i: Int) -> Option[(sfnt.Font, String)] =
@@ -68,10 +110,25 @@ effect fn mono(i: Int) -> Option[(sfnt.Font, String)] =
     }
   }
 
-effect fn find() -> Option[Faces] = {
-  let custom = match env.get("SPRID_FONT") {
-    some(p) => match load(p) { some(f) => some((f, "")), none => none },
-    none => none,
+/// The faces to draw with: `family` when it is set and found (else a word
+/// on stderr), `SPRID_FONT` when set, else the first monospace face here.
+effect fn find(family: String) -> Option[Faces] = {
+  let named = if family == "" then none else match by_family(family)! {
+    some((regular, bold)) => match load(regular) {
+      some(f) => some((f, bold)),
+      none => none,
+    },
+    none => {
+      eprintln("sprid: no font family \"${family}\" found; using the default")
+      none
+    },
+  }
+  let custom = match named {
+    some(n) => some(n),
+    none => match env.get("SPRID_FONT") {
+      some(p) => match load(p) { some(f) => some((f, "")), none => none },
+      none => none,
+    },
   }
   let grid = match custom { some(c) => some(c), none => mono(0)! }
   var fallbacks: List[String] = []
