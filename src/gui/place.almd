@@ -1,0 +1,17 @@
+// Where a window is drawn, and the pointer in it.
+
+import snaidhm.native.window as window
+import self.gui.render
+
+/// Where the window is drawn: the renderer, the display's scale, how many
+/// tabs (the tab bar shows from two), the drawable's width.
+type Place = { r: render.Renderer, scale: Float, tabs: Int, width: Int }
+
+/// Longest gap between the presses of a double click, ms (macOS's default).
+let DOUBLE_CLICK_MS = 500
+
+/// The pointer, in the drawable's pixels.
+fn px(p: Place) -> Int = float.to_int(window.event_x() * p.scale)
+
+fn py(p: Place) -> Int = float.to_int(window.event_y() * p.scale)
+

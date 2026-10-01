@@ -78,8 +78,10 @@ type Session = {
   // the window's title, the tab in front's.
   front: Int,
   window_title: String,
-  // A new window asked for, to open in this directory.
+  // A new window asked for, to open in this directory; a tab taken out of
+  // this one for a window of its own.
   opening: Option[String],
+  adopting: Option[tabset.Tab],
   stats: Stats,
 }
 

@@ -12,6 +12,7 @@ import self.terminal
 import self.view
 import self.prompts
 import self.gui.tabset
+import self.gui.clip
 import self.gui.uistate
 import self.gui.findkeys
 
@@ -195,7 +196,7 @@ effect fn command_key(mut cur: tabset.Tab, mut ui: uistate.Ui, k: Key) -> Bool =
   } else if k.command and k.lower == 0x63 then {
     // Cmd+C: the selection to the clipboard.
     match cur.sel {
-      some(s) => tabset.copy(view.selected_text(cur.t, s))!,
+      some(s) => clip.copy(view.selected_text(cur.t, s))!,
       none => (),
     }
     true

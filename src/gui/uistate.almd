@@ -39,6 +39,8 @@ type Ui = {
   // The last press, when; on the tab bar, which tab (-1: on the grid).
   click_ms: Int,
   click_tab: Int,
+  // A tab being dragged by its title: where it is now, -1 when none is.
+  tab_drag: Int,
   // The button held in a press reported to the program, -1 when none, and
   // the cell the pointer was last reported at.
   app_button: Int,
@@ -72,7 +74,7 @@ type Ui = {
 /// `Zoom` changes the font size by that many points, or with 0 resets it;
 /// `Restyle` follows the system's light or dark appearance; `Focus` the
 /// window gaining or losing the keyboard.
-type Act = | Stay | NewTab | CloseTab | NextTab | PrevTab | GoTo(Int) | NewWindow | CloseWindow | Zoom(Int) | Restyle | Focus(Bool) | Paste | PastePrimary | Selected | Menu
+type Act = | Stay | NewTab | CloseTab | NextTab | PrevTab | GoTo(Int) | NewWindow | CloseWindow | Zoom(Int) | Restyle | Focus(Bool) | Paste | PastePrimary | Selected | Menu | MoveTab(Int) | DetachTab
 
 /// The find bar as drawn.
 // FIXME(almide#3153): `render.Bar { ... }` once a record literal works through a

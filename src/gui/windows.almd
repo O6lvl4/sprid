@@ -40,10 +40,36 @@ fn quit_asked(mut wins: List[session.Session]) -> Unit = {
   } else window.keep_open()
 }
 
-/// The windows asked for (Cmd+N), opened in the directory of the tab in
-/// front of the one that asked.
+/// The windows asked for: for tabs dragged out of a window, and new ones
+/// (Cmd+N) opened in the directory of the tab in front of the one that
+/// asked.
 effect fn open_asked(mut wins: List[session.Session]) -> Unit = {
   let n = list.len(wins)
+  for i in 0..<n {
+    match take(wins, i) {
+      some(w) => {
+        var a = w
+        let adopting = a.adopting
+        a.adopting = none
+        match adopting {
+          some(tb) => match setup.adopt(a, tb)! {
+            some(b) => {
+              put(wins, i, a)
+              list.push(wins, b)
+            },
+            // No window to be had: the tab goes back.
+            none => {
+              list.push(a.tabs, tb)
+              tabset.relayout(a.tabs, a.r, a.width, a.height)
+              put(wins, i, a)
+            },
+          },
+          none => put(wins, i, a),
+        }
+      },
+      none => (),
+    }
+  }
   for i in 0..<n {
     match wins[i].opening {
       some(cwd) => {

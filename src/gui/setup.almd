@@ -38,6 +38,20 @@ effect fn open_window(from: session.Session, cwd: String) -> Option[session.Sess
   } else some(start(id, capture, from.faces, from.st, "", fd, grid)!)
 }
 
+/// A window for tab `tb`, taken out of `from`, sized and set up as `from`
+/// is; none when it can't be opened.
+effect fn adopt(from: session.Session, tb: tabset.Tab) -> Option[session.Session] = {
+  let id = window.open_window("sprid", float.to_int(int.to_float(from.width) / from.scale), float.to_int(int.to_float(from.height) / from.scale))
+  guard id > 0 else none
+  window.select(id)
+  window.set_ime(true)
+  var a = start(id, none, from.faces, from.st, "", tb.fd, (tb.t.cols, tb.t.rows))!
+  a.tabs = [tb]
+  a.front = tb.fd
+  tabset.relayout(a.tabs, a.r, a.width, a.height)
+  some(a)
+}
+
 /// Window `id`'s session as it opens, its first tab on `first_fd`. The
 /// window is the selected one.
 effect fn start(id: Int, capture: Option[String], faces: fonts.Faces, st: settings.Settings, login: String, first_fd: Int, expected: (Int, Int)) -> session.Session = {
@@ -55,7 +69,7 @@ effect fn start(id: Int, capture: Option[String], faces: fonts.Faces, st: settin
   if (cols, rows) != expected then { let _ = pty.resize(first_fd, cols, rows) } else ()
   let home = env.get("HOME") ?? ""
   var a = session.Session {
-    id: id, faces: faces, opening: none,
+    id: id, faces: faces, opening: none, adopting: none,
     capture: capture, home: home,
     // Questions in Japanese on a Japanese system.
     ja: string.starts_with(env.get("LANG") ?? "", "ja"),
@@ -90,7 +104,7 @@ effect fn start(id: Int, capture: Option[String], faces: fonts.Faces, st: settin
 fn fresh_ui(home: String) -> uistate.Ui = uistate.Ui {
   preedit: [], preedit_caret: 0, preedit_from: 0, preedit_to: 0, wheel_acc: 0.0, dragging: false, unit: 0, rect: false, anchor_line: 0, anchor_col: 0,
   anchor_end_line: 0, anchor_end_col: 0, clicks: 0, click_line: 0, click_col: 0, dirty: true,
-  renaming: false, draft: "", click_ms: 0, click_tab: -1, home: home, finding: false, find: search.empty(),
+  renaming: false, draft: "", click_ms: 0, click_tab: -1, tab_drag: -1, home: home, finding: false, find: search.empty(),
   field: field.of(""), find_focus: false, field_drag: false, scroll_drag: false, scroll_grab: 0,
   ime_x: -1, ime_y: -1,
   app_button: -1, report_col: -1, report_row: -1, link: none, pointer: -1,

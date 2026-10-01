@@ -1,0 +1,54 @@
+// The tab bar under the pointer: a press brings a tab to the front (a
+// double click renames it), a drag along the bar moves it, and one let go
+// well away from the bar gives it a window of its own.
+
+import snaidhm.native.window as window
+import self.sys
+import self.gui.render
+import self.gui.tabset
+import self.gui.uistate
+import self.gui.place
+
+/// A press on tab `i`: it comes to the front; a double click renames it — its
+/// first press made it the active one.
+fn press(mut cur: tabset.Tab, mut ui: uistate.Ui, i: Int) -> uistate.Act = {
+  let now = sys.now_ms()
+  let double = i == ui.click_tab and now - ui.click_ms < place.DOUBLE_CLICK_MS
+  ui.click_ms = if double then 0 else now
+  ui.click_tab = i
+  ui.clicks = 0
+  if double then {
+    ui.renaming = true
+    ui.draft = tabset.title_of(cur, ui.home)
+    ui.dirty = true
+    uistate.Stay
+  } else {
+    ui.tab_drag = i
+    uistate.GoTo(i)
+  }
+}
+
+/// A move or release while a tab is held by its title (`ui.tab_drag`).
+fn held(mut ui: uistate.Ui, kind: Int, p: place.Place) -> uistate.Act =
+  if kind == window.MOUSE_UP then drop(ui, p) else drag(ui, p)
+
+/// A tab dragged along the tab bar takes the place it is dragged to.
+fn drag(mut ui: uistate.Ui, p: place.Place) -> uistate.Act =
+  if place.py(p) < 0 or place.py(p) >= render.bar_height(p.r) then uistate.Stay
+  else {
+    let to = render.tab_at(p.r, place.px(p), p.width, p.tabs)
+    if to == ui.tab_drag then uistate.Stay
+    else {
+      ui.tab_drag = to
+      uistate.MoveTab(to)
+    }
+  }
+
+/// A dragged tab let go: dropped well below the tab bar, or outside the
+/// window, it goes to a window of its own.
+fn drop(mut ui: uistate.Ui, p: place.Place) -> uistate.Act = {
+  ui.tab_drag = -1
+  let (x, y) = (place.px(p), place.py(p))
+  let away = y > render.bar_height(p.r) * 3 or y < 0 or x < 0 or x > p.width
+  if away and p.tabs > 1 then uistate.DetachTab else uistate.Stay
+}

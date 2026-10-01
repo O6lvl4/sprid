@@ -4,6 +4,7 @@
 import env
 import self.gui.render
 import self.gui.tabset
+import self.gui.clip
 import self.gui.uistate
 import self.gui.prefs
 import self.gui.session
@@ -23,6 +24,8 @@ effect fn apply(mut a: session.Session, act: uistate.Act) -> Unit = match act {
   uistate.NextTab => go_to(a, (a.active + 1) % list.len(a.tabs)),
   uistate.PrevTab => go_to(a, (a.active + list.len(a.tabs) - 1) % list.len(a.tabs)),
   uistate.GoTo(i) => if i < list.len(a.tabs) and i != a.active then go_to(a, i),
+  uistate.MoveTab(to) => move_tab(a, to),
+  uistate.DetachTab => detach_tab(a),
   _ => window_act(a, act)!,
 }
 
@@ -37,7 +40,7 @@ effect fn window_act(mut a: session.Session, act: uistate.Act) -> Unit = match a
     uistate.touch(a.ui)
   },
   uistate.Focus(on) => focus(a, on),
-  uistate.Paste => paste(a, tabset.clipboard()!)!,
+  uistate.Paste => paste(a, clip.clipboard()!)!,
   uistate.PastePrimary => paste(a, sys.primary_get())!,
   uistate.Selected => copy_selection(a)!,
   uistate.Menu => menu(a)!,
@@ -49,6 +52,25 @@ fn close_tab(mut a: session.Session) -> Unit =
   if tabset.may_close_tab(a.tabs, a.active, a.ja) then {
     tabset.close_tab(a.tabs, a.active)
     a.active = int.min(a.active, list.len(a.tabs) - 1)
+    tabset.relayout(a.tabs, a.r, a.width, a.height)
+    uistate.touch(a.ui)
+  }
+
+/// The tab in front moved to place `to`, the others keeping their order.
+fn move_tab(mut a: session.Session, to: Int) -> Unit =
+  if to >= 0 and to < list.len(a.tabs) and to != a.active then {
+    a.tabs = tabset.move_to(a.tabs, a.active, to)
+    a.active = to
+    uistate.touch(a.ui)
+  }
+
+/// The tab in front taken out, for a window of its own (see
+/// `windows.open_asked`).
+fn detach_tab(mut a: session.Session) -> Unit =
+  if list.len(a.tabs) > 1 then {
+    move_tab(a, list.len(a.tabs) - 1)
+    a.adopting = list.pop(a.tabs)
+    a.active = list.len(a.tabs) - 1
     tabset.relayout(a.tabs, a.r, a.width, a.height)
     uistate.touch(a.ui)
   }
@@ -117,7 +139,7 @@ effect fn menu(mut a: session.Session) -> Unit = {
   let off = (i: Int) => (i == 0 and not has_sel) or (i == 4 and output == none)
   let items = list.enumerate(names) |> list.map(((i, n)) => if off(i) then "!" + n else n)
   let picked = dialog.context_menu(list.join(items, "\n"))
-  if picked == 1 then paste(a, tabset.clipboard()!)!
+  if picked == 1 then paste(a, clip.clipboard()!)!
   else if picked >= 0 then menu_pick(a, picked, output)!
 }
 
@@ -125,7 +147,7 @@ effect fn menu_pick(mut a: session.Session, picked: Int, output: Option[(Int, In
   some(tb) => {
     var cur = tb
     if picked == 0 then match cur.sel {
-      some(s) => tabset.copy(view.selected_text(cur.t, s))!,
+      some(s) => clip.copy(view.selected_text(cur.t, s))!,
       none => (),
     }
     else if picked == 3 then shortcuts.select_all(cur)
@@ -146,7 +168,7 @@ effect fn copy_selection(a: session.Session) -> Unit = match list.get(a.tabs, a.
   some(tb) => match tb.sel {
     some(s) => {
       let text = view.selected_text(tb.t, s)
-      if a.st.copy_on_select == "clipboard" then tabset.copy(text)!
+      if a.st.copy_on_select == "clipboard" then clip.copy(text)!
       else if a.st.copy_on_select == "true" then { let _ = sys.primary_set(text) }
     },
     none => (),
@@ -161,7 +183,7 @@ effect fn paste(mut a: session.Session, text: String) -> Unit = match tabset.tak
   some(tb) => {
     var cur = tb
     let protect = a.st.paste_protection and not cur.t.bracketed_paste and keys.multiline(text)
-    if text != "" and (not protect or tabset.paste_ok(text, a.ja)!) then {
+    if text != "" and (not protect or clip.paste_ok(text, a.ja)!) then {
       let _ = pty.write(cur.fd, keys.paste(text, cur.t.bracketed_paste))
       if cur.back != 0 then uistate.touch(a.ui)
       tabset.scroll_to(cur, 0)

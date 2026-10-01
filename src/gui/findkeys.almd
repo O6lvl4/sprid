@@ -6,6 +6,7 @@ import self.field
 import self.terminal
 import self.view
 import self.gui.tabset
+import self.gui.clip
 import self.gui.uistate
 
 /// The Cmd letters the field takes: select all, copy, cut, paste, find,
@@ -87,21 +88,21 @@ effect fn field_command(mut cur: tabset.Tab, mut ui: uistate.Ui, k: FieldKey) ->
     true
   } else if k.lower == 0x78 then {
     if field.has_selection(f) then {
-      tabset.copy(field.selected(f))!
+      clip.copy(field.selected(f))!
       edit_field(cur, ui, field.insert(f, ""))
     }
     true
   } else if k.lower == 0x76 then {
-    edit_field(cur, ui, field.insert(f, list.first(string.lines(tabset.clipboard()!)) ?? ""))
+    edit_field(cur, ui, field.insert(f, list.first(string.lines(clip.clipboard()!)) ?? ""))
     true
   } else false
 }
 
 /// The field's selection to the clipboard, else the terminal's.
 effect fn copy_selection(cur: tabset.Tab, f: field.Field) -> Unit =
-  if field.has_selection(f) then tabset.copy(field.selected(f))!
+  if field.has_selection(f) then clip.copy(field.selected(f))!
   else match cur.sel {
-    some(s) => tabset.copy(view.selected_text(cur.t, s))!,
+    some(s) => clip.copy(view.selected_text(cur.t, s))!,
     none => (),
   }
 

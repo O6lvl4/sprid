@@ -93,6 +93,19 @@ fn take(mut tabs: List[Tab], i: Int) -> Option[Tab] = {
   list.pop(tabs)
 }
 
+/// `xs` with the item at `from` moved to `to`, the others keeping their
+/// order — swapped along, not copied out (see `take`).
+fn move_to[T](xs: List[T], from: Int, to: Int) -> List[T] = {
+  var out = xs
+  var at = from
+  let step = if to > from then 1 else -1
+  while at != to {
+    out = list.swap(out, at, at + step)
+    at = at + step
+  }
+  out
+}
+
 /// Note the updates `tb`'s program has begun since last looked at, as
 /// beginning `now`.
 fn note_updates(mut tb: Tab, now: Int) -> Unit = {
@@ -266,24 +279,8 @@ fn scroll_to(mut tb: Tab, back: Int) -> Unit = {
   tb.shift = 0
 }
 
-effect fn copy(s: String) -> Unit = {
-  let _ = sys.clipboard_set(s)
-}
-
-effect fn clipboard() -> String = sys.clipboard_get()
-
-/// Ask whether the program in the tab called `tab` may read the clipboard.
-effect fn clipboard_read_ok(tab: String, ja: Bool) -> Bool =
-  if ja then dialog.confirm("クリップボードの読み取りを許可しますか？", "「${tab}」のプログラムがクリップボードの内容を求めています。", "許可", "拒否")
-  else dialog.confirm("Let the program read the clipboard?", "The program in \"${tab}\" asks for what is on the clipboard.", "Allow", "Deny")
-
-/// Ask before pasting `text`, which has line breaks, where they would run
-/// each line as it arrives.
-effect fn paste_ok(text: String, ja: Bool) -> Bool = {
-  let lines = string.split(string.replace(string.trim_end(text), "\r\n", "\n"), "\n")
-  let n = list.len(lines)
-  let preview = lines |> list.take(3) |> list.map((l) => if string.len(l) > 60 then string.take(l, 60) + "…" else l)
-  let shown = string.join(preview, "\n") + (if n > 3 then "\n…" else "")
-  if ja then dialog.confirm("${int.to_string(n)} 行を貼り付けますか？", "改行を含むため、貼り付けると各行がコマンドとして実行されます。\n\n${shown}", "貼り付ける", "キャンセル")
-  else dialog.confirm("uistate.Paste ${int.to_string(n)} line${if n > 1 then "s" else ""}?", "The text has line breaks: each line will run as a command as it is pasted.\n\n${shown}", "uistate.Paste", "Cancel")
+test "a tab moved keeps the others in order" {
+  assert_eq(move_to([0, 1, 2, 3], 0, 2), [1, 2, 0, 3])
+  assert_eq(move_to([0, 1, 2, 3], 3, 1), [0, 3, 1, 2])
+  assert_eq(move_to([0, 1, 2], 1, 1), [0, 1, 2])
 }

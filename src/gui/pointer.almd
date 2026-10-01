@@ -15,7 +15,7 @@ import self.gui.uistate
 fn app_mouse(t: terminal.Terminal, ui: uistate.Ui, r: render.Renderer, scale: Float, tabs: Int, kind: Int) -> Bool = {
   let wanted = t.mouse_mode != 0 and t.mouse_sgr and int.band(window.event_mods(), window.MOD_SHIFT) == 0
   let on_bar = tabs > 1 and float.to_int(window.event_y() * scale) < render.bar_height(r)
-  (wanted and not on_bar and not ui.dragging) or (kind == window.MOUSE_UP and ui.app_button >= 0)
+  (wanted and not on_bar and not ui.dragging and ui.tab_drag < 0) or (kind == window.MOUSE_UP and ui.app_button >= 0)
 }
 
 /// The wheel moved `dy` logical pixels (positive: toward the end) over cell

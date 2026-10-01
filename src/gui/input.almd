@@ -13,12 +13,13 @@ import self.gui.uistate
 import self.gui.findkeys
 import self.gui.pointer
 import self.gui.presses
+import self.gui.place
 import self.gui.shortcuts
 
 /// Apply input `kind` to the active tab `cur`; what it asks of the tabs is
 /// returned. `tabs` is how many are open, `width` the drawable's.
 effect fn handle(mut cur: tabset.Tab, mut ui: uistate.Ui, kind: Int, r: render.Renderer, scale: Float, tabs: Int, width: Int) -> uistate.Act = {
-  let p = presses.Place { r: r, scale: scale, tabs: tabs, width: width }
+  let p = place.Place { r: r, scale: scale, tabs: tabs, width: width }
   // A press anywhere but the find bar takes the focus from it: typing goes
   // to the program again, the matches stay marked.
   if kind == window.MOUSE_DOWN and ui.finding and ui.find_focus and not presses.on_bar(ui, p) then {

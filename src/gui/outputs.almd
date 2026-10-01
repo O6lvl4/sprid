@@ -4,6 +4,7 @@
 import snaidhm.native.window as window
 import self.gui.dialog
 import self.gui.tabset
+import self.gui.clip
 import self.gui.session
 import self.gui.uistate
 import self.pty
@@ -68,7 +69,7 @@ effect fn clipboard(a: session.Session, mut cur: tabset.Tab) -> Unit = {
   }
   let asked = terminal.take_clipboard_ask(cur.t)
   if asked != "" and may_read_clipboard(a, cur)! then {
-    let _ = pty.write(cur.fd, terminal.clipboard_reply(asked, tabset.clipboard()!))
+    let _ = pty.write(cur.fd, terminal.clipboard_reply(asked, clip.clipboard()!))
   }
 }
 
@@ -100,7 +101,7 @@ effect fn away(a: session.Session, cur: tabset.Tab, bell: Bool, notices: List[(S
 /// ask with.
 effect fn may_read_clipboard(a: session.Session, cur: tabset.Tab) -> Bool =
   if a.st.clipboard_read == "allow" then true
-  else if a.st.clipboard_read == "ask" and not sys.is_linux() then tabset.clipboard_read_ok(tabset.title_of(cur, a.home), a.ja)!
+  else if a.st.clipboard_read == "ask" and not sys.is_linux() then clip.clipboard_read_ok(tabset.title_of(cur, a.home), a.ja)!
   else false
 
 /// Tabs whose program has exited close; the window closes with the last.

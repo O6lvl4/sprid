@@ -14,24 +14,15 @@ import self.gui.tabset
 import self.gui.uistate
 import self.gui.findkeys
 import self.gui.pointer
+import self.gui.tabbar
+import self.gui.place
 
-/// Where the window is drawn: the renderer, the display's scale, how many
-/// tabs (the tab bar shows from two), the drawable's width.
-type Place = { r: render.Renderer, scale: Float, tabs: Int, width: Int }
-
-/// Longest gap between the presses of a double click, ms (macOS's default).
-let DOUBLE_CLICK_MS = 500
-
-/// The pointer, in the drawable's pixels.
-fn px(p: Place) -> Int = float.to_int(window.event_x() * p.scale)
-
-fn py(p: Place) -> Int = float.to_int(window.event_y() * p.scale)
-
-fn on_bar(ui: uistate.Ui, p: Place) -> Bool = render.on_bar(p.r, uistate.bar(ui), p.tabs, p.width, px(p), py(p))
+fn on_bar(ui: uistate.Ui, p: place.Place) -> Bool = render.on_bar(p.r, uistate.bar(ui), p.tabs, p.width, place.px(p), place.py(p))
 
 /// A mouse input `kind` on tab `cur`; what it asks of the tabs.
-effect fn mouse(mut cur: tabset.Tab, mut ui: uistate.Ui, kind: Int, p: Place) -> uistate.Act =
+effect fn mouse(mut cur: tabset.Tab, mut ui: uistate.Ui, kind: Int, p: place.Place) -> uistate.Act =
   if kind == window.MOUSE_DOWN and window.event_code() == 0 and link_click() and open_link(cur, p)! then uistate.Stay
+  else if ui.tab_drag >= 0 and (kind == window.MOUSE_MOVE or kind == window.MOUSE_UP) then tabbar.held(ui, kind, p)
   else if off_grid(cur, ui, kind, p) then uistate.Stay
   else if kind == window.MOUSE_DOWN then button_down(cur, ui, p)!
   else if kind == window.MOUSE_MOVE and ui.dragging then {
@@ -42,7 +33,7 @@ effect fn mouse(mut cur: tabset.Tab, mut ui: uistate.Ui, kind: Int, p: Place) ->
   else uistate.Stay
 
 /// A button pressed on the grid.
-effect fn button_down(mut cur: tabset.Tab, mut ui: uistate.Ui, p: Place) -> uistate.Act = match window.event_code() {
+effect fn button_down(mut cur: tabset.Tab, mut ui: uistate.Ui, p: place.Place) -> uistate.Act = match window.event_code() {
   0 => press(cur, ui, p)!,
   // A right click: copy, paste, select all, find, clear.
   1 => uistate.Menu,
@@ -62,8 +53,8 @@ fn release(cur: tabset.Tab, mut ui: uistate.Ui) -> uistate.Act =
 /// The pointer moved: the link under it found while Cmd is held, and the
 /// pointer shaped for where it is — a hand on a link, the I-beam on the
 /// grid, the arrow on the tab bar and the scrollbar.
-fn hover(cur: tabset.Tab, mut ui: uistate.Ui, p: Place) -> Unit = {
-  let on_grid = not (p.tabs > 1 and py(p) < render.bar_height(p.r)) and not render.on_scrollbar(p.r, cur.t, p.width, px(p))
+fn hover(cur: tabset.Tab, mut ui: uistate.Ui, p: place.Place) -> Unit = {
+  let on_grid = not (p.tabs > 1 and place.py(p) < render.bar_height(p.r)) and not render.on_scrollbar(p.r, cur.t, p.width, place.px(p))
   let link = if on_grid and link_click() then {
     let (col, _) = pointer.cell_at(p.r, cur.t, p.scale, p.tabs)
     links.link_at(cur.t, pointer.pointer_line(p.r, cur, p.scale, p.tabs), col)
@@ -87,7 +78,7 @@ fn link_click() -> Bool =
 /// The URL or file under the pointer opened as the desktop does; whether
 /// there was one. Even where the program has the mouse: the press is the
 /// window's.
-effect fn open_link(cur: tabset.Tab, p: Place) -> Bool = {
+effect fn open_link(cur: tabset.Tab, p: place.Place) -> Bool = {
   let (col, _) = pointer.cell_at(p.r, cur.t, p.scale, p.tabs)
   let line = pointer.pointer_line(p.r, cur, p.scale, p.tabs)
   match links.link_at(cur.t, line, col) {
@@ -114,7 +105,7 @@ effect fn target_of(cur: tabset.Tab, l: links.Link) -> Option[String] =
 
 /// An input that isn't the grid's to select with: on the find bar, on the
 /// scrollbar, or the program's. Whether it was one, done.
-fn off_grid(mut cur: tabset.Tab, mut ui: uistate.Ui, kind: Int, p: Place) -> Bool = {
+fn off_grid(mut cur: tabset.Tab, mut ui: uistate.Ui, kind: Int, p: place.Place) -> Bool = {
   let done = if kind == window.MOUSE_DOWN then window.event_code() == 0 and press_off_grid(cur, ui, p)
     else held_off_grid(cur, ui, kind, p)
   if done then true
@@ -125,18 +116,18 @@ fn off_grid(mut cur: tabset.Tab, mut ui: uistate.Ui, kind: Int, p: Place) -> Boo
 }
 
 /// A left press on the find bar or the scrollbar, done; whether it was.
-fn press_off_grid(mut cur: tabset.Tab, mut ui: uistate.Ui, p: Place) -> Bool =
+fn press_off_grid(mut cur: tabset.Tab, mut ui: uistate.Ui, p: place.Place) -> Bool =
   if ui.finding and on_bar(ui, p) then {
     press_bar(ui, p)
     true
-  } else if render.on_scrollbar(p.r, cur.t, p.width, px(p)) then {
+  } else if render.on_scrollbar(p.r, cur.t, p.width, place.px(p)) then {
     press_scrollbar(cur, ui, p)
     true
   } else false
 
 /// A move or release in a drag begun on the find bar or the scrollbar,
 /// done; whether it was.
-fn held_off_grid(mut cur: tabset.Tab, mut ui: uistate.Ui, kind: Int, p: Place) -> Bool =
+fn held_off_grid(mut cur: tabset.Tab, mut ui: uistate.Ui, kind: Int, p: place.Place) -> Bool =
   if kind != window.MOUSE_MOVE and kind != window.MOUSE_UP then false
   else if ui.field_drag then {
     drag_bar(ui, p, kind)
@@ -149,16 +140,16 @@ fn held_off_grid(mut cur: tabset.Tab, mut ui: uistate.Ui, kind: Int, p: Place) -
 
 /// A press on the find bar focuses it and puts the caret there (Shift:
 /// selects to there); a drag selects.
-fn press_bar(mut ui: uistate.Ui, p: Place) -> Unit = {
-  let at = render.field_index_at(p.r, uistate.bar(ui), p.tabs, p.width, px(p))
+fn press_bar(mut ui: uistate.Ui, p: place.Place) -> Unit = {
+  let at = render.field_index_at(p.r, uistate.bar(ui), p.tabs, p.width, place.px(p))
   ui.field = field.move_to(ui.field, at, int.band(window.event_mods(), window.MOD_SHIFT) != 0)
   ui.find_focus = true
   ui.field_drag = true
   ui.dirty = true
 }
 
-fn drag_bar(mut ui: uistate.Ui, p: Place, kind: Int) -> Unit = {
-  let at = render.field_index_at(p.r, uistate.bar(ui), p.tabs, p.width, px(p))
+fn drag_bar(mut ui: uistate.Ui, p: place.Place, kind: Int) -> Unit = {
+  let at = render.field_index_at(p.r, uistate.bar(ui), p.tabs, p.width, place.px(p))
   if at != ui.field.caret then {
     ui.field = field.move_to(ui.field, at, true)
     ui.dirty = true
@@ -168,8 +159,8 @@ fn drag_bar(mut ui: uistate.Ui, p: Place, kind: Int) -> Unit = {
 
 /// The scrollbar: its thumb is dragged from where it was taken; a press on
 /// the track brings the thumb's middle there.
-fn press_scrollbar(mut cur: tabset.Tab, mut ui: uistate.Ui, p: Place) -> Unit = {
-  let y = py(p)
+fn press_scrollbar(mut cur: tabset.Tab, mut ui: uistate.Ui, p: place.Place) -> Unit = {
+  let y = place.py(p)
   let (y0, y1) = render.thumb(p.r, cur.t, cur.back, cur.shift, p.tabs, window.height())
   ui.scroll_grab = if y >= y0 and y < y1 then y - y0 else (y1 - y0) / 2
   ui.scroll_drag = true
@@ -179,7 +170,7 @@ fn press_scrollbar(mut cur: tabset.Tab, mut ui: uistate.Ui, p: Place) -> Unit = 
 /// The program asked for the mouse: presses, releases and motion are its,
 /// as SGR reports. Shift held keeps them the window's, for selecting text
 /// as anywhere else.
-fn report(mut cur: tabset.Tab, mut ui: uistate.Ui, kind: Int, p: Place) -> Unit = {
+fn report(mut cur: tabset.Tab, mut ui: uistate.Ui, kind: Int, p: place.Place) -> Unit = {
   let (col, row) = pointer.cell_at(p.r, cur.t, p.scale, p.tabs)
   let mods = window.event_mods()
   // Modifier bits of a report: Alt 8, Ctrl 16 (Shift is the window's).
@@ -214,39 +205,23 @@ fn report_motion(cur: tabset.Tab, ui: uistate.Ui, held: Int, at: String) -> Unit
 
 /// A left press on the window: a tab (a double click renames it) or the
 /// grid. A press anywhere ends a rename, keeping the draft.
-effect fn press(mut cur: tabset.Tab, mut ui: uistate.Ui, p: Place) -> uistate.Act = {
+effect fn press(mut cur: tabset.Tab, mut ui: uistate.Ui, p: place.Place) -> uistate.Act = {
   if ui.renaming then findkeys.finish_rename(cur, ui, true)
-  if p.tabs > 1 and py(p) < render.bar_height(p.r) then press_tab(cur, ui, render.tab_at(p.r, px(p), p.width, p.tabs))
+  if p.tabs > 1 and place.py(p) < render.bar_height(p.r) then tabbar.press(cur, ui, render.tab_at(p.r, place.px(p), p.width, p.tabs))
   else {
     press_grid(cur, ui, p)!
     uistate.Stay
   }
 }
 
-/// A press on tab `i`: it comes to the front; a double click renames it — its
-/// first press made it the active one.
-fn press_tab(mut cur: tabset.Tab, mut ui: uistate.Ui, i: Int) -> uistate.Act = {
-  let now = sys.now_ms()
-  let double = i == ui.click_tab and now - ui.click_ms < DOUBLE_CLICK_MS
-  ui.click_ms = if double then 0 else now
-  ui.click_tab = i
-  ui.clicks = 0
-  if double then {
-    ui.renaming = true
-    ui.draft = tabset.title_of(cur, ui.home)
-    ui.dirty = true
-    uistate.Stay
-  } else uistate.GoTo(i)
-}
-
 /// A press on the grid. On the cell just pressed, soon enough, it counts
 /// on: the second selects the word there, the third the line; a fourth
 /// stays with the line.
-effect fn press_grid(mut cur: tabset.Tab, mut ui: uistate.Ui, p: Place) -> Unit = {
+effect fn press_grid(mut cur: tabset.Tab, mut ui: uistate.Ui, p: place.Place) -> Unit = {
   let (col, _) = pointer.cell_at(p.r, cur.t, p.scale, p.tabs)
   let line = pointer.pointer_line(p.r, cur, p.scale, p.tabs)
   let now = sys.now_ms()
-  let again = ui.click_tab < 0 and ui.clicks > 0 and now - ui.click_ms < DOUBLE_CLICK_MS
+  let again = ui.click_tab < 0 and ui.clicks > 0 and now - ui.click_ms < place.DOUBLE_CLICK_MS
     and line == ui.click_line and col == ui.click_col
   ui.clicks = if again then int.min(ui.clicks + 1, 3) else 1
   ui.click_ms = now
@@ -273,7 +248,7 @@ effect fn press_grid(mut cur: tabset.Tab, mut ui: uistate.Ui, p: Place) -> Unit 
 /// nothing: a selection starts once the pointer reaches another cell. By
 /// word or line, the selection spans what the press took and what the
 /// pointer is on, whole.
-fn drag_select(mut cur: tabset.Tab, mut ui: uistate.Ui, p: Place) -> Unit = {
+fn drag_select(mut cur: tabset.Tab, mut ui: uistate.Ui, p: place.Place) -> Unit = {
   let (col, _) = pointer.cell_at(p.r, cur.t, p.scale, p.tabs)
   let line = pointer.pointer_line(p.r, cur, p.scale, p.tabs)
   let (h0, c0, h1, c1) = view.unit_span(cur.t, ui.unit, line, col)
