@@ -826,6 +826,9 @@ fn csi_dispatch(mut t: Terminal, final: Int) -> Unit = {
     else if final == 0x6C then set_private_modes(t, false)
     else if final == 0x75 then reply(t, "\x1b[?${int.to_string(t.kitty_flags)}u") // kitty keyboard: flags
     else if final == 0x6E and arg0(t, 0) == 996 then reply(t, "\x1b[?997;1n")    // colour scheme: dark
+  } else if t.private == 0x3F and t.intermediate == 0x24 and final == 0x70 then {   // DECRQM
+    let p = arg0(t, 0)
+    reply(t, "\x1b[?${int.to_string(p)};${int.to_string(mode_state(t, p))}$y")
   } else if t.private == 0x3E and final == 0x63 then reply(t, "\x1b[>1;10;0c")   // DA2
   else if t.private == 0x3E and final == 0x71 then reply(t, "\x1bP>|sprid ${VERSION}\x1b\\") // XTVERSION
   else if t.private == 0x3E and final == 0x75 then {                          // kitty keyboard: push
@@ -1057,6 +1060,26 @@ fn set_attr(mut t: Terminal, bit: Int, on: Bool) -> Unit = {
 
 // ── Modes ─────────────────────────────────────────────────────────────────
 
+/// DECRQM's answer for private mode `p`: 1 set, 2 reset, 0 not known —
+/// how a program asks, say, whether synchronized output (2026) is there
+/// before it relies on it.
+fn mode_state(t: Terminal, p: Int) -> Int = {
+  let on = (b: Bool) => if b then 1 else 2
+  match p {
+    1 => on(t.app_cursor),
+    6 => on(t.origin),
+    7 => on(t.autowrap),
+    25 => on(t.cursor_visible),
+    47 | 1047 | 1049 => on(t.alt),
+    1000 | 1002 | 1003 => on(t.mouse_mode == p),
+    1004 => on(t.focus_events),
+    1006 => on(t.mouse_sgr),
+    2004 => on(t.bracketed_paste),
+    2026 => on(t.sync_output),
+    _ => 0,
+  }
+}
+
 fn set_private_modes(mut t: Terminal, on: Bool) -> Unit = {
   for i in 0..<t.n_params {
     let p = param_at(t, i)
@@ -1252,6 +1275,8 @@ fn resize_front(mut t: Terminal, cols: Int, rows: Int, live: Bool) -> Unit = {
     } else reflow(t, cols, rows, true)
   }
   else if cols > 0 and rows > 0 and (cols != t.cols or rows != t.rows) then {
+    // A change of height keeps the tab stops a program set.
+    let keep_tabs = cols == t.cols
     t.margin_top = 0
     t.margin_bottom = t.rows - 1
     while t.y >= rows {
@@ -1272,7 +1297,7 @@ fn resize_front(mut t: Terminal, cols: Int, rows: Int, live: Bool) -> Unit = {
     t.rows = rows
     t.margin_top = 0
     t.margin_bottom = rows - 1
-    t.tabs = default_tabs(cols)
+    if not keep_tabs then t.tabs = default_tabs(cols)
     t.blank = cell.blank_row(cols, t.bg)
     t.blank_bg = t.bg
     t.x = int.min(t.x, cols - 1)

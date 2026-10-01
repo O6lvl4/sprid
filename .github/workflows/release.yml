@@ -71,10 +71,11 @@ jobs:
           fi
 
       - name: Test
-        run: |
-          for f in src/terminal_test.almd src/terminal.almd src/view.almd src/keys.almd; do
-            ~/almide/target/release/almide test "$f"
-          done
+        # Every test file. A file the wasm leg can't run (render.almd's tests
+        # pull in the GPU host) passes on its native re-run.
+        env:
+          ALMIDE_TEST_LAX_WASM: "1"
+        run: ~/almide/target/release/almide test
 
       - name: Package (Linux)
         if: runner.os == 'Linux'

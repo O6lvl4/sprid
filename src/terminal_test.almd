@@ -378,3 +378,15 @@ test "DECSTR sends the saved cursor home" {
   let t = run(10, 4, "\x1b[3;5H\x1b7\x1b[!p\x1b8X")
   assert_eq(terminal.screen_text(t), "X")
 }
+
+test "DECRQM answers for the modes sprid knows" {
+  var t = run(10, 2, "\x1b[?2026$p\x1b[?2004h\x1b[?2004$p\x1b[?9999$p")
+  assert_eq(terminal.take_replies(t), "\x1b[?2026;2$y\x1b[?2004;1$y\x1b[?9999;0$y")
+}
+
+test "a change of height keeps the tab stops" {
+  var t = run(20, 4, "\x1b[3g\x1b[1;4H\x1bH")
+  terminal.resize(t, 20, 6)
+  terminal.feed_string(t, "\r\tX")
+  assert_eq(t.x, 4)
+}
