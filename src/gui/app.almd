@@ -178,15 +178,23 @@ effect fn config_path() -> String = config_dir()! + "/config"
 /// The settings in the config file (the defaults when there is none); what
 /// is wrong with it goes to stderr.
 effect fn load_settings() -> settings.Settings = {
+  let st = read_settings()!
+  report(st)!
+  st
+}
+
+effect fn read_settings() -> settings.Settings = {
   let text = match fs.read_text_if_exists(config_path()!) {
     ok(found) => found ?? "",
     err(_) => "",
   }
-  let st = settings.from(config.parse(text))
+  settings.from(config.parse(text))
+}
+
+effect fn report(st: settings.Settings) -> Unit = {
   for p in st.problems {
     eprintln("sprid: ${config_path()!}: ${p}")
   }
-  st
 }
 
 /// A theme file in the config's format (background, foreground, palette,
@@ -347,8 +355,11 @@ effect fn run_with(opts: Options, faces: fonts.Faces, s: settings.Settings) -> U
     alive = if timeout == 0 then window.pump() else window.wait_fds(list.map(tabs, (tb) => tb.fd) + (if config_fd >= 0 then [config_fd] else []), timeout)
     // The config file was saved: it applies now — the theme, the font and
     // its size, the cursor, Option — over what was set before.
-    if sys.watch_changed(config_fd) then {
-      let fresh = load_settings()!
+    // (One save can be seen more than once — the file, then its directory.)
+    let saved = sys.watch_changed(config_fd)
+    let fresh = if saved then read_settings()! else st
+    if saved and fresh != st then {
+      report(fresh)!
       let new_faces = fresh.font_family != st.font_family
       let resize = new_faces or (fresh.font_size, fresh.pad_x, fresh.pad_y, fresh.cell_height) != (st.font_size, st.pad_x, st.pad_y, st.cell_height)
       st = fresh
