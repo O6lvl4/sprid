@@ -1,0 +1,79 @@
+// The cursor: the program's shape or the config's, a hollow box while the
+// window is in the background; and the input method's composition drawn
+// over it while there is one.
+
+import self.terminal
+import self.gui.surface
+import self.gui.ink
+import self.gui.composition
+
+/// The composition: underlined, over the cells it covers; the caret a bar,
+/// the part being converted boxed. The terminal's cursor is not drawn
+/// meanwhile. The quads drawn.
+fn draw_compose(mut r: surface.Renderer, compose: composition.Compose, x: Int, cols: Int, ctop: Int, sx: Float, sy: Float) -> Int = {
+  let (x0, ca, cb) = composition.compose_span(compose, x, cols)
+  var px = r.pad_x + x0 * r.cell_w
+  var from_x = -1
+  var to_x = -1
+  var caret_x = if compose.caret == ca then px else -1
+  var n = 0
+  for i in ca..<cb {
+    let cp = compose.cps[i]
+    let w = r.cell_w * composition.cell_cols(cp)
+    if i == compose.from then from_x = px
+    n = n + draw_composed(r, cp, px, w, ctop, sx, sy)
+    px = px + w
+    if i + 1 == compose.to then to_x = px
+    if i + 1 == compose.caret then caret_x = px
+  }
+  if compose.from < compose.to and from_x >= 0 then n + box(r, from_x, if to_x >= 0 then to_x else px, ctop, sx, sy)
+  else if compose.from >= compose.to and caret_x >= 0 then n + bar(r, caret_x, ctop, sx, sy)
+  else n
+}
+
+/// One character of the composition at `px`, `w` wide: its cells cleared,
+/// the glyph, the underline. The quads drawn.
+fn draw_composed(mut r: surface.Renderer, cp: Int, px: Int, w: Int, ctop: Int, sx: Float, sy: Float) -> Int = {
+  ink.rect(r, px, ctop, px + w, ctop + r.cell_h, r.theme.bg, 1.0, sx, sy)
+  let slot = ink.glyph(r, cp, false)
+  if slot >= 0 then ink.glyph_quad(r, slot, px, ctop + r.baseline, r.theme.fg, 1.0, sx, sy)
+  let uy = ctop + r.baseline + r.line_w
+  ink.rect(r, px, uy, px + w, uy + r.line_w, r.theme.fg, 1.0, sx, sy)
+  if slot >= 0 then 3 else 2
+}
+
+/// The terminal's cursor at its column in the row at `ctop`. The quads
+/// drawn.
+fn draw_cursor(mut r: surface.Renderer, t: terminal.Terminal, ctop: Int, sx: Float, sy: Float) -> Int = {
+  // The program's shape (DECSCUSR), else the config's; 0, neither, is a bar.
+  let shape = if t.cursor_shape == 0 then r.cursor_default else t.cursor_shape
+  let cx = r.pad_x + t.x * r.cell_w
+  // Keys go elsewhere: a hollow box.
+  if not r.focused then box(r, cx, cx + r.cell_w, ctop, sx, sy)
+  else if r.blink_off and int.band(shape, 1) == 1 then 0
+  else if shape == 1 or shape == 2 then {
+    ink.rect(r, cx, ctop, cx + r.cell_w, ctop + r.cell_h, r.theme.cursor, 0.5, sx, sy)
+    1
+  }
+  else if shape == 3 or shape == 4 then {
+    ink.rect(r, cx, ctop + r.cell_h - 2 * r.line_w, cx + r.cell_w, ctop + r.cell_h, r.theme.cursor, 1.0, sx, sy)
+    1
+  }
+  else bar(r, cx, ctop, sx, sy)
+}
+
+/// A box outline from `x0` to `x1` around the row at `ctop`. The quads drawn.
+fn box(mut r: surface.Renderer, x0: Int, x1: Int, ctop: Int, sx: Float, sy: Float) -> Int = {
+  let lw = int.max(1, r.line_w)
+  ink.rect(r, x0, ctop, x1, ctop + lw, r.theme.cursor, 1.0, sx, sy)
+  ink.rect(r, x0, ctop + r.cell_h - lw, x1, ctop + r.cell_h, r.theme.cursor, 1.0, sx, sy)
+  ink.rect(r, x0, ctop, x0 + lw, ctop + r.cell_h, r.theme.cursor, 1.0, sx, sy)
+  ink.rect(r, x1 - lw, ctop, x1, ctop + r.cell_h, r.theme.cursor, 1.0, sx, sy)
+  4
+}
+
+/// A bar at `x` in the row at `ctop`. The quads drawn.
+fn bar(mut r: surface.Renderer, x: Int, ctop: Int, sx: Float, sy: Float) -> Int = {
+  ink.rect(r, x, ctop, x + int.max(2, r.line_w * 2), ctop + r.cell_h, r.theme.cursor, 1.0, sx, sy)
+  1
+}

@@ -18,7 +18,7 @@ type Settings = {
   theme_dark: String,
   scrollback: Int,
   // The cursor until a program sets one: DECSCUSR's numbers (1 blinking
-  // block .. 6 steady bar); 0 leaves it to sprid's default (steady block).
+  // block .. 6 steady bar); 0 leaves it to sprid's default (a steady bar).
   cursor_shape: Int,
   // Which Option keys type as Alt: 0 neither, 1 both, 2 left, 3 right.
   option_as_alt: Int,

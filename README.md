@@ -115,7 +115,7 @@ macos-option-as-alt = left      # true, false, left, right
 | `background`, `foreground`, `cursor-color`, `selection-background` | the theme's — `#rrggbb` |
 | `palette` | the theme's — `palette = 1=#ff5555`, once per colour 0–15 |
 | `scrollback-limit` | `10000000` bytes of text (`KB`, `MB`, `GB` also read) |
-| `cursor-style`, `cursor-style-blink` | `block`, `false` |
+| `cursor-style`, `cursor-style-blink` | `bar`, `false` |
 | `macos-option-as-alt` | `false` |
 | `clipboard-write` | `allow` — or `deny` programs setting the clipboard |
 | `clipboard-read` | `ask` — or `allow`, `deny` |
