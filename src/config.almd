@@ -1,0 +1,141 @@
+// The config file: `key = value` lines, as Ghostty writes them, so a config
+// can come across with little change.
+//
+//   # a comment
+//   font-size = 15
+//   theme = light:Almide Light,dark:Tokyo Night Storm
+//   palette = 1=#f7768e
+//
+// Blank lines and lines starting with `#` are skipped; a value may be quoted.
+// A key given twice takes its last value, except those that add up
+// (`palette`). Unknown keys and values that don't parse are reported, not
+// fatal: the rest of the file still applies.
+
+/// The parsed file: its entries in order, and what was wrong with it, one
+/// message per problem, with its line number.
+type Config = { entries: List[(String, String)], problems: List[String] }
+
+fn empty() -> Config = {
+  let entries: List[(String, String)] = []
+  let problems: List[String] = []
+  Config { entries: entries, problems: problems }
+}
+
+/// Parse a config file's text.
+fn parse(src: String) -> Config = {
+  var entries: List[(String, String)] = []
+  var problems: List[String] = []
+  var n = 0
+  for raw in string.lines(src) {
+    n = n + 1
+    let line = string.trim(raw)
+    if line != "" and not string.starts_with(line, "#") then {
+      match string.split_once(line, "=") {
+        some((k, v)) => {
+          let key = string.trim(k)
+          if key == "" then list.push(problems, "line ${int.to_string(n)}: no key before =")
+          else list.push(entries, (key, unquote(string.trim(v))))
+        },
+        none => list.push(problems, "line ${int.to_string(n)}: expected key = value"),
+      }
+    }
+  }
+  Config { entries: entries, problems: problems }
+}
+
+/// `v` without the double quotes around it, if it has them.
+fn unquote(v: String) -> String =
+  if string.len(v) >= 2 and string.starts_with(v, "\"") and string.ends_with(v, "\"") then string.slice(v, 1, string.len(v) - 1)
+  else v
+
+/// The last value given for `key`.
+fn get(c: Config, key: String) -> Option[String] =
+  list.fold(c.entries, none, (found, e) => if e.0 == key then some(e.1) else found)
+
+/// Every value given for `key`, in order.
+fn all(c: Config, key: String) -> List[String] =
+  c.entries |> list.filter((e) => e.0 == key) |> list.map((e) => e.1)
+
+/// The keys sprid knows; anything else is reported as unknown.
+let KEYS = ["font-family", "font-size", "adjust-cell-height", "theme", "background", "foreground",
+  "cursor-color", "selection-background", "palette", "scrollback-limit", "cursor-style",
+  "cursor-style-blink", "macos-option-as-alt", "window-padding-x", "window-padding-y"]
+
+/// The keys in `c` sprid doesn't know.
+fn unknown(c: Config) -> List[String] =
+  c.entries |> list.map((e) => e.0) |> list.filter((k) => not list.contains(KEYS, k)) |> list.unique
+
+/// `#rrggbb` or `rrggbb` as 0xRRGGBB.
+fn color(v: String) -> Option[Int] = {
+  let hex = if string.starts_with(v, "#") then string.drop(v, 1) else v
+  if string.len(hex) != 6 then none
+  else match int.from_hex(hex) {
+    ok(n) => some(n),
+    err(_) => none,
+  }
+}
+
+/// `true` / `false` (and their usual spellings).
+fn flag(v: String) -> Option[Bool] =
+  if v == "true" or v == "yes" or v == "on" or v == "1" then some(true)
+  else if v == "false" or v == "no" or v == "off" or v == "0" then some(false)
+  else none
+
+/// A size such as `10MB`, `512KB` or a plain number of bytes.
+fn bytes_of(v: String) -> Option[Int] = {
+  let s = string.to_upper(string.trim(v))
+  let (num, unit) = if string.ends_with(s, "GB") then (string.drop_end(s, 2), 1073741824)
+    else if string.ends_with(s, "MB") then (string.drop_end(s, 2), 1048576)
+    else if string.ends_with(s, "KB") then (string.drop_end(s, 2), 1024)
+    else (s, 1)
+  match int.parse(string.trim(num)) {
+    ok(n) => if n >= 0 then some(n * unit) else none,
+    err(_) => none,
+  }
+}
+
+/// `theme`'s value as (light theme, dark theme): `light:A,dark:B` for each
+/// appearance, or one name for both.
+fn theme_pair(v: String) -> (String, String) = {
+  var light = ""
+  var dark = ""
+  for part in string.split(v, ",") {
+    let p = string.trim(part)
+    if string.starts_with(p, "light:") then light = string.trim(string.drop(p, 6))
+    else if string.starts_with(p, "dark:") then dark = string.trim(string.drop(p, 5))
+    else {
+      light = p
+      dark = p
+    }
+  }
+  (if light == "" then dark else light, if dark == "" then light else dark)
+}
+
+test "key = value lines, comments and quotes" {
+  let c = parse("# sprid\n\nfont-size = 15\n  theme = \"Tokyo Night Storm\"  \nfont-size=16\n")
+  assert_eq(get(c, "font-size"), some("16"))
+  assert_eq(get(c, "theme"), some("Tokyo Night Storm"))
+  assert_eq(get(c, "missing"), none)
+  assert_eq(c.problems, [])
+}
+
+test "palette entries add up, and problems carry their line" {
+  let c = parse("palette = 0=#000000\npalette = 1=#ff0000\nbogus line\n= 3\nnope = 1")
+  assert_eq(all(c, "palette"), ["0=#000000", "1=#ff0000"])
+  assert_eq(c.problems, ["line 3: expected key = value", "line 4: no key before ="])
+  assert_eq(unknown(c), ["nope"])
+}
+
+test "values" {
+  assert_eq(color("#1f3a5f"), some(0x1F3A5F))
+  assert_eq(color("1F3A5F"), some(0x1F3A5F))
+  assert_eq(color("#123"), none)
+  assert_eq(flag("on"), some(true))
+  assert_eq(flag("maybe"), none)
+  assert_eq(bytes_of("10MB"), some(10485760))
+  assert_eq(bytes_of("512 kb"), some(524288))
+  assert_eq(bytes_of("-1"), none)
+  assert_eq(theme_pair("light:Almide Light,dark:Tokyo Night Storm"), ("Almide Light", "Tokyo Night Storm"))
+  assert_eq(theme_pair("Dracula"), ("Dracula", "Dracula"))
+  assert_eq(theme_pair("dark:Dracula"), ("Dracula", "Dracula"))
+}
