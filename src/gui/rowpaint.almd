@@ -77,6 +77,8 @@ fn draw_char(mut r: surface.Renderer, row: record.Row, x: Int, cp: Int, bold: Bo
     1
   } else {
     var n = draw_glyph(r, cp, bold, left, top, fg, alpha, sx, sy)
+    // FIXME(almide#3154): a fold over the marks once a closure may capture the
+    // `mut` renderer.
     for mark in marks(row, x) {
       n = n + draw_glyph(r, mark, bold, left + w, top, fg, alpha, sx, sy)
     }

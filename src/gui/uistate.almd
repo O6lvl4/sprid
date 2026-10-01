@@ -68,12 +68,15 @@ type Ui = {
 type Act = | Stay | NewTab | CloseTab | NextTab | PrevTab | GoTo(Int) | NewWindow | CloseWindow | Zoom(Int) | Restyle | Focus(Bool) | Paste
 
 /// The find bar as drawn.
+// FIXME(almide#3153): `render.Bar { ... }` once a record literal works through a
+// type alias; the defining module is named meanwhile.
 fn bar(ui: Ui) -> render.Bar = findbar.Bar { find: ui.find, field: ui.field, focused: ui.find_focus }
 
 fn bar_of(ui: Ui) -> Option[render.Bar] = if ui.finding then some(bar(ui)) else none
 
 /// The input method's composition, as drawn.
 fn compose_of(ui: Ui) -> render.Compose =
+  // FIXME(almide#3153): `render.Compose { ... }`, as for `bar`.
   composition.Compose { cps: ui.preedit, caret: ui.preedit_caret, from: ui.preedit_from, to: ui.preedit_to }
 
 /// End what belonged to the tab that was in front: its find bar and

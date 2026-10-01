@@ -127,6 +127,8 @@ fn draw_count(mut r: surface.Renderer, b: Bar, x1: Int, baseline: Int, sx: Float
   let color = if b.find.total == 0 then r.theme.no_match else r.theme.tab_dim
   var x = x1 - r.pad_x / 2 - list.len(count) * r.cell_w
   var n = 0
+  // FIXME(almide#3154): a fold over the count once a closure may capture the
+  // `mut` renderer.
   for cp in count {
     n = n + text_glyph(r, cp, x, baseline, color, sx, sy)
     x = x + r.cell_w

@@ -135,6 +135,8 @@ fn seek(t: terminal.Terminal, f: Find, line: Int, col: Int, dir: Int, inclusive:
   else {
     let n = list.len(hits)
     // None that way: around to the other end.
+    // FIXME(almide#3155): inline `?? (...)` on a continuation line once `??` may
+    // start one.
     let around = if dir < 0 then (n - 1, hits[n - 1].1 - 1) else (0, 0)
     let (hit, k) = nearest(t, hits, f.query, line, col, dir, inclusive) ?? around
     let ln = hits[hit].0

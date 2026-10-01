@@ -93,6 +93,7 @@ fn face_for(mut r: surface.Renderer, cp: Int, bold: Bool) -> (Int, Int) = {
 }
 
 /// The first fallback read so far that has `cp`.
+// TODO(almide#3156): `list.find_map` — glyph_id is looked up twice on the hit.
 fn loaded_fallback(r: surface.Renderer, cp: Int) -> Option[(Int, Int)] =
   list.find(r.fallback_indices, (fi) => sfnt.glyph_id(r.layer.fonts[fi], cp) != 0)
     |> option.map((fi) => (fi, sfnt.glyph_id(r.layer.fonts[fi], cp)))

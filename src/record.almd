@@ -212,6 +212,7 @@ fn decode(block: Bytes, start: Int, end: Int, cols: Int) -> Row = {
 /// column, last character's column) `at`; where it leaves them.
 fn decode_run(mut row: Row, block: Bytes, p: Int, n: Int, cols: Int, at: (Int, Int)) -> (Int, Int) = {
   let style = (bytes.read_u32_le(block, p), bytes.read_u32_le(block, p + 4), bytes.read_u16_le(block, p + 8))
+  // FIXME(almide#3149): `var (x, last) = at` once var destructures.
   var x = at.0
   var last = at.1
   for ch in string.chars(bytes.read_string_at(block, p + 14, n)) {

@@ -92,4 +92,6 @@ fn draw_title(mut r: surface.Renderer, title: List[Int], x0: Int, x1: Int, basel
 }
 
 /// How far a title's pen moves past `cp`.
+// FIXME(almide#3154): a local closure in `draw_title` once one may capture its
+// `mut` renderer.
 fn advance(r: surface.Renderer, cp: Int) -> Int = r.cell_w * int.max(1, cell_width.of(cp))
