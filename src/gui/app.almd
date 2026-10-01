@@ -598,7 +598,7 @@ effect fn run_with(opts: Options, faces: fonts.Faces, s: settings.Settings) -> U
               none => (),
             }
             let asked = terminal.take_clipboard_ask(cur.t)
-            if asked != "" and (st.clipboard_read == "allow" or (st.clipboard_read == "ask" and clipboard_read_ok(title_of(cur, home), ja)!)) then {
+            if asked != "" and (st.clipboard_read == "allow" or (st.clipboard_read == "ask" and not sys.is_linux() and clipboard_read_ok(title_of(cur, home), ja)!)) then {
               let _ = pty.write(cur.fd, terminal.clipboard_reply(asked, clipboard()!))
             }
             let notices = terminal.take_notices(cur.t)
