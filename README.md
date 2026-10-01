@@ -19,10 +19,10 @@ come from [snaidhm](https://github.com/almide-graphics/snaidhm).
 
 | On an M-series Mac | sprid |
 |---|---|
-| Start (window shown, first command run) | 0.23–0.25 s |
-| `cat` 21 MB of styled, emoji-heavy output | 0.25–0.26 s |
-| Peak memory during that `cat` | 111 MB |
-| Memory, idle | 40 MB |
+| Start (window shown, first command run) | 0.22–0.24 s |
+| `cat` 21 MB of styled, emoji-heavy output | 0.22–0.23 s |
+| Peak memory during that `cat` | 117–124 MB |
+| Memory, idle | 47–48 MB |
 | CPU, idle | ~0 % |
 
 How these are measured, and why the memory stays put: [docs/design.md](docs/design.md).

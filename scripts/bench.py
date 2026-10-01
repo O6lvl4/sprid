@@ -173,10 +173,32 @@ def measure(app: str, data: str) -> dict:
     }
 
 
+def make_data(path: str, mb: int = 21) -> None:
+    """The `cat` input, when there is none: `sprid bench`'s chunks (styled
+    bullets, wide chars, emoji ZWJ sequences, combining marks, direct
+    colours, box drawing) repeated to `mb` MB."""
+    out = []
+    size, i = 0, 0
+    while size < mb * 1_000_000:
+        n = str(i)
+        lines = (
+            f"\x1b[1;38;2;215;119;87m⏺\x1b[0m Update(src/terminal.almd) #{n}\r\n"
+            f"  ⎿  \x1b[48;2;34;78;45m+ 日本語のテキスト 👩\u200d💻 café e\u0301\x1b[0m ✻ Thinking… ({n}s · ↓ 1.2k tokens)\r\n"
+            "\x1b[2m╭──────────────────────────────────────────────╮\x1b[0m\r\n"
+        )
+        out.append(lines)
+        size += len(lines.encode())
+        i += 1
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("".join(out))
+
+
 def main() -> None:
     sprid = sys.argv[1]
     build_helper()
     data = sys.argv[2] if len(sys.argv) > 2 else "/tmp/sprid-bench.txt"
+    if not os.path.exists(data):
+        make_data(data)
     print("measuring sprid ...", file=sys.stderr)
     s = measure(sprid, data)
     print("| | sprid |")
