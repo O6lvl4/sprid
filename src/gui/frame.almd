@@ -1,0 +1,118 @@
+// What a frame shows, worked out before it is drawn, and its glyphs put in
+// the atlas first: rasterizing one uploads it through the staging buffer the
+// quads are streamed through, so it can't happen while they are.
+
+import bytes
+import snaidhm.text as text
+import self.cell
+import self.record
+import self.search
+import self.terminal
+import self.view
+import self.gui.sprite
+import self.gui.surface
+import self.gui.ink
+import self.gui.rowpaint
+import self.gui.findbar
+
+/// What a frame shows, worked out before anything is drawn: the lines in
+/// view (one more, part shown at the top, when scrolled by part of a line),
+/// where rows start, find matches by row, the find bar's characters, the
+/// tab titles.
+type Frame = {
+  gy: Int,
+  extra: Int,
+  top_line: Int,
+  shown: Int,
+  row_y: Int,
+  composing: Bool,
+  lines: List[Option[record.Row]],
+  found: List[List[(Int, Int)]],
+  // The current match: its row in view, and columns.
+  current: (Int, Int, Int),
+  bar: List[Int],
+  titles: List[List[Int]],
+}
+
+fn frame_of(r: surface.Renderer, t: terminal.Terminal, back: Int, shift: Int, preedit: List[Int], tabs: List[String], find: Option[findbar.Bar]) -> Frame = {
+  // Scrolled by part of a line, the line above the viewport shows in part at
+  // its top: one row more is drawn, from `shift` pixels less than a row
+  // above the grid, and what falls outside the grid is covered.
+  let extra = if shift > 0 then 1 else 0
+  let gy = surface.grid_top(r, list.len(tabs))
+  let top_line = view.top_line(t, back) - extra
+  let shown = t.rows + extra
+  let lines = list.map(0..<shown, (y) => view.line_at(t, top_line + y))
+  let query = find |> option.map((b) => b.find.query) ?? ""
+  Frame {
+    gy: gy, extra: extra, top_line: top_line, shown: shown,
+    row_y: gy - (if extra == 1 then r.cell_h - shift else 0),
+    // A composition is drawn over the cursor's row (see `compose_span`).
+    composing: list.len(preedit) > 0 and not (find |> option.map((b) => b.focused) ?? false),
+    lines: lines,
+    found: list.map(lines, (line) => line |> option.map((row) => search.row_spans(row, t.cols, query)) ?? []),
+    current: find |> option.filter((b) => b.find.index >= 0) |> option.map((b) => (b.find.line - top_line, b.find.from, b.find.to)) ?? (-1, 0, 0),
+    bar: find |> option.map((b) => findbar.bar_chars(b, preedit) + findbar.find_count(b.find)) ?? [],
+    titles: if list.len(tabs) > 1 then list.map(tabs, (s) => text.code_points(s)) else [],
+  }
+}
+
+/// Every glyph the rows show into the atlas; how many quads their marks
+/// and sprites take.
+fn prepare_rows(mut r: surface.Renderer, lines: List[Option[record.Row]], cols: Int) -> Int = {
+  var marks_total = 0
+  for line in lines {
+    match line {
+      some(row) => {
+        for x in 0..<cols {
+          marks_total = marks_total + prepare_cell(r, row, x)
+        }
+      },
+      none => (),
+    }
+  }
+  marks_total
+}
+
+/// Cell `x` of `row` into the atlas: its glyph or emoji, its marks; how
+/// many quads its marks or sprite take.
+fn prepare_cell(mut r: surface.Renderer, row: record.Row, x: Int) -> Int = {
+  let o = x * cell.SIZE
+  let cp = bytes.read_u32_le(row.cells, o + cell.OFF_CP)
+  if sprite.is_sprite(cp) then list.len(ink.sprite_pieces(r, cp))
+  else if cp <= 32 then 0
+  else {
+    let bold = int.band(bytes.read_u16_le(row.cells, o + cell.OFF_ATTRS), cell.ATTR_BOLD) != 0
+    if ink.emoji_slot(r, cp) < 0 then {
+      let _ = ink.glyph(r, cp, bold)
+    }
+    let marks = rowpaint.marks(row, x)
+    for mark in marks {
+      let _ = ink.glyph(r, mark, bold)
+    }
+    list.len(marks)
+  }
+}
+
+/// The composition's, the find bar's and the titles' glyphs into the atlas,
+/// and what the last frame had to leave out.
+fn prepare_rest(mut r: surface.Renderer, preedit: List[Int], f: Frame) -> Unit = {
+  for cp in preedit + f.bar + list.flatten(f.titles) {
+    let _ = ink.glyph(r, cp, false)
+  }
+  for w in r.wanted {
+    let _ = ink.glyph(r, w.0, w.1)
+  }
+  for cp in r.wanted_emoji {
+    let _ = ink.emoji_slot(r, cp)
+  }
+  let none_wanted: List[(Int, Bool)] = []
+  let no_emoji: List[Int] = []
+  r.wanted = none_wanted
+  r.wanted_emoji = no_emoji
+  // What a title cut short ends with.
+  if list.len(f.titles) > 1 then {
+    let _ = ink.glyph(r, 0x2026, false)
+  }
+}
+
