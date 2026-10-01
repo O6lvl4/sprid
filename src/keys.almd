@@ -149,6 +149,12 @@ fn mac_edit(kind: Int, code: Int, mods: Int) -> String =
   else if mods == MOD_ALT and code == KEY_RIGHT then "\x1bf"
   else ""
 
+/// `path` as the shell reads one word: the characters it would take
+/// otherwise — spaces, quotes, globs, `$` and the like — escaped with a
+/// backslash, as Finder's drop into Terminal.app writes it.
+fn shell_escape(path: String) -> String =
+  string.join(list.map(string.chars(path), (ch) => if string.contains(" \t'\"\\$`!&*()[]{}|;<>?#~=%^", ch) then "\\" + ch else ch), "")
+
 /// Pasted text: newlines become CR, as typed Enter would, and with
 /// bracketed paste (mode 2004) the program is told where it starts and ends.
 /// Stray paste-end markers inside are dropped so text can't close the
@@ -235,4 +241,10 @@ test "on Linux Ctrl+Shift is a shortcut's Cmd, and nowhere else" {
   assert_eq(shortcut_mods(true, TEXT, 0x76, MOD_CTRL), MOD_CTRL)
   // A Mac keeps its modifiers.
   assert_eq(shortcut_mods(false, TEXT, 0x76, cs), cs)
+}
+
+test "dropped paths are escaped for the shell" {
+  assert_eq(shell_escape("/Users/me/Desktop/shot 1.png"), "/Users/me/Desktop/shot\\ 1.png")
+  assert_eq(shell_escape("/tmp/a(b)'c\"d$e"), "/tmp/a\\(b\\)\\'c\\\"d\\$e")
+  assert_eq(shell_escape("/tmp/日本語.png"), "/tmp/日本語.png")
 }

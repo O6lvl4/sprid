@@ -1019,6 +1019,13 @@ effect fn handle(mut cur: Tab, mut ui: Ui, kind: Int, r: render.Renderer, scale:
   } else if kind == window.MOUSE_UP then {
     ui.dragging = false
     Stay
+  } else if kind == window.DROP then {
+    // A file dropped on the window: its path, escaped, pasted as if typed —
+    // the shell takes it as a word, and Claude Code attaches an image.
+    let _ = pty.write(cur.fd, keys.paste(keys.shell_escape(window.event_text()) + " ", t.bracketed_paste))
+    if cur.back != 0 or cur.shift != 0 then ui.dirty = true
+    scroll_to(cur, 0)
+    Stay
   } else if kind == window.COMPOSE then {
     let cps = text.code_points(window.event_text())
     ui.preedit = cps
