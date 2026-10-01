@@ -22,7 +22,7 @@ import self.cell
 import self.gui.fonts
 import self.gui.emoji
 import self.gui.sprite
-import self.scrollback
+import self.record
 import self.search
 import self.field
 import self.terminal
@@ -755,7 +755,7 @@ fn draw_tabs(mut r: Renderer, titles: List[List[Int]], active: Int, width: Int, 
 
 /// Quads of one row at pixel row `top`: background runs, glyphs, marks and
 /// lines. Returns how many it pushed.
-fn draw_row(mut r: Renderer, row: scrollback.Row, line: Int, sel: Option[view.Selection], lit: Lit,
+fn draw_row(mut r: Renderer, row: record.Row, line: Int, sel: Option[view.Selection], lit: Lit,
             top: Int, cols: Int, sx: Float, sy: Float) -> Int = {
   var n = 0
   var x = 0
@@ -821,7 +821,7 @@ fn draw_row(mut r: Renderer, row: scrollback.Row, line: Int, sel: Option[view.Se
 
 /// The combining marks on cell `x` worth drawing (joiners and variation
 /// selectors only steer how the base is shown).
-fn marks(row: scrollback.Row, x: Int) -> List[Int] =
+fn marks(row: record.Row, x: Int) -> List[Int] =
   if int.band(bytes.read_u8(row.cells, x * cell.SIZE + cell.OFF_FLAGS), cell.FLAG_GRAPHEME) == 0 then []
   else text.code_points(map.get_or(row.extras, x, ""))
     |> list.filter((cp) => cp != 0x200D and (cp < 0xFE00 or cp > 0xFE0F))
@@ -832,7 +832,7 @@ type Lit = { spans: List[(Int, Int)], from: Int, to: Int }
 
 /// Foreground and background of cell `x` as 0xRRGGBB: inverse and hidden
 /// applied, and a find match's or the selection's colour over it.
-fn colors(r: Renderer, row: scrollback.Row, line: Int, x: Int, sel: Option[view.Selection], lit: Lit) -> (Int, Int) = {
+fn colors(r: Renderer, row: record.Row, line: Int, x: Int, sel: Option[view.Selection], lit: Lit) -> (Int, Int) = {
   let o = x * cell.SIZE
   let fg = resolve(r, bytes.read_u32_le(row.cells, o + cell.OFF_FG), r.theme.fg)
   let bg = resolve(r, bytes.read_u32_le(row.cells, o + cell.OFF_BG), r.theme.bg)

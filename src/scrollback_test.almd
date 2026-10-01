@@ -1,0 +1,122 @@
+// Scrollback and line records: what goes in comes back out, within the
+// budget.
+
+import bytes
+import self.cell
+import self.record
+import self.scrollback
+
+fn row_of(text: String, cols: Int) -> Bytes = {
+  var row = cell.blank_row(cols, cell.COLOR_DEFAULT)
+  var x = 0
+  for ch in string.chars(text) {
+    bytes.set_u32_le(row, x * cell.SIZE + cell.OFF_CP, string.codepoint(ch) ?? 32)
+    x = x + 1
+  }
+  row
+}
+
+test "a row round-trips through a line record" {
+  let rec = record.encode_row(row_of("hello", 10), 10, false, [:])
+  var sb = scrollback.new(1000000)
+  scrollback.push(sb, rec)
+  assert_eq(scrollback.texts(sb), ["hello"])
+}
+
+test "combining marks travel inside the record" {
+  var row = row_of("e", 4)
+  bytes.set_u8(row, cell.OFF_FLAGS, cell.FLAG_GRAPHEME)
+  var sb = scrollback.new(1000000)
+  scrollback.push(sb, record.encode_row(row, 4, false, [0: "\u{0301}"]))
+  assert_eq(scrollback.texts(sb), ["e\u{0301}"])
+}
+
+test "runs split where the style changes" {
+  var row = row_of("abcd", 4)
+  bytes.set_u32_le(row, 2 * cell.SIZE + cell.OFF_FG, cell.palette(1))
+  bytes.set_u32_le(row, 3 * cell.SIZE + cell.OFF_FG, cell.palette(1))
+  let rec = record.encode_row(row, 4, false, [:])
+  // header 4 + 3, then two runs of 14 + 2 bytes of text each
+  assert_eq(bytes.len(rec), 7 + 16 + 16)
+}
+
+test "the budget holds however many lines arrive" {
+  let limit = 20000
+  var sb = scrollback.with_block(limit, 4096)
+  for i in 0..<5000 {
+    scrollback.push(sb, record.encode_row(row_of("line ${int.to_string(i)} with some text", 80), 80, false, [:]))
+    assert(scrollback.bytes_used(sb) <= limit)
+  }
+  assert(sb.evicted_lines > 0)
+  assert_eq(scrollback.line_count(sb) + sb.evicted_lines, 5000)
+  let t = scrollback.texts(sb)
+  assert_eq(list.last(t), some("line 4999 with some text"))
+}
+
+test "a line larger than a block is stored and later evicted" {
+  var sb = scrollback.with_block(3000, 256)
+  var long = ""
+  for _ in 0..<200 {
+    long = long + "x"
+  }
+  scrollback.push(sb, record.encode_row(row_of(long, 200), 200, false, [:]))
+  assert_eq(scrollback.texts(sb), [long])
+  for _ in 0..<200 {
+    scrollback.push(sb, record.encode_row(row_of("short", 80), 80, false, [:]))
+  }
+  assert(scrollback.bytes_used(sb) <= 3000)
+  assert(not list.contains(scrollback.texts(sb), long))
+}
+
+test "any line decodes back into cells" {
+  var sb = scrollback.with_block(100000, 256)
+  for i in 0..<60 {
+    scrollback.push(sb, record.encode_row(row_of("line ${int.to_string(i)}", 20), 20, i % 2 == 0, [:]))
+  }
+  let r = scrollback.row(sb, 37, 20) ?? record.Row { cells: bytes.new(0), extras: [:], wrapped: false }
+  assert_eq(bytes.read_u32_le(r.cells, 5 * cell.SIZE), string.codepoint("3") ?? 0)
+  assert_eq(bytes.read_u32_le(r.cells, 6 * cell.SIZE), string.codepoint("7") ?? 0)
+  assert_eq(r.wrapped, false)
+  assert_eq((scrollback.row(sb, 36, 20) ?? r).wrapped, true)
+  assert_eq(scrollback.row(sb, 60, 20), none)
+}
+
+test "wide chars and marks decode to their cells" {
+  var src = row_of("a", 6)
+  var sb = scrollback.new(100000)
+  var t = src
+  bytes.set_u32_le(t, 1 * cell.SIZE + cell.OFF_CP, 0x65E5)
+  bytes.set_u8(t, 1 * cell.SIZE + cell.OFF_WIDTH, 2)
+  bytes.set_u8(t, 2 * cell.SIZE + cell.OFF_WIDTH, 0)
+  bytes.set_u32_le(t, 3 * cell.SIZE + cell.OFF_CP, 0x65)
+  bytes.set_u8(t, 3 * cell.SIZE + cell.OFF_FLAGS, cell.FLAG_GRAPHEME)
+  scrollback.push(sb, record.encode_row(t, 6, false, [3: "\u{0301}"]))
+  let r = scrollback.row(sb, 0, 6) ?? record.Row { cells: bytes.new(0), extras: [:], wrapped: false }
+  assert_eq(bytes.read_u8(r.cells, 1 * cell.SIZE + cell.OFF_WIDTH), 2)
+  assert_eq(bytes.read_u8(r.cells, 2 * cell.SIZE + cell.OFF_WIDTH), 0)
+  assert_eq(bytes.read_u32_le(r.cells, 3 * cell.SIZE), 0x65)
+  assert_eq(map.get(r.extras, 3), some("\u{0301}"))
+}
+
+test "encoding writes UTF-8 of every plane" {
+  var sb = scrollback.new(100000)
+  var row = row_of("aé日", 6)
+  bytes.set_u32_le(row, 3 * cell.SIZE, 0x1F600)
+  scrollback.push(sb, record.encode_row(row, 6, false, [:]))
+  assert_eq(scrollback.texts(sb), ["aé日\u{1F600}"])
+}
+
+test "push_cells writes the record encode_cells makes" {
+  var row = row_of("hi 日本 x", 12)
+  bytes.set_u32_le(row, 1 * cell.SIZE + cell.OFF_FG, cell.palette(3))
+  bytes.set_u8(row, 7 * cell.SIZE + cell.OFF_FLAGS, cell.FLAG_GRAPHEME)
+  let marks: Map[Int, String] = [107: "\u{0301}"]
+  var a = scrollback.new(100000)
+  var b = scrollback.new(100000)
+  for i in 0..<3 {
+    scrollback.push(a, record.encode_cells(row, 0, 12, i == 1, marks, 100))
+    scrollback.push_cells(b, row, 0, 12, i == 1, marks, 100)
+  }
+  assert_eq(b.cur_len, a.cur_len)
+  assert_eq(bytes.slice(b.cur, 0, b.cur_len), bytes.slice(a.cur, 0, a.cur_len))
+}

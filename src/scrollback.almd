@@ -1,8 +1,8 @@
 // Scrollback with a hard memory budget.
 //
 // Rows that scroll off the top of the main screen are encoded into compact
-// line records and appended to fixed-size blocks. When the blocks outgrow the
-// budget, the oldest block is dropped whole.
+// line records (record.almd) and appended to fixed-size blocks. When the
+// blocks outgrow the budget, the oldest block is dropped whole.
 //
 // Why this shape: scrollback is where a terminal's memory quietly grows.
 // Pages reused from a pool, pages grown past their standard size to hold
@@ -16,16 +16,9 @@
 //   * the budget is checked against the bytes the blocks actually hold (a
 //     sealed block is trimmed to its used length), so `bytes_used` is the
 //     memory scrollback holds, not an estimate of it.
-//
-// Line record (all integers little-endian):
-//
-//   u32 payload length
-//   u16 columns used   u8 wrapped (the row continued onto the next)
-//   runs, each:  u32 fg  u32 bg  u16 attrs  u32 text length  UTF-8 text
 
 import bytes
-import self.cell
-import self.width
+import self.record
 
 let DEFAULT_BLOCK = 65536
 
@@ -64,7 +57,7 @@ fn line_count(sb: Scrollback) -> Int = list.sum(sb.sealed_lines) + sb.cur_lines
 
 // ── Writing ───────────────────────────────────────────────────────────────
 
-/// Append one encoded line record (see `encode_row`).
+/// Append one encoded line record (see `record.encode_row`).
 fn push(mut sb: Scrollback, record: Bytes) -> Unit = {
   let n = bytes.len(record)
   if n > sb.block_size then {
@@ -85,106 +78,25 @@ fn push(mut sb: Scrollback, record: Bytes) -> Unit = {
   evict(sb)
 }
 
-/// The background and attributes bytes of a cell's second 8 (`cell.OFF_BG`
-/// on): all but width and flags.
-let STYLE_MASK = 0xFFFFFFFFFFFF
-
-/// A blank cell's bytes from `cell.OFF_BG` up to its flags: default
-/// background, no attributes, width 1.
-let BLANK_MASK = 0xFFFFFFFFFFFFFF
-let BLANK_TAIL = 0x1000000000000
-
 /// Append the row at byte `off` of `grid` as a line record, encoded straight
-/// into the block being filled — the same record `encode_cells` makes, with
-/// no allocation per line. This is what every line scrolling off the screen
-/// goes through.
+/// into the block being filled — no allocation per line. This is what every
+/// line scrolling off the screen goes through. Marks come from `graphemes`
+/// keyed by `base` + column.
 fn push_cells(mut sb: Scrollback, grid: Bytes, off: Int, cols: Int, wrapped: Bool,
               graphemes: Map[Int, String], base: Int) -> Unit = {
-  let used = used_cols_at(grid, off, cols)
-  // Most a record can take: per cell a run header and 4 bytes of UTF-8, and
-  // up to 128 bytes of marks on a cell that has them — only a row with marks
-  // has such cells.
-  var bound = 4 + 7 + used * 18
-  if map.len(graphemes) > 0 then {
-    for x in 0..<used {
-      if int.band(bytes.read_u8(grid, off + x * cell.SIZE + cell.OFF_FLAGS), cell.FLAG_GRAPHEME) != 0 then bound = bound + 128
-    }
-  }
-  if bound > sb.block_size then push(sb, encode_cells(grid, off, cols, wrapped, graphemes, base))
+  let used = record.used_cols_at(grid, off, cols)
+  let bound = record.bound(grid, off, used, graphemes)
+  if bound > sb.block_size then push(sb, record.encode_cells(grid, off, cols, wrapped, graphemes, base))
   else {
     if sb.cur_len + bound > bytes.len(sb.cur) then {
       seal(sb)
       sb.cur = bytes.new(sb.block_size)
     }
-    let start = sb.cur_len
-    var p = start + 4
-    bytes.set_u16_le(sb.cur, p, used)
-    bytes.set_u8(sb.cur, p + 2, if wrapped then 1 else 0)
-    p = p + 3
-    var x = 0
-    while x < used {
-      // A cell's second half in one read: background, attributes, width and
-      // flags; a run is cells with the same foreground and the same first 6
-      // bytes of it.
-      let o = off + x * cell.SIZE
-      let fg = bytes.read_u32_le(grid, o + cell.OFF_FG)
-      let bg_attrs = int.band(bytes.read_i64_le(grid, o + cell.OFF_BG), STYLE_MASK)
-      bytes.set_u32_le(sb.cur, p, fg)
-      bytes.set_i64_le(sb.cur, p + 4, bg_attrs)
-      let len_at = p + 10
-      p = p + 14
-      let text_start = p
-      var more = true
-      while more and x < used {
-        let c = off + x * cell.SIZE
-        let tail = bytes.read_i64_le(grid, c + cell.OFF_BG)
-        if int.band(tail, STYLE_MASK) == bg_attrs and bytes.read_u32_le(grid, c + cell.OFF_FG) == fg then {
-          // Width and flags are the tail's top two bytes.
-          if int.band(int.bshr(tail, 48), 0xFF) != 0 then {
-            let cp = bytes.read_u32_le(grid, c + cell.OFF_CP)
-            p = write_utf8(sb.cur, p, if cp == 0 then 32 else cp)
-            if int.band(int.bshr(tail, 56), cell.FLAG_GRAPHEME) != 0 then {
-              let marks = bytes.from_string(string.take(map.get_or(graphemes, base + x, ""), 32))
-              let n = int.min(bytes.len(marks), 128)
-              bytes.copy_from(sb.cur, marks, p, 0, n)
-              p = p + n
-            }
-          }
-          x = x + 1
-        } else {
-          more = false
-        }
-      }
-      bytes.set_u32_le(sb.cur, len_at, p - text_start)
-    }
-    bytes.set_u32_le(sb.cur, start, p - start - 4)
-    sb.cur_len = p
+    sb.cur_len = record.write(sb.cur, sb.cur_len, grid, off, used, wrapped, graphemes, base)
     sb.cur_lines = sb.cur_lines + 1
     evict(sb)
   }
 }
-
-/// Write `cp` as UTF-8 at `p`; the position after it.
-fn write_utf8(mut out: Bytes, p: Int, cp: Int) -> Int =
-  if cp < 0x80 then {
-    bytes.set_u8(out, p, cp)
-    p + 1
-  } else if cp < 0x800 then {
-    bytes.set_u8(out, p, int.bor(0xC0, int.bshr(cp, 6)))
-    bytes.set_u8(out, p + 1, int.bor(0x80, int.band(cp, 0x3F)))
-    p + 2
-  } else if cp < 0x10000 then {
-    bytes.set_u8(out, p, int.bor(0xE0, int.bshr(cp, 12)))
-    bytes.set_u8(out, p + 1, int.bor(0x80, int.band(int.bshr(cp, 6), 0x3F)))
-    bytes.set_u8(out, p + 2, int.bor(0x80, int.band(cp, 0x3F)))
-    p + 3
-  } else {
-    bytes.set_u8(out, p, int.bor(0xF0, int.bshr(cp, 18)))
-    bytes.set_u8(out, p + 1, int.bor(0x80, int.band(int.bshr(cp, 12), 0x3F)))
-    bytes.set_u8(out, p + 2, int.bor(0x80, int.band(int.bshr(cp, 6), 0x3F)))
-    bytes.set_u8(out, p + 3, int.bor(0x80, int.band(cp, 0x3F)))
-    p + 4
-  }
 
 /// Move the block being filled, trimmed to its used length, to `sealed`.
 fn seal(mut sb: Scrollback) -> Unit = {
@@ -223,113 +135,6 @@ fn clear(mut sb: Scrollback) -> Unit = {
   sb.cur_lines = 0
 }
 
-// ── Encoding ──────────────────────────────────────────────────────────────
-
-/// Encode `cols` cells of `row` (one grid row, `cell.SIZE` bytes per cell) as a
-/// line record. `extras` maps a column to the codepoints that combine with its
-/// cell. Trailing blank cells with the default background are dropped.
-fn encode_row(row: Bytes, cols: Int, wrapped: Bool, extras: Map[Int, String]) -> Bytes =
-  encode_cells(row, 0, cols, wrapped, extras, 0)
-
-/// `encode_row` of the row at byte `off` of `grid`, reading combining marks
-/// from `graphemes` keyed by `base` + column — a screen's grid and its
-/// grapheme map as they are, with nothing copied out first. This runs for
-/// every line that scrolls off the screen, so it writes UTF-8 straight into
-/// the record.
-fn encode_cells(grid: Bytes, off: Int, cols: Int, wrapped: Bool, graphemes: Map[Int, String], base: Int) -> Bytes = {
-  let used = used_cols_at(grid, off, cols)
-  var out = bytes.new(0)
-  bytes.append_u32_le(out, 0)
-  bytes.append_u16_le(out, used)
-  bytes.append_u8(out, if wrapped then 1 else 0)
-  var x = 0
-  while x < used {
-    let o = off + x * cell.SIZE
-    let fg = bytes.read_u32_le(grid, o + cell.OFF_FG)
-    let bg = bytes.read_u32_le(grid, o + cell.OFF_BG)
-    let attrs = bytes.read_u16_le(grid, o + cell.OFF_ATTRS)
-    bytes.append_u32_le(out, fg)
-    bytes.append_u32_le(out, bg)
-    bytes.append_u16_le(out, attrs)
-    let len_at = bytes.len(out)
-    bytes.append_u32_le(out, 0)
-    var more = true
-    while more and x < used {
-      let c = off + x * cell.SIZE
-      if bytes.read_u32_le(grid, c + cell.OFF_FG) == fg and bytes.read_u32_le(grid, c + cell.OFF_BG) == bg and bytes.read_u16_le(grid, c + cell.OFF_ATTRS) == attrs then {
-        let w = bytes.read_u8(grid, c + cell.OFF_WIDTH)
-        let cp = bytes.read_u32_le(grid, c + cell.OFF_CP)
-        if w != 0 then {
-          append_utf8(out, if cp == 0 then 32 else cp)
-          if int.band(bytes.read_u8(grid, c + cell.OFF_FLAGS), cell.FLAG_GRAPHEME) != 0 then {
-            let marks = bytes.from_string(map.get_or(graphemes, base + x, ""))
-            out = bytes.concat(out, marks)
-          }
-        }
-        x = x + 1
-      } else {
-        more = false
-      }
-    }
-    bytes.set_u32_le(out, len_at, bytes.len(out) - len_at - 4)
-  }
-  bytes.set_u32_le(out, 0, bytes.len(out) - 4)
-  out
-}
-
-/// Append `cp` as UTF-8.
-fn append_utf8(mut out: Bytes, cp: Int) -> Unit = {
-  if cp < 0x80 then bytes.append_u8(out, cp)
-  else if cp < 0x800 then {
-    bytes.append_u8(out, int.bor(0xC0, int.bshr(cp, 6)))
-    bytes.append_u8(out, int.bor(0x80, int.band(cp, 0x3F)))
-  } else if cp < 0x10000 then {
-    bytes.append_u8(out, int.bor(0xE0, int.bshr(cp, 12)))
-    bytes.append_u8(out, int.bor(0x80, int.band(int.bshr(cp, 6), 0x3F)))
-    bytes.append_u8(out, int.bor(0x80, int.band(cp, 0x3F)))
-  } else {
-    bytes.append_u8(out, int.bor(0xF0, int.bshr(cp, 18)))
-    bytes.append_u8(out, int.bor(0x80, int.band(int.bshr(cp, 12), 0x3F)))
-    bytes.append_u8(out, int.bor(0x80, int.band(int.bshr(cp, 6), 0x3F)))
-    bytes.append_u8(out, int.bor(0x80, int.band(cp, 0x3F)))
-  }
-}
-
-/// Text of cell `x`: nothing for the tail of a wide char, a space for a cell
-/// never written.
-fn cell_text(row: Bytes, x: Int, extras: Map[Int, String]) -> String = {
-  let o = x * cell.SIZE
-  let width = bytes.read_u8(row, o + cell.OFF_WIDTH)
-  let cp = bytes.read_u32_le(row, o + cell.OFF_CP)
-  if width == 0 then ""
-  else if cp == 0 then " "
-  else {
-    let base = string.from_codepoint(cp)
-    if int.band(bytes.read_u8(row, o + cell.OFF_FLAGS), cell.FLAG_GRAPHEME) != 0 then base + map.get_or(extras, x, "")
-    else base
-  }
-}
-
-/// Columns up to and including the last cell that shows something.
-fn used_cols(row: Bytes, cols: Int) -> Int = used_cols_at(row, 0, cols)
-
-fn used_cols_at(grid: Bytes, off: Int, cols: Int) -> Int = {
-  var n = cols
-  var blank = true
-  while blank and n > 0 {
-    let o = off + (n - 1) * cell.SIZE
-    // Blank: no character, no background or attributes (the default
-    // background is 0), and one column wide — the second half of a wide
-    // character has no character either, and belongs to the line.
-    if bytes.read_u32_le(grid, o + cell.OFF_CP) == 0 and int.band(bytes.read_i64_le(grid, o + cell.OFF_BG), BLANK_MASK) == BLANK_TAIL then {
-      n = n - 1
-    } else {
-      blank = false
-    }
-  }
-  n
-}
-
 // ── Reading ───────────────────────────────────────────────────────────────
 
 /// Every stored line as plain text, oldest first.
@@ -346,21 +151,10 @@ fn block_texts(block: Bytes, len: Int) -> List[String] = {
   var p = 0
   while p < len {
     let n = bytes.read_u32_le(block, p)
-    out = out + [record_text(block, p + 4, p + 4 + n)]
+    out = out + [record.text(block, p + 4, p + 4 + n)]
     p = p + 4 + n
   }
   out
-}
-
-fn record_text(block: Bytes, start: Int, end: Int) -> String = {
-  var p = start + 3
-  var s = ""
-  while p < end {
-    let n = bytes.read_u32_le(block, p + 10)
-    s = s + bytes.read_string_at(block, p + 14, n)
-    p = p + 14 + n
-  }
-  s
 }
 
 /// Where line `i` (0 = oldest kept) is stored: its block and the record's
@@ -400,174 +194,10 @@ fn records(sb: Scrollback) -> List[(Bytes, Int, Int)] = {
   out
 }
 
-/// Columns the line of the record at `start` uses.
-fn record_used(block: Bytes, start: Int) -> Int = bytes.read_u16_le(block, start)
-
-/// A decoded line: `cols` cells in the grid layout, the combining marks by
-/// column, and whether it continued onto the next line.
-type Row = { cells: Bytes, extras: Map[Int, String], wrapped: Bool }
-
 /// Line `i` decoded into `cols` cells (cut or padded to fit).
-fn row(sb: Scrollback, i: Int, cols: Int) -> Option[Row] =
+fn row(sb: Scrollback, i: Int, cols: Int) -> Option[record.Row] =
   match locate(sb, i) {
-    some((block, start, end)) => some(decode(block, start, end, cols)),
+    some((block, start, end)) => some(record.decode(block, start, end, cols)),
     none => none,
   }
 
-fn decode(block: Bytes, start: Int, end: Int, cols: Int) -> Row = {
-  var cells = cell.blank_row(cols, cell.COLOR_DEFAULT)
-  var extras: Map[Int, String] = [:]
-  let wrapped = bytes.read_u8(block, start + 2) == 1
-  var p = start + 3
-  var x = 0
-  var last = -1
-  while p < end {
-    let fg = bytes.read_u32_le(block, p)
-    let bg = bytes.read_u32_le(block, p + 4)
-    let attrs = bytes.read_u16_le(block, p + 8)
-    let n = bytes.read_u32_le(block, p + 10)
-    for ch in string.chars(bytes.read_string_at(block, p + 14, n)) {
-      let cp = string.codepoint(ch) ?? 32
-      let w = width.of(cp)
-      if w == 0 then {
-        if last >= 0 then {
-          map.insert(extras, last, map.get_or(extras, last, "") + ch)
-          let flags = bytes.read_u8(cells, last * cell.SIZE + cell.OFF_FLAGS)
-          bytes.set_u8(cells, last * cell.SIZE + cell.OFF_FLAGS, int.bor(flags, cell.FLAG_GRAPHEME))
-        }
-      } else if x + w <= cols then {
-        let o = x * cell.SIZE
-        bytes.set_u32_le(cells, o + cell.OFF_CP, if cp == 32 then 0 else cp)
-        bytes.set_u32_le(cells, o + cell.OFF_FG, fg)
-        bytes.set_u32_le(cells, o + cell.OFF_BG, bg)
-        bytes.set_u16_le(cells, o + cell.OFF_ATTRS, attrs)
-        bytes.set_u8(cells, o + cell.OFF_WIDTH, w)
-        if w == 2 then {
-          bytes.set_u32_le(cells, o + cell.SIZE + cell.OFF_BG, bg)
-          bytes.set_u8(cells, o + cell.SIZE + cell.OFF_WIDTH, 0)
-        }
-        last = x
-        x = x + w
-      }
-    }
-    p = p + 14 + n
-  }
-  Row { cells: cells, extras: extras, wrapped: wrapped }
-}
-
-// ── Tests ─────────────────────────────────────────────────────────────────
-
-fn row_of(text: String, cols: Int) -> Bytes = {
-  var row = cell.blank_row(cols, cell.COLOR_DEFAULT)
-  var x = 0
-  for ch in string.chars(text) {
-    bytes.set_u32_le(row, x * cell.SIZE + cell.OFF_CP, string.codepoint(ch) ?? 32)
-    x = x + 1
-  }
-  row
-}
-
-test "a row round-trips through a line record" {
-  let rec = encode_row(row_of("hello", 10), 10, false, [:])
-  var sb = new(1000000)
-  push(sb, rec)
-  assert_eq(texts(sb), ["hello"])
-}
-
-test "combining marks travel inside the record" {
-  var row = row_of("e", 4)
-  bytes.set_u8(row, cell.OFF_FLAGS, cell.FLAG_GRAPHEME)
-  var sb = new(1000000)
-  push(sb, encode_row(row, 4, false, [0: "\u{0301}"]))
-  assert_eq(texts(sb), ["e\u{0301}"])
-}
-
-test "runs split where the style changes" {
-  var row = row_of("abcd", 4)
-  bytes.set_u32_le(row, 2 * cell.SIZE + cell.OFF_FG, cell.palette(1))
-  bytes.set_u32_le(row, 3 * cell.SIZE + cell.OFF_FG, cell.palette(1))
-  let rec = encode_row(row, 4, false, [:])
-  // header 4 + 3, then two runs of 14 + 2 bytes of text each
-  assert_eq(bytes.len(rec), 7 + 16 + 16)
-}
-
-test "the budget holds however many lines arrive" {
-  let limit = 20000
-  var sb = with_block(limit, 4096)
-  for i in 0..<5000 {
-    push(sb, encode_row(row_of("line ${int.to_string(i)} with some text", 80), 80, false, [:]))
-    assert(bytes_used(sb) <= limit)
-  }
-  assert(sb.evicted_lines > 0)
-  assert_eq(line_count(sb) + sb.evicted_lines, 5000)
-  let t = texts(sb)
-  assert_eq(list.last(t), some("line 4999 with some text"))
-}
-
-test "a line larger than a block is stored and later evicted" {
-  var sb = with_block(3000, 256)
-  var long = ""
-  for _ in 0..<200 {
-    long = long + "x"
-  }
-  push(sb, encode_row(row_of(long, 200), 200, false, [:]))
-  assert_eq(texts(sb), [long])
-  for _ in 0..<200 {
-    push(sb, encode_row(row_of("short", 80), 80, false, [:]))
-  }
-  assert(bytes_used(sb) <= 3000)
-  assert(not list.contains(texts(sb), long))
-}
-
-test "any line decodes back into cells" {
-  var sb = with_block(100000, 256)
-  for i in 0..<60 {
-    push(sb, encode_row(row_of("line ${int.to_string(i)}", 20), 20, i % 2 == 0, [:]))
-  }
-  let r = row(sb, 37, 20) ?? Row { cells: bytes.new(0), extras: [:], wrapped: false }
-  assert_eq(bytes.read_u32_le(r.cells, 5 * cell.SIZE), string.codepoint("3") ?? 0)
-  assert_eq(bytes.read_u32_le(r.cells, 6 * cell.SIZE), string.codepoint("7") ?? 0)
-  assert_eq(r.wrapped, false)
-  assert_eq((row(sb, 36, 20) ?? r).wrapped, true)
-  assert_eq(row(sb, 60, 20), none)
-}
-
-test "wide chars and marks decode to their cells" {
-  var src = row_of("a", 6)
-  var sb = new(100000)
-  var t = src
-  bytes.set_u32_le(t, 1 * cell.SIZE + cell.OFF_CP, 0x65E5)
-  bytes.set_u8(t, 1 * cell.SIZE + cell.OFF_WIDTH, 2)
-  bytes.set_u8(t, 2 * cell.SIZE + cell.OFF_WIDTH, 0)
-  bytes.set_u32_le(t, 3 * cell.SIZE + cell.OFF_CP, 0x65)
-  bytes.set_u8(t, 3 * cell.SIZE + cell.OFF_FLAGS, cell.FLAG_GRAPHEME)
-  push(sb, encode_row(t, 6, false, [3: "\u{0301}"]))
-  let r = row(sb, 0, 6) ?? Row { cells: bytes.new(0), extras: [:], wrapped: false }
-  assert_eq(bytes.read_u8(r.cells, 1 * cell.SIZE + cell.OFF_WIDTH), 2)
-  assert_eq(bytes.read_u8(r.cells, 2 * cell.SIZE + cell.OFF_WIDTH), 0)
-  assert_eq(bytes.read_u32_le(r.cells, 3 * cell.SIZE), 0x65)
-  assert_eq(map.get(r.extras, 3), some("\u{0301}"))
-}
-
-test "encoding writes UTF-8 of every plane" {
-  var sb = new(100000)
-  var row = row_of("aé日", 6)
-  bytes.set_u32_le(row, 3 * cell.SIZE, 0x1F600)
-  push(sb, encode_row(row, 6, false, [:]))
-  assert_eq(texts(sb), ["aé日\u{1F600}"])
-}
-
-test "push_cells writes the record encode_cells makes" {
-  var row = row_of("hi 日本 x", 12)
-  bytes.set_u32_le(row, 1 * cell.SIZE + cell.OFF_FG, cell.palette(3))
-  bytes.set_u8(row, 7 * cell.SIZE + cell.OFF_FLAGS, cell.FLAG_GRAPHEME)
-  let marks: Map[Int, String] = [107: "\u{0301}"]
-  var a = new(100000)
-  var b = new(100000)
-  for i in 0..<3 {
-    push(a, encode_cells(row, 0, 12, i == 1, marks, 100))
-    push_cells(b, row, 0, 12, i == 1, marks, 100)
-  }
-  assert_eq(b.cur_len, a.cur_len)
-  assert_eq(bytes.slice(b.cur, 0, b.cur_len), bytes.slice(a.cur, 0, a.cur_len))
-}

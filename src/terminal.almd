@@ -20,6 +20,7 @@
 import base64
 import bytes
 import self.cell
+import self.record
 import self.scrollback
 import self.width
 
@@ -1544,11 +1545,11 @@ fn reflow(mut t: Terminal, cols: Int, rows: Int, all: Bool) -> Unit = {
   // over as it is.
   let old_lines = if all then scrollback.records(t.sb) else []
   for (block, start, end) in old_lines {
-    let used = scrollback.record_used(block, start)
+    let used = record.used(block, start)
     let whole = w.len == 0 and bytes.read_u8(block, start + 2) == 0 and used <= cols
     if whole then scrollback.push(w.sb, bytes.slice(block, start - 4, end))
     else {
-      let row = scrollback.decode(block, start, end, used)
+      let row = record.decode(block, start, end, used)
       var cells = row.cells
       // Spaces decode as empty cells; inside the line they are spaces, which
       // must stay, or wrapping again would drop them from the ends of rows.
@@ -1565,11 +1566,11 @@ fn reflow(mut t: Terminal, cols: Int, rows: Int, all: Bool) -> Unit = {
   w.to_screen = true
   var last = t.y
   for y in 0..<t.rows {
-    if scrollback.used_cols_at(t.grid, row_off(t, y), t.cols) > 0 or bytes.read_u8(t.wrapped, phys(t, y)) == 1 then last = int.max(last, y)
+    if record.used_cols_at(t.grid, row_off(t, y), t.cols) > 0 or bytes.read_u8(t.wrapped, phys(t, y)) == 1 then last = int.max(last, y)
   }
   for y in 0...last {
     let off = row_off(t, y)
-    let used = scrollback.used_cols_at(t.grid, off, t.cols)
+    let used = record.used_cols_at(t.grid, off, t.cols)
     let wrapped = bytes.read_u8(t.wrapped, phys(t, y)) == 1
     var n = used
     if y == t.y then {
@@ -1697,7 +1698,7 @@ fn row_text(t: Terminal, y: Int) -> String = {
   let extras = row_extras(t, y)
   var s = ""
   for x in 0..<t.cols {
-    s = s + scrollback.cell_text(row, x, extras)
+    s = s + record.cell_text(row, x, extras)
   }
   string.trim_end(s)
 }

@@ -8,6 +8,7 @@
 
 import bytes
 import self.cell
+import self.record
 import self.scrollback
 import self.terminal
 
@@ -17,7 +18,7 @@ fn screen_line(t: terminal.Terminal) -> Int = t.sb.evicted_lines + scrollback.li
 
 /// Line `n` as a row of `t.cols` cells, or none when it has been evicted or
 /// is below the screen. On the alternate screen only its rows are lines.
-fn line_at(t: terminal.Terminal, n: Int) -> Option[scrollback.Row] = {
+fn line_at(t: terminal.Terminal, n: Int) -> Option[record.Row] = {
   let rel = n - first_line(t)
   let kept = scrollback.line_count(t.sb)
   if rel < 0 then none
@@ -26,7 +27,7 @@ fn line_at(t: terminal.Terminal, n: Int) -> Option[scrollback.Row] = {
   } else if rel - kept < t.rows then {
     let y = rel - kept
     let off = terminal.row_off(t, y)
-    some(scrollback.Row {
+    some(record.Row {
       cells: bytes.slice(t.grid, off, off + t.cols * cell.SIZE),
       extras: terminal.row_extras(t, y),
       wrapped: bytes.read_u8(t.wrapped, terminal.phys(t, y)) == 1,
@@ -84,10 +85,10 @@ fn selected_text(t: terminal.Terminal, s: Selection) -> String = {
 /// Columns `from` to `to` of `row` as selected text: with its newline
 /// unless it wrapped onto the next or is the `last` line, its trailing
 /// blanks dropped where it ends.
-fn line_text(row: scrollback.Row, from: Int, to: Int, last: Bool) -> String = {
+fn line_text(row: record.Row, from: Int, to: Int, last: Bool) -> String = {
   var line = ""
   for x in from...to {
-    line = line + scrollback.cell_text(row.cells, x, row.extras)
+    line = line + record.cell_text(row.cells, x, row.extras)
   }
   if row.wrapped and not last then line
   else string.trim_end(line) + (if last then "" else "\n")
@@ -158,7 +159,7 @@ fn wraps_into(t: terminal.Terminal, n: Int) -> Bool = wraps(t, n - 1)
 
 /// The kind of the character at column `x` of `row`, the right half of a
 /// wide character counting as the character.
-fn kind_at(row: scrollback.Row, x: Int) -> Int = {
+fn kind_at(row: record.Row, x: Int) -> Int = {
   let o = x * cell.SIZE
   let tail = x > 0 and bytes.read_u8(row.cells, o + cell.OFF_WIDTH) == 0
   kind_of(bytes.read_u32_le(row.cells, if tail then o - cell.SIZE + cell.OFF_CP else o + cell.OFF_CP))
@@ -200,7 +201,7 @@ fn text_of(t: terminal.Terminal, n: Int) -> String =
     some(row) => {
       var s = ""
       for x in 0..<t.cols {
-        s = s + scrollback.cell_text(row.cells, x, row.extras)
+        s = s + record.cell_text(row.cells, x, row.extras)
       }
       string.trim_end(s)
     },

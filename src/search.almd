@@ -11,6 +11,7 @@
 
 import bytes
 import self.cell
+import self.record
 import self.scrollback
 import self.terminal
 import self.view
@@ -52,7 +53,7 @@ fn scan(t: terminal.Terminal, query: String) -> List[(Int, Int)] =
   else if t.alt then scan_screen(t, view.screen_line(t), query)
   else {
     let (q, fold) = needle(query)
-    let counts = scrollback.records(t.sb) |> list.map(((block, start, end)) => string.count(folded(scrollback.record_text(block, start, end), fold), q))
+    let counts = scrollback.records(t.sb) |> list.map(((block, start, end)) => string.count(folded(record.text(block, start, end), fold), q))
     let first = view.first_line(t)
     let held = list.enumerate(counts) |> list.filter(((_, c)) => c > 0) |> list.map(((i, c)) => (first + i, c))
     held + scan_screen(t, first + list.len(counts), query)
@@ -73,7 +74,7 @@ fn spans(t: terminal.Terminal, line: Int, query: String) -> List[(Int, Int)] =
 
 /// Where `query` is in `row`, `cols` wide: columns (from, to), left to right,
 /// matches not overlapping — as `string.count` counts them in the stored text.
-fn row_spans(row: scrollback.Row, cols: Int, query: String) -> List[(Int, Int)] =
+fn row_spans(row: record.Row, cols: Int, query: String) -> List[(Int, Int)] =
   if query == "" then []
   else {
     let (q, fold) = needle(query)
@@ -86,11 +87,11 @@ fn row_spans(row: scrollback.Row, cols: Int, query: String) -> List[(Int, Int)] 
 /// The line's text as it is stored — a space for an empty cell, marks after
 /// their base — each code point with the columns of its cell: (code point,
 /// first column, column past its end).
-fn stored(row: scrollback.Row, cols: Int, fold: Bool) -> List[(Int, Int, Int)] = {
+fn stored(row: record.Row, cols: Int, fold: Bool) -> List[(Int, Int, Int)] = {
   var out: List[(Int, Int, Int)] = []
-  for x in 0..<scrollback.used_cols(row.cells, cols) {
+  for x in 0..<record.used_cols(row.cells, cols) {
     let end = x + int.max(1, width_at(row, x))
-    for ch in string.chars(folded(scrollback.cell_text(row.cells, x, row.extras), fold)) {
+    for ch in string.chars(folded(record.cell_text(row.cells, x, row.extras), fold)) {
       list.push(out, (string.codepoint(ch) ?? 32, x, end))
     }
   }
@@ -122,7 +123,7 @@ fn matches_at(hay: List[Int], needle: List[Int], i: Int) -> Bool = {
 }
 
 /// Columns cell `x` of `row` takes.
-fn width_at(row: scrollback.Row, x: Int) -> Int = bytes.read_u8(row.cells, x * cell.SIZE + cell.OFF_WIDTH)
+fn width_at(row: record.Row, x: Int) -> Int = bytes.read_u8(row.cells, x * cell.SIZE + cell.OFF_WIDTH)
 
 /// The match nearest (`line`, `col`) going `dir` — at it too when
 /// `inclusive` — wrapping past the end; `f` found anew, with no current

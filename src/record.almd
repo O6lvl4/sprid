@@ -1,0 +1,241 @@
+// Line records: how a row of cells is stored in scrollback (see
+// scrollback.almd), and read back.
+//
+// A record owns everything its line needs — text, combining marks, styles —
+// inline (all integers little-endian):
+//
+//   u32 payload length
+//   u16 columns used   u8 wrapped (the row continued onto the next)
+//   runs, each:  u32 fg  u32 bg  u16 attrs  u32 text length  UTF-8 text
+
+import bytes
+import self.cell
+import self.width
+
+/// The background and attributes bytes of a cell's second 8 (`cell.OFF_BG`
+/// on): all but width and flags.
+let STYLE_MASK = 0xFFFFFFFFFFFF
+
+/// A blank cell's bytes from `cell.OFF_BG` up to its flags: default
+/// background, no attributes, width 1.
+let BLANK_MASK = 0xFFFFFFFFFFFFFF
+let BLANK_TAIL = 0x1000000000000
+
+/// The most bytes of combining marks a cell keeps in a record.
+let MARKS_MAX = 128
+
+// ── Writing ───────────────────────────────────────────────────────────────
+
+/// The most bytes the record of the row at byte `off` of `grid`, `used`
+/// columns of it, can take: per cell a run header and 4 bytes of UTF-8, and
+/// room for marks on a cell that has them — only a row with marks has such
+/// cells.
+fn bound(grid: Bytes, off: Int, used: Int, graphemes: Map[Int, String]) -> Int =
+  if map.len(graphemes) == 0 then 4 + 7 + used * 18
+  else list.range(0, used) |> list.fold(4 + 7 + used * 18, (n, x) => if has_marks(grid, off + x * cell.SIZE) then n + MARKS_MAX else n)
+
+fn has_marks(grid: Bytes, c: Int) -> Bool = int.band(bytes.read_u8(grid, c + cell.OFF_FLAGS), cell.FLAG_GRAPHEME) != 0
+
+/// Write the record of the row at byte `off` of `grid` — `used` columns of
+/// it (see `used_cols_at`), its marks from `graphemes` keyed by `base` +
+/// column — into `out` at `start`, which has room for `bound` bytes; where
+/// it ends.
+fn write(mut out: Bytes, start: Int, grid: Bytes, off: Int, used: Int, wrapped: Bool, graphemes: Map[Int, String], base: Int) -> Int = {
+  bytes.set_u16_le(out, start + 4, used)
+  bytes.set_u8(out, start + 6, if wrapped then 1 else 0)
+  var p = start + 7
+  var x = 0
+  while x < used {
+    let (np, nx) = write_run(out, p, grid, off, x, used, graphemes, base)
+    p = np
+    x = nx
+  }
+  bytes.set_u32_le(out, start, p - start - 4)
+  p
+}
+
+/// Write the run starting at column `x`: cells with the same foreground and
+/// the same background and attributes (a cell's second 8 bytes but width
+/// and flags, in one read). Where the record and the row go on: (byte,
+/// column).
+fn write_run(mut out: Bytes, at: Int, grid: Bytes, off: Int, from: Int, used: Int, graphemes: Map[Int, String], base: Int) -> (Int, Int) = {
+  let o = off + from * cell.SIZE
+  let fg = bytes.read_u32_le(grid, o + cell.OFF_FG)
+  let style = int.band(bytes.read_i64_le(grid, o + cell.OFF_BG), STYLE_MASK)
+  bytes.set_u32_le(out, at, fg)
+  bytes.set_i64_le(out, at + 4, style)
+  let text_start = at + 14
+  var p = text_start
+  var x = from
+  while x < used and same_style(grid, off + x * cell.SIZE, fg, style) {
+    p = write_cell(out, p, grid, off + x * cell.SIZE, graphemes, base + x)
+    x = x + 1
+  }
+  // The text length overwrites the 4 bytes past the style that the 8-byte
+  // write above spilled into.
+  bytes.set_u32_le(out, at + 10, p - text_start)
+  (p, x)
+}
+
+fn same_style(grid: Bytes, c: Int, fg: Int, style: Int) -> Bool =
+  int.band(bytes.read_i64_le(grid, c + cell.OFF_BG), STYLE_MASK) == style and bytes.read_u32_le(grid, c + cell.OFF_FG) == fg
+
+/// Write the text of the cell at byte `c`: nothing for a wide char's second
+/// half, a space for a cell never written, then its marks — `graphemes` at
+/// `key`, up to 32 of them, `MARKS_MAX` bytes. Where it ends.
+fn write_cell(mut out: Bytes, at: Int, grid: Bytes, c: Int, graphemes: Map[Int, String], key: Int) -> Int =
+  if bytes.read_u8(grid, c + cell.OFF_WIDTH) == 0 then at
+  else {
+    let cp = bytes.read_u32_le(grid, c + cell.OFF_CP)
+    let p = write_utf8(out, at, if cp == 0 then 32 else cp)
+    if has_marks(grid, c) then {
+      let m = bytes.from_string(string.take(map.get_or(graphemes, key, ""), 32))
+      let n = int.min(bytes.len(m), MARKS_MAX)
+      bytes.copy_from(out, m, p, 0, n)
+      p + n
+    } else p
+  }
+
+/// Write `cp` as UTF-8 at `p`; the position after it.
+fn write_utf8(mut out: Bytes, p: Int, cp: Int) -> Int =
+  if cp < 0x80 then {
+    bytes.set_u8(out, p, cp)
+    p + 1
+  } else if cp < 0x800 then {
+    bytes.set_u8(out, p, int.bor(0xC0, int.bshr(cp, 6)))
+    bytes.set_u8(out, p + 1, int.bor(0x80, int.band(cp, 0x3F)))
+    p + 2
+  } else if cp < 0x10000 then {
+    bytes.set_u8(out, p, int.bor(0xE0, int.bshr(cp, 12)))
+    bytes.set_u8(out, p + 1, int.bor(0x80, int.band(int.bshr(cp, 6), 0x3F)))
+    bytes.set_u8(out, p + 2, int.bor(0x80, int.band(cp, 0x3F)))
+    p + 3
+  } else {
+    bytes.set_u8(out, p, int.bor(0xF0, int.bshr(cp, 18)))
+    bytes.set_u8(out, p + 1, int.bor(0x80, int.band(int.bshr(cp, 12), 0x3F)))
+    bytes.set_u8(out, p + 2, int.bor(0x80, int.band(int.bshr(cp, 6), 0x3F)))
+    bytes.set_u8(out, p + 3, int.bor(0x80, int.band(cp, 0x3F)))
+    p + 4
+  }
+
+/// Encode `cols` cells of `row` (one grid row, `cell.SIZE` bytes per cell) as
+/// a line record. `extras` maps a column to the codepoints that combine with
+/// its cell. Trailing blank cells with the default background are dropped.
+fn encode_row(row: Bytes, cols: Int, wrapped: Bool, extras: Map[Int, String]) -> Bytes =
+  encode_cells(row, 0, cols, wrapped, extras, 0)
+
+/// `encode_row` of the row at byte `off` of `grid`, reading combining marks
+/// from `graphemes` keyed by `base` + column — a screen's grid and its
+/// grapheme map as they are, with nothing copied out first.
+fn encode_cells(grid: Bytes, off: Int, cols: Int, wrapped: Bool, graphemes: Map[Int, String], base: Int) -> Bytes = {
+  let used = used_cols_at(grid, off, cols)
+  var out = bytes.new(bound(grid, off, used, graphemes))
+  let end = write(out, 0, grid, off, used, wrapped, graphemes, base)
+  bytes.slice(out, 0, end)
+}
+
+/// Columns up to and including the last cell that shows something.
+fn used_cols(row: Bytes, cols: Int) -> Int = used_cols_at(row, 0, cols)
+
+fn used_cols_at(grid: Bytes, off: Int, cols: Int) -> Int = {
+  var n = cols
+  // Blank: no character, no background or attributes (the default
+  // background is 0), and one column wide — the second half of a wide
+  // character has no character either, and belongs to the line.
+  while n > 0 and is_blank(grid, off + (n - 1) * cell.SIZE) {
+    n = n - 1
+  }
+  n
+}
+
+fn is_blank(grid: Bytes, o: Int) -> Bool =
+  bytes.read_u32_le(grid, o + cell.OFF_CP) == 0 and int.band(bytes.read_i64_le(grid, o + cell.OFF_BG), BLANK_MASK) == BLANK_TAIL
+
+// ── Reading ───────────────────────────────────────────────────────────────
+
+/// Text of cell `x`: nothing for the tail of a wide char, a space for a cell
+/// never written.
+fn cell_text(row: Bytes, x: Int, extras: Map[Int, String]) -> String = {
+  let o = x * cell.SIZE
+  let cp = bytes.read_u32_le(row, o + cell.OFF_CP)
+  if bytes.read_u8(row, o + cell.OFF_WIDTH) == 0 then ""
+  else if cp == 0 then " "
+  else if has_marks(row, o) then string.from_codepoint(cp) + map.get_or(extras, x, "")
+  else string.from_codepoint(cp)
+}
+
+/// The text of the record whose payload is `start`..`end` of `block`.
+fn text(block: Bytes, start: Int, end: Int) -> String = {
+  var p = start + 3
+  var s = ""
+  while p < end {
+    let n = bytes.read_u32_le(block, p + 10)
+    s = s + bytes.read_string_at(block, p + 14, n)
+    p = p + 14 + n
+  }
+  s
+}
+
+/// Columns the line of the record at `start` uses.
+fn used(block: Bytes, start: Int) -> Int = bytes.read_u16_le(block, start)
+
+/// A decoded line: `cols` cells in the grid layout, the combining marks by
+/// column, and whether it continued onto the next line.
+type Row = { cells: Bytes, extras: Map[Int, String], wrapped: Bool }
+
+/// The record at `start`..`end` of `block` decoded into `cols` cells (cut or
+/// padded to fit).
+fn decode(block: Bytes, start: Int, end: Int, cols: Int) -> Row = {
+  var row = Row { cells: cell.blank_row(cols, cell.COLOR_DEFAULT), extras: [:], wrapped: bytes.read_u8(block, start + 2) == 1 }
+  var p = start + 3
+  var at = (0, -1)
+  while p < end {
+    let n = bytes.read_u32_le(block, p + 10)
+    at = decode_run(row, block, p, n, cols, at)
+    p = p + 14 + n
+  }
+  row
+}
+
+/// Decode the run at `p` with `n` bytes of text into `row`, from (next
+/// column, last character's column) `at`; where it leaves them.
+fn decode_run(mut row: Row, block: Bytes, p: Int, n: Int, cols: Int, at: (Int, Int)) -> (Int, Int) = {
+  let style = (bytes.read_u32_le(block, p), bytes.read_u32_le(block, p + 4), bytes.read_u16_le(block, p + 8))
+  var x = at.0
+  var last = at.1
+  for ch in string.chars(bytes.read_string_at(block, p + 14, n)) {
+    let cp = string.codepoint(ch) ?? 32
+    let w = width.of(cp)
+    if w == 0 then add_mark(row, last, ch)
+    else if x + w <= cols then {
+      set_cell(row.cells, x, cp, w, style)
+      last = x
+      x = x + w
+    }
+  }
+  (x, last)
+}
+
+/// A combining mark on the character at column `last`, if there is one.
+fn add_mark(mut row: Row, last: Int, ch: String) -> Unit =
+  if last >= 0 then {
+    map.insert(row.extras, last, map.get_or(row.extras, last, "") + ch)
+    let o = last * cell.SIZE + cell.OFF_FLAGS
+    bytes.set_u8(row.cells, o, int.bor(bytes.read_u8(row.cells, o), cell.FLAG_GRAPHEME))
+  }
+
+/// Cell `x`: `cp`, `w` columns wide, in `style` (fg, bg, attrs); the second
+/// half of a wide one takes its background.
+fn set_cell(mut cells: Bytes, x: Int, cp: Int, w: Int, style: (Int, Int, Int)) -> Unit = {
+  let o = x * cell.SIZE
+  let (fg, bg, attrs) = style
+  bytes.set_u32_le(cells, o + cell.OFF_CP, if cp == 32 then 0 else cp)
+  bytes.set_u32_le(cells, o + cell.OFF_FG, fg)
+  bytes.set_u32_le(cells, o + cell.OFF_BG, bg)
+  bytes.set_u16_le(cells, o + cell.OFF_ATTRS, attrs)
+  bytes.set_u8(cells, o + cell.OFF_WIDTH, w)
+  if w == 2 then {
+    bytes.set_u32_le(cells, o + cell.SIZE + cell.OFF_BG, bg)
+    bytes.set_u8(cells, o + cell.SIZE + cell.OFF_WIDTH, 0)
+  }
+}
