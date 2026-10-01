@@ -7,6 +7,7 @@ import snaidhm.native.window as window
 import snaidhm.native.frame as frame
 import snaidhm.text as text
 import self.gui.render
+import self.gui.surface
 import self.gui.tabset
 import self.gui.uistate
 import self.gui.findkeys
@@ -22,6 +23,7 @@ fn draw_due(mut a: session.Session) -> Unit = {
   let clock = sys.now_ms()
   if a.alive and a.ui.dirty and clock - a.last_frame >= session.frame_ms(a) then {
     retitle(a)
+    session.place_box(a)
     // With every tab still in the list: taken out, the tab in front would
     // be missing from the tab bar.
     let titles = tabset.tab_titles(a.tabs, a.active, a.ui, a.home)
@@ -78,7 +80,7 @@ fn place_ime(mut a: session.Session, cur: tabset.Tab, tabs: Int) -> Unit = {
   let r = a.r
   let ui = a.ui
   let (ix, iy) = if ui.finding and ui.find_focus then render.find_caret(r, uistate.bar(ui), ui.preedit, tabs, a.width)
-    else (r.pad_x + render.compose_caret(uistate.compose_of(ui), cur.t.x, cur.t.cols) * r.cell_w, render.grid_top(r, tabs) + cur.t.y * r.cell_h)
+    else (surface.grid_left(r) + render.compose_caret(uistate.compose_of(ui), cur.t.x, cur.t.cols) * r.cell_w, surface.grid_y(r) + cur.t.y * r.cell_h)
   if a.stats.trace and list.len(ui.preedit) > 0 then trace_compose(a, cur, ix, iy)
   if (ix, iy) != (ui.ime_x, ui.ime_y) then {
     window.set_ime_area(int.to_float(ix) / a.scale, int.to_float(iy) / a.scale,
@@ -103,6 +105,7 @@ effect fn capture_due(mut a: session.Session, path: String) -> Unit = {
   if ended or clock > (int.parse(env.get("SPRID_CAPTURE_MS") ?? "3000") ?? 3000) then {
     if a.stats.debug then eprintln("sprid: ${int.to_string(a.stats.frames)} frames, draw ${int.to_string(a.stats.draw_ms)} ms")
     let titles = tabset.tab_titles(a.tabs, a.active, a.ui, a.home)
+    session.place_box(a)
     match tabset.take(a.tabs, a.active) {
       some(tb) => {
         var cur = tb

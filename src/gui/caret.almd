@@ -12,7 +12,7 @@ import self.gui.composition
 /// meanwhile. The quads drawn.
 fn draw_compose(mut r: surface.Renderer, compose: composition.Compose, x: Int, cols: Int, ctop: Int, sx: Float, sy: Float) -> Int = {
   let (x0, ca, cb) = composition.compose_span(compose, x, cols)
-  var px = r.pad_x + x0 * r.cell_w
+  var px = surface.grid_left(r) + x0 * r.cell_w
   var from_x = -1
   var to_x = -1
   var caret_x = if compose.caret == ca then px else -1
@@ -52,7 +52,7 @@ fn draw_composed(mut r: surface.Renderer, cp: Int, px: Int, w: Int, ctop: Int, s
 fn draw_cursor(mut r: surface.Renderer, t: terminal.Terminal, ctop: Int, sx: Float, sy: Float) -> Int = {
   // The program's shape (DECSCUSR), else the config's; 0, neither, is a bar.
   let shape = if t.cursor_shape == 0 then r.cursor_default else t.cursor_shape
-  let cx = r.pad_x + t.x * r.cell_w
+  let cx = surface.grid_left(r) + t.x * r.cell_w
   // Keys go elsewhere: a hollow box.
   if not r.focused then box(r, cx, cx + r.cell_w, ctop, sx, sy)
   else if r.blink_off and int.band(shape, 1) == 1 then 0

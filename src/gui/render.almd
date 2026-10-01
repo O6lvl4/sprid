@@ -85,14 +85,14 @@ fn find_caret(r: surface.Renderer, b: findbar.Bar, preedit: List[Int], tabs: Int
 
 /// The scrollbar thumb's top and bottom, pixels, for the view scrolled
 /// `back` lines and `shift` pixels.
-fn thumb(r: surface.Renderer, t: terminal.Terminal, back: Int, shift: Int, tabs: Int, height: Int) -> (Int, Int) = chrome.thumb(r, t, back, shift, tabs, height)
+fn thumb(r: surface.Renderer, t: terminal.Terminal, back: Int, shift: Int) -> (Int, Int) = chrome.thumb(r, t, back, shift)
 
 /// Where the view is scrolled to, pixels back, with the thumb's top at `y`.
-fn scroll_pos_at(r: surface.Renderer, t: terminal.Terminal, tabs: Int, height: Int, y: Int) -> Int = chrome.scroll_pos_at(r, t, tabs, height, y)
+fn scroll_pos_at(r: surface.Renderer, t: terminal.Terminal, y: Int) -> Int = chrome.scroll_pos_at(r, t, y)
 
 /// Whether pixel column `x` is on the scrollbar: the right margin, while
 /// there is scrollback to scroll.
-fn on_scrollbar(r: surface.Renderer, t: terminal.Terminal, width: Int, x: Int) -> Bool = chrome.on_scrollbar(r, t, width, x)
+fn on_scrollbar(r: surface.Renderer, t: terminal.Terminal, x: Int) -> Bool = chrome.on_scrollbar(r, t, x)
 
 /// The part of a composition shown, and where: characters [`a`, `b`) from
 /// column `x0` of the cursor's row. As terminals commonly lay it out: on
@@ -134,8 +134,9 @@ fn draw(mut r: surface.Renderer, t: terminal.Terminal, back: Int, shift: Int, se
   gpu.begin_data()
   var n = draw_rows(r, f, t.cols, sel, link, sx, sy)
   if f.extra == 1 then {
-    ink.rect(r, 0, 0, width, f.gy, r.theme.bg, 1.0, sx, sy)
-    ink.rect(r, 0, f.gy + t.rows * r.cell_h, width, height, r.theme.bg, 1.0, sx, sy)
+    let (bx, by, bw, bh) = r.box
+    ink.rect(r, bx, by, bx + bw, f.gy, r.theme.bg, 1.0, sx, sy)
+    ink.rect(r, bx, f.gy + t.rows * r.cell_h, bx + bw, by + bh, r.theme.bg, 1.0, sx, sy)
     n = n + 2
   }
   // The cursor, where its line is in view; the composition over it.
@@ -148,7 +149,7 @@ fn draw(mut r: surface.Renderer, t: terminal.Terminal, back: Int, shift: Int, se
   }
   n = n + draw_chrome(r, t, back, shift, tabs, active, width, height, sx, sy)
   match find {
-    some(b) => { n = n + findbar.draw_find(r, b, compose.cps, f.gy, width, sx, sy) },
+    some(b) => { n = n + findbar.draw_find(r, b, compose.cps, surface.grid_top(r, list.len(tabs)), width, sx, sy) },
     none => (),
   }
   n = n + hint.draw(r, shown_hint, width, height, sx, sy)
@@ -206,13 +207,14 @@ fn draw_chrome(mut r: surface.Renderer, t: terminal.Terminal, back: Int, shift: 
                width: Int, height: Int, sx: Float, sy: Float) -> Int = {
   var n = 0
   if view.max_back(t) > 0 then {
-    let (y0, y1) = chrome.thumb(r, t, back, shift, list.len(tabs), height)
+    let (y0, y1) = chrome.thumb(r, t, back, shift)
     let w = chrome.scrollbar_width(r)
-    ink.rect(r, width - w - r.pad_x / 4, y0, width - r.pad_x / 4, y1, r.theme.fg, if back > 0 or shift > 0 then 0.4 else 0.2, sx, sy)
+    let right = r.box.0 + r.box.2
+    ink.rect(r, right - w - r.pad_x / 4, y0, right - r.pad_x / 4, y1, r.theme.fg, if back > 0 or shift > 0 then 0.4 else 0.2, sx, sy)
     n = n + 1
   }
   if r.flash then {
-    ink.rect(r, 0, surface.grid_top(r, list.len(tabs)) - r.pad_y, width, height, r.theme.fg, 0.12, sx, sy)
+    ink.rect(r, r.box.0, r.box.1, r.box.0 + r.box.2, r.box.1 + r.box.3, r.theme.fg, 0.12, sx, sy)
     n = n + 1
   }
   if list.len(tabs) > 1 then n = n + chrome.draw_tabs(r, list.map(tabs, (s) => text.code_points(s)), active, width, sx, sy)

@@ -39,7 +39,7 @@ fn frame_of(r: surface.Renderer, t: terminal.Terminal, back: Int, shift: Int, pr
   // its top: one row more is drawn, from `shift` pixels less than a row
   // above the grid, and what falls outside the grid is covered.
   let extra = if shift > 0 then 1 else 0
-  let gy = surface.grid_top(r, list.len(tabs))
+  let gy = surface.grid_y(r)
   let top_line = view.top_line(t, back) - extra
   let shown = t.rows + extra
   let lines = list.map(0..<shown, (y) => view.line_at(t, top_line + y))

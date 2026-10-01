@@ -54,7 +54,7 @@ fn release(cur: tabset.Tab, mut ui: uistate.Ui) -> uistate.Act =
 /// pointer shaped for where it is — a hand on a link, the I-beam on the
 /// grid, the arrow on the tab bar and the scrollbar.
 fn hover(cur: tabset.Tab, mut ui: uistate.Ui, p: place.Place) -> Unit = {
-  let on_grid = not (p.tabs > 1 and place.py(p) < render.bar_height(p.r)) and not render.on_scrollbar(p.r, cur.t, p.width, place.px(p))
+  let on_grid = not (p.tabs > 1 and place.py(p) < render.bar_height(p.r)) and not render.on_scrollbar(p.r, cur.t, place.px(p))
   let link = if on_grid and link_click() then {
     let (col, _) = pointer.cell_at(p.r, cur.t, p.scale, p.tabs)
     links.link_at(cur.t, pointer.pointer_line(p.r, cur, p.scale, p.tabs), col)
@@ -120,7 +120,7 @@ fn press_off_grid(mut cur: tabset.Tab, mut ui: uistate.Ui, p: place.Place) -> Bo
   if ui.finding and on_bar(ui, p) then {
     press_bar(ui, p)
     true
-  } else if render.on_scrollbar(p.r, cur.t, p.width, place.px(p)) then {
+  } else if render.on_scrollbar(p.r, cur.t, place.px(p)) then {
     press_scrollbar(cur, ui, p)
     true
   } else false
@@ -161,7 +161,7 @@ fn drag_bar(mut ui: uistate.Ui, p: place.Place, kind: Int) -> Unit = {
 /// the track brings the thumb's middle there.
 fn press_scrollbar(mut cur: tabset.Tab, mut ui: uistate.Ui, p: place.Place) -> Unit = {
   let y = place.py(p)
-  let (y0, y1) = render.thumb(p.r, cur.t, cur.back, cur.shift, p.tabs, window.height())
+  let (y0, y1) = render.thumb(p.r, cur.t, cur.back, cur.shift)
   ui.scroll_grab = if y >= y0 and y < y1 then y - y0 else (y1 - y0) / 2
   ui.scroll_drag = true
   pointer.drag_scrollbar(cur, ui, p.r, p.scale, p.tabs)

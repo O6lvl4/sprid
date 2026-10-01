@@ -8,16 +8,17 @@ import self.gui.ink
 
 fn scrollbar_width(r: surface.Renderer) -> Int = int.max(4, r.pad_x / 3)
 
-/// The scrollbar's track: its top and height, pixels.
-fn track(r: surface.Renderer, tabs: Int, height: Int) -> (Int, Int) = {
-  let top = surface.grid_top(r, tabs)
-  (top, int.max(1, height - top - r.pad_y))
+/// The scrollbar's track, by the right edge of the pane in `r.box`: its top
+/// and height, pixels.
+fn track(r: surface.Renderer) -> (Int, Int) = {
+  let top = surface.grid_y(r)
+  (top, int.max(1, r.box.1 + r.box.3 - top - r.pad_y))
 }
 
 /// The scrollbar thumb's top and bottom, pixels, for the view scrolled
 /// `back` lines and `shift` pixels.
-fn thumb(r: surface.Renderer, t: terminal.Terminal, back: Int, shift: Int, tabs: Int, height: Int) -> (Int, Int) = {
-  let (top, len) = track(r, tabs, height)
+fn thumb(r: surface.Renderer, t: terminal.Terminal, back: Int, shift: Int) -> (Int, Int) = {
+  let (top, len) = track(r)
   let max = view.max_back(t) * r.cell_h
   let size = int.min(len, int.max(r.cell_h, len * t.rows / (view.max_back(t) + t.rows)))
   let pos = back * r.cell_h + shift
@@ -26,18 +27,20 @@ fn thumb(r: surface.Renderer, t: terminal.Terminal, back: Int, shift: Int, tabs:
 }
 
 /// Where the view is scrolled to, pixels back, with the thumb's top at `y`.
-fn scroll_pos_at(r: surface.Renderer, t: terminal.Terminal, tabs: Int, height: Int, y: Int) -> Int = {
-  let (top, len) = track(r, tabs, height)
+fn scroll_pos_at(r: surface.Renderer, t: terminal.Terminal, y: Int) -> Int = {
+  let (top, len) = track(r)
   let max = view.max_back(t) * r.cell_h
-  let (y0, y1) = thumb(r, t, 0, 0, tabs, height)
+  let (y0, y1) = thumb(r, t, 0, 0)
   let room = int.max(1, len - (y1 - y0))
   int.clamp(max - (y - top) * max / room, 0, max)
 }
 
-/// Whether pixel column `x` is on the scrollbar: the right margin, while
-/// there is scrollback to scroll.
-fn on_scrollbar(r: surface.Renderer, t: terminal.Terminal, width: Int, x: Int) -> Bool =
-  view.max_back(t) > 0 and x >= width - int.max(r.pad_x, scrollbar_width(r) * 3)
+/// Whether pixel column `x` is on the scrollbar: the right margin of the
+/// pane in `r.box`, while there is scrollback to scroll.
+fn on_scrollbar(r: surface.Renderer, t: terminal.Terminal, x: Int) -> Bool = {
+  let right = r.box.0 + r.box.2
+  view.max_back(t) > 0 and x >= right - int.max(r.pad_x, scrollbar_width(r) * 3) and x < right
+}
 
 /// The tab bar: one tab per title, `active` raised to the terminal's
 /// background with an accent line, the others on a darker strip. Returns the

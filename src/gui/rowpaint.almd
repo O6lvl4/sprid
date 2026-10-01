@@ -33,7 +33,7 @@ fn draw_backgrounds(mut r: surface.Renderer, row: record.Row, line: Int, sel: Op
       end = end + 1
     }
     if bg != r.theme.bg then {
-      ink.rect(r, r.pad_x + x * r.cell_w, top, r.pad_x + end * r.cell_w, top + r.cell_h, bg, 1.0, sx, sy)
+      ink.rect(r, surface.grid_left(r) + x * r.cell_w, top, surface.grid_left(r) + end * r.cell_w, top + r.cell_h, bg, 1.0, sx, sy)
       n = n + 1
     }
     x = end
@@ -48,7 +48,7 @@ fn draw_cell(mut r: surface.Renderer, row: record.Row, x: Int, fg: Int, linked: 
   let cp = bytes.read_u32_le(row.cells, o + cell.OFF_CP)
   let attrs = int.bor(bytes.read_u16_le(row.cells, o + cell.OFF_ATTRS), if linked then cell.ATTR_UNDERLINE else 0)
   let alpha = if int.band(attrs, cell.ATTR_FAINT) != 0 then 0.6 else 1.0
-  let left = r.pad_x + x * r.cell_w
+  let left = surface.grid_left(r) + x * r.cell_w
   let w = r.cell_w * int.max(1, bytes.read_u8(row.cells, o + cell.OFF_WIDTH))
   let shown = if int.band(attrs, cell.ATTR_HIDDEN) != 0 then 0
     else if sprite.is_sprite(cp) then draw_sprite(r, cp, left, top, fg, alpha, sx, sy)

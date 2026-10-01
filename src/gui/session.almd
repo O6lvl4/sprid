@@ -4,6 +4,7 @@
 
 import self.gui.fonts
 import self.gui.render
+import self.gui.surface
 import self.gui.tabset
 import self.gui.uistate
 import self.settings
@@ -153,3 +154,9 @@ fn shown(mut s: Stats, now: Int) -> Unit = {
 fn count_wake(mut s: Stats) -> Unit = { s.wakes = s.wakes + 1 }
 
 fn set_auto_next(mut s: Stats, at: Int) -> Unit = { s.auto_next = at }
+
+/// The renderer told where the tab in front is: the pane drawn and pointed
+/// at (see `surface.Renderer.box`).
+fn place_box(mut a: Session) -> Unit = {
+  a.r = { ...a.r, box: surface.content_box(a.r, a.width, a.height, list.len(a.tabs)) }
+}

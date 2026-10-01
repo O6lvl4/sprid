@@ -145,6 +145,7 @@ effect fn event(mut a: session.Session, kind: Int) -> uistate.Act = {
   // two tabs looked like one — no tab bar to click, and every click below
   // it placed a tab bar's height too low.
   let open = list.len(a.tabs)
+  session.place_box(a)
   match tabset.take(a.tabs, a.active) {
     some(tb) => {
       var cur = tb

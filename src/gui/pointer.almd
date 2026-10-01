@@ -2,6 +2,7 @@
 
 import snaidhm.native.window as window
 import self.gui.render
+import self.gui.surface
 import self.keys
 import self.pty
 import self.terminal
@@ -62,7 +63,7 @@ fn wheel_lines(mut cur: tabset.Tab, mut ui: uistate.Ui, r: render.Renderer, scal
 fn drag_scrollbar(mut cur: tabset.Tab, mut ui: uistate.Ui, r: render.Renderer, scale: Float, tabs: Int) -> Unit = {
   terminal.settle(cur.t)
   let py = float.to_int(window.event_y() * scale)
-  let pos = render.scroll_pos_at(r, cur.t, tabs, window.height(), py - ui.scroll_grab)
+  let pos = render.scroll_pos_at(r, cur.t, py - ui.scroll_grab)
   if pos != cur.back * r.cell_h + cur.shift then {
     cur.back = pos / r.cell_h
     cur.shift = pos % r.cell_h
@@ -75,7 +76,7 @@ fn pointer_line(r: render.Renderer, tb: tabset.Tab, scale: Float, tabs: Int) -> 
   let py = float.to_int(window.event_y() * scale)
   // The viewport's top line starts `shift` pixels below the grid's top; the
   // line above it shows in those pixels.
-  let rel = py - render.grid_top(r, tabs) - tb.shift
+  let rel = py - surface.grid_y(r) - tb.shift
   let row = if rel < 0 then (if tb.shift > 0 then -1 else 0) else int.min(rel / r.cell_h, tb.t.rows - 1)
   view.top_line(tb.t, tb.back) + row
 }
@@ -84,6 +85,5 @@ fn pointer_line(r: render.Renderer, tb: tabset.Tab, scale: Float, tabs: Int) -> 
 fn cell_at(r: render.Renderer, t: terminal.Terminal, scale: Float, tabs: Int) -> (Int, Int) = {
   let px = float.to_int(window.event_x() * scale)
   let py = float.to_int(window.event_y() * scale)
-  let gy = render.grid_top(r, tabs)
-  (int.clamp((px - r.pad_x) / r.cell_w, 0, t.cols - 1), int.clamp((py - gy) / r.cell_h, 0, t.rows - 1))
+  (int.clamp((px - surface.grid_left(r)) / r.cell_w, 0, t.cols - 1), int.clamp((py - surface.grid_y(r)) / r.cell_h, 0, t.rows - 1))
 }

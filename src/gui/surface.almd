@@ -30,6 +30,10 @@ type Renderer = {
   baseline: Int,
   pad_x: Int,
   pad_y: Int,
+  // The area of the pane drawn or pointed at now — (x, y, width, height),
+  // pixels, its padding included: the window below the tab bar, or its part
+  // of a split. The grid sits in it inset by the padding.
+  box: (Int, Int, Int, Int),
   line_w: Int,
   // The colours: the theme's, and its 256-colour palette.
   theme: theme.Theme,
@@ -100,6 +104,7 @@ fn new(device: Int, faces: fonts.Faces, size_px: Int, pad_x: Int, pad_y: Int, ce
     baseline: 0,
     pad_x: 0,
     pad_y: 0,
+    box: (0, 0, 1, 1),
     line_w: 1,
     theme: theme.default(),
     cursor_default: 0,
@@ -166,8 +171,22 @@ fn cell_size(faces: fonts.Faces, size_px: Int, cell_height: Float) -> (Int, Int)
 
 /// Columns and rows that fit a `width` x `height` drawable with `tabs` tabs
 /// open (the tab bar shows from two on).
-fn grid_size(r: Renderer, width: Int, height: Int, tabs: Int) -> (Int, Int) =
-  (int.max(1, (width - 2 * r.pad_x) / r.cell_w), int.max(1, (height - grid_top(r, tabs) - r.pad_y) / r.cell_h))
+fn grid_size(r: Renderer, width: Int, height: Int, tabs: Int) -> (Int, Int) = box_grid(r, content_box(r, width, height, tabs))
+
+/// The drawable below the tab bar: a tab's area, split among its panes.
+fn content_box(r: Renderer, width: Int, height: Int, tabs: Int) -> (Int, Int, Int, Int) = {
+  let top = if tabs > 1 then bar_height(r) else 0
+  (0, top, width, int.max(1, height - top))
+}
+
+/// Columns and rows of the grid in `box`, inside its padding.
+fn box_grid(r: Renderer, box: (Int, Int, Int, Int)) -> (Int, Int) =
+  (int.max(1, (box.2 - 2 * r.pad_x) / r.cell_w), int.max(1, (box.3 - 2 * r.pad_y) / r.cell_h))
+
+/// Where the grid of the pane in `r.box` starts, pixels.
+fn grid_left(r: Renderer) -> Int = r.box.0 + r.pad_x
+
+fn grid_y(r: Renderer) -> Int = r.box.1 + r.pad_y
 
 /// Height of the tab bar.
 fn bar_height(r: Renderer) -> Int = r.cell_h + r.pad_y
