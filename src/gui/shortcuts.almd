@@ -102,11 +102,13 @@ fn open_act(k: Key) -> Option[uistate.Act] =
 fn closes_window(k: Key) -> Bool =
   (k.command_shift and k.kind == window.TEXT and k.lower == 0x77) or (k.linux and k.command and k.lower == 0x71)
 
-/// Font size: Cmd+Plus — Cmd+= on a US keyboard, Cmd+; on a Japanese one,
-/// with or without Shift — Cmd+Minus, and Cmd+0 back to the default.
+/// Font size: Cmd+Plus — Cmd+= on a US keyboard, Cmd+; on a Japanese one —
+/// and Cmd+Minus, each with or without Shift: Plus wants Shift on a Japanese
+/// keyboard, and Minus pressed in the same run keeps it held. Cmd+0 goes
+/// back to the default.
 fn zoom_act(k: Key) -> Option[uistate.Act] =
   if (k.command or k.command_shift) and list.contains([0x3D, 0x2B, 0x3B], k.code) then some(uistate.Zoom(1))
-  else if k.command and k.code == 0x2D then some(uistate.Zoom(-1))
+  else if (k.command or k.command_shift) and k.code == 0x2D then some(uistate.Zoom(-1))
   else if k.command and k.code == 0x30 then some(uistate.Zoom(0))
   else none
 
@@ -264,3 +266,14 @@ fn send(mut cur: tabset.Tab, mut ui: uistate.Ui, out: String) -> Unit =
     if cur.back != 0 then ui.dirty = true
     tabset.scroll_to(cur, 0)
   }
+
+test "font size: Cmd+Plus and Cmd+Minus, with or without Shift" {
+  let key = (code: Int, mods: Int) => Key { kind: window.TEXT, code: code, held: mods, mods: mods, lower: code, linux: false,
+    command: mods == window.MOD_SUPER, command_shift: mods == window.MOD_SUPER + window.MOD_SHIFT, command_key: false }
+  let cmd = window.MOD_SUPER
+  let shift = window.MOD_SUPER + window.MOD_SHIFT
+  assert_eq(zoom_act(key(0x3B, shift)), some(uistate.Zoom(1)))
+  assert_eq(zoom_act(key(0x2D, cmd)), some(uistate.Zoom(-1)))
+  assert_eq(zoom_act(key(0x2D, shift)), some(uistate.Zoom(-1)))
+  assert_eq(zoom_act(key(0x30, shift)), none)
+}
