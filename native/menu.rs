@@ -3,9 +3,10 @@
 //!
 //! An item does what its key does: picking it hands sprid the same input
 //! the key would (`crate::window::inject`), so the menu and the keyboard
-//! can't come to differ. Its key equivalent is what macOS shows beside it —
-//! and, as for every Mac app, a key the menu takes no longer reaches the
-//! window, which is fine for the same reason.
+//! can't come to differ. Its key equivalent is only what macOS shows beside
+//! it: the window takes the key first and has it come in as any other key
+//! (see `view_key_equivalent`). Only the standard actions — Quit, Hide —
+//! are left to the menu.
 
 /// Set the menu bar from `spec`: a menu per `>Title` line (`>Title*` the
 /// Window menu, which lists the windows; `>Title?` the Help menu), then its
@@ -58,6 +59,7 @@ mod mac {
         fn class_addMethod(cls: Id, name: Id, imp: *const c_void, types: *const c_char) -> bool;
         fn objc_autoreleasePoolPush() -> *mut c_void;
         fn objc_autoreleasePoolPop(pool: *mut c_void);
+        fn class_getMethodImplementation(cls: Id, name: Id) -> *const c_void;
     }
 
     unsafe fn sel(name: &str) -> Id {
@@ -80,6 +82,17 @@ mod mac {
         let f: unsafe extern "C" fn(Id, Id, usize) = unsafe { std::mem::transmute(objc_msgSend as unsafe extern "C" fn()) };
         unsafe { f(obj, sel(name), arg) }
     }
+    unsafe fn get_uint(obj: Id, name: &str) -> usize {
+        let f: unsafe extern "C" fn(Id, Id) -> usize = unsafe { std::mem::transmute(objc_msgSend as unsafe extern "C" fn()) };
+        unsafe { f(obj, sel(name)) }
+    }
+    unsafe fn rust_string(s: Id) -> String {
+        if s.is_null() {
+            return String::new();
+        }
+        let p = unsafe { send(s, "UTF8String") } as *const c_char;
+        if p.is_null() { String::new() } else { unsafe { std::ffi::CStr::from_ptr(p) }.to_string_lossy().into_owned() }
+    }
     unsafe fn ns_string(s: &str) -> Id {
         let c = CString::new(s).unwrap_or_default();
         let f: unsafe extern "C" fn(Id, Id, *const c_char) -> Id = unsafe { std::mem::transmute(objc_msgSend as unsafe extern "C" fn()) };
@@ -88,6 +101,41 @@ mod mac {
 
     /// What each item does, by its tag.
     static ACTIONS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    /// The key equivalents, (key, modifier mask), of the items that hand
+    /// sprid an input.
+    static KEYS: Mutex<Vec<(String, usize)>> = Mutex::new(Vec::new());
+
+    /// NSEventModifierFlagShift, Control, Option and Command.
+    const SHIFT: usize = 1 << 17;
+    const KEY_MODS: usize = SHIFT | (1 << 18) | (1 << 19) | (1 << 20);
+    const KEY_DOWN: usize = 10;
+
+    /// Whether key-down `event` is the key equivalent of an item that hands
+    /// sprid an input — Shift held for a key whose Shift types another
+    /// character (Cmd+} is Cmd+Shift+]).
+    unsafe fn ours(event: Id) -> bool {
+        let chars = unsafe { rust_string(send(event, "charactersIgnoringModifiers")) };
+        let mods = unsafe { get_uint(event, "modifierFlags") } & KEY_MODS;
+        KEYS.lock().map_or(false, |keys| keys.iter().any(|(key, mask)| key.eq_ignore_ascii_case(&chars) && (*mask == mods || *mask | SHIFT == mods)))
+    }
+
+    /// The window's `performKeyEquivalent:`, which AppKit asks before the
+    /// menu bar: a key an item would hand sprid goes to the window as a
+    /// key-down, the way a key no item has does. Taken by the menu, a held
+    /// key's repeats stalled the event loop — Cmd+Minus held down showed
+    /// nothing for most of a second, then every step at once — where
+    /// Cmd+Shift+Minus, no item's key, came in smoothly.
+    unsafe extern "C" fn view_key_equivalent(this: Id, cmd: Id, event: Id) -> bool {
+        unsafe {
+            if get_uint(event, "type") == KEY_DOWN && ours(event) {
+                send_id(this, "keyDown:", event);
+                return true;
+            }
+            let base: unsafe extern "C" fn(Id, Id, Id) -> bool =
+                std::mem::transmute(class_getMethodImplementation(class("NSView"), cmd));
+            base(this, cmd, event)
+        }
+    }
 
     unsafe extern "C" fn act(_this: Id, _cmd: Id, sender: Id) {
         let f: unsafe extern "C" fn(Id, Id) -> isize = unsafe { std::mem::transmute(objc_msgSend as unsafe extern "C" fn()) };
@@ -144,6 +192,7 @@ mod mac {
             let app = send(class("NSApplication"), "sharedApplication");
             let bar = send(send(class("NSMenu"), "alloc"), "init");
             let mut actions = Vec::new();
+            let mut keys = Vec::new();
             let mut menu: Id = std::ptr::null_mut();
             for line in spec.lines() {
                 if let Some(head) = line.strip_prefix('>') {
@@ -179,6 +228,9 @@ mod mac {
                 let item = init(send(class("NSMenuItem"), "alloc"), sel("initWithTitle:action:keyEquivalent:"),
                     ns_string(title), selector, ns_string(&key_equivalent(key)));
                 send_uint(item, "setKeyEquivalentModifierMask:", mask.parse().unwrap_or(0));
+                if action.starts_with("key:") {
+                    keys.push((key_equivalent(key), mask.parse().unwrap_or(0)));
+                }
                 if !action.starts_with("sel:") {
                     send_id(item, "setTarget:", target());
                     send_uint(item, "setTag:", actions.len());
@@ -188,6 +240,14 @@ mod mac {
             }
             if let Ok(mut a) = ACTIONS.lock() {
                 *a = actions;
+            }
+            if let Ok(mut k) = KEYS.lock() {
+                *k = keys;
+            }
+            // winit's view, once: the window is open before the menus are.
+            let view = class("WinitView");
+            if !view.is_null() {
+                class_addMethod(view, sel("performKeyEquivalent:"), view_key_equivalent as *const c_void, c"B@:@".as_ptr());
             }
             send_id(app, "setMainMenu:", bar);
             objc_autoreleasePoolPop(pool);
