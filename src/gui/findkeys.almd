@@ -8,18 +8,26 @@ import self.view
 import self.gui.tabset
 import self.gui.uistate
 
+/// The Cmd letters the field takes: select all, copy, cut, paste, find,
+/// find next.
+let FIELD_COMMANDS = [0x61, 0x63, 0x78, 0x76, 0x66, 0x67]
+
+/// The keys the field takes with Cmd.
+let FIELD_KEYS = [window.KEY_BACKSPACE, window.KEY_DELETE, window.KEY_LEFT, window.KEY_RIGHT]
+
 /// Whether an input goes to the focused find bar: every key without Cmd —
 /// the program gets nothing while the bar has the focus — and the Cmd keys
 /// of a text field (A, C, X, V, arrows, Backspace) and of finding (F, G).
 /// Other Cmd shortcuts (tabs, font size) work as ever.
-fn find_owns(kind: Int, code: Int, mods: Int) -> Bool = {
-  let lower = if code >= 0x41 and code <= 0x5A then code + 32 else code
-  let cmd = int.band(mods, window.MOD_SUPER) != 0
-  not cmd
-    or (kind == window.TEXT and (lower == 0x61 or lower == 0x63 or lower == 0x78 or lower == 0x76 or lower == 0x66 or lower == 0x67))
-    or (kind == window.KEY and (code == window.KEY_BACKSPACE or code == window.KEY_DELETE
-      or code == window.KEY_LEFT or code == window.KEY_RIGHT))
-}
+fn find_owns(kind: Int, code: Int, mods: Int) -> Bool =
+  int.band(mods, window.MOD_SUPER) == 0
+    or (kind == window.TEXT and list.contains(FIELD_COMMANDS, lower(code)))
+    or (kind == window.KEY and list.contains(FIELD_KEYS, code))
+
+fn lower(code: Int) -> Int = if code >= 0x41 and code <= 0x5A then code + 32 else code
+
+/// A key as the field reads it.
+type FieldKey = { key: Bool, text: Bool, code: Int, lower: Int, cmd: Bool, shift: Bool, alt: Bool }
 
 /// An input to the focused find bar. Its field edits as a Mac text field
 /// does — Cmd+A, C, X, V; arrows, Option by word, Cmd or Home / End to the
@@ -28,58 +36,113 @@ fn find_owns(kind: Int, code: Int, mods: Int) -> Bool = {
 /// Shift+Enter or Down the one below (Cmd+G and Cmd+Shift+G too); Escape
 /// closes the bar.
 effect fn find_key(mut cur: tabset.Tab, mut ui: uistate.Ui, kind: Int, code: Int, mods: Int) -> Unit = {
-  let lower = if code >= 0x41 and code <= 0x5A then code + 32 else code
-  let cmd = int.band(mods, window.MOD_SUPER) != 0
-  let shift = int.band(mods, window.MOD_SHIFT) != 0
-  let alt = int.band(mods, window.MOD_ALT) != 0
+  let k = FieldKey {
+    key: kind == window.KEY, text: kind == window.TEXT, code: code, lower: lower(code),
+    cmd: int.band(mods, window.MOD_SUPER) != 0, shift: int.band(mods, window.MOD_SHIFT) != 0,
+    alt: int.band(mods, window.MOD_ALT) != 0,
+  }
+  if k.key and code == window.KEY_ESCAPE then close_bar(ui)
+  else if not find_nav(cur, ui, k) and not field_command(cur, ui, k)! then field_edit(cur, ui, k, mods)
+}
+
+fn close_bar(mut ui: uistate.Ui) -> Unit = {
+  ui.finding = false
+  ui.find_focus = false
+  let nothing: List[Int] = []
+  ui.preedit = nothing
+  ui.dirty = true
+}
+
+/// Enter / Cmd+G and Up / Down: the match above or below. Whether it was one.
+fn find_nav(mut cur: tabset.Tab, mut ui: uistate.Ui, k: FieldKey) -> Bool = match nav_dir(k) {
+  some(dir) => {
+    find_step(cur, ui, dir)
+    true
+  },
+  none => false,
+}
+
+fn enter_or_next(k: FieldKey) -> Bool = (k.key and k.code == window.KEY_ENTER) or (k.text and k.cmd and k.lower == 0x67)
+
+/// Which way a key steps through the matches: Enter and Cmd+G up, with
+/// Shift down; Up and Down.
+fn nav_dir(k: FieldKey) -> Option[Int] =
+  if enter_or_next(k) then some(if k.shift then 1 else -1)
+  else if k.key and k.code == window.KEY_UP then some(-1)
+  else if k.key and k.code == window.KEY_DOWN then some(1)
+  else none
+
+/// Cmd+A / Cmd+F select all, Cmd+C copies — the field's selection, else the
+/// terminal's — Cmd+X cuts, Cmd+V pastes the clipboard's first line (a
+/// search stays within a line). Whether it was one.
+effect fn field_command(mut cur: tabset.Tab, mut ui: uistate.Ui, k: FieldKey) -> Bool = {
   let f = ui.field
-  let key = kind == window.KEY
-  let cmd_text = kind == window.TEXT and cmd
-  if key and code == window.KEY_ESCAPE then {
-    ui.finding = false
-    ui.find_focus = false
-    let nothing: List[Int] = []
-    ui.preedit = nothing
-    ui.dirty = true
-  } else if (key and code == window.KEY_ENTER) or (cmd_text and lower == 0x67) then
-    find_step(cur, ui, if shift then 1 else -1)
-  else if key and (code == window.KEY_UP or code == window.KEY_DOWN) then
-    find_step(cur, ui, if code == window.KEY_UP then -1 else 1)
-  else if (cmd_text and (lower == 0x61 or lower == 0x66)) then {
+  if not (k.text and k.cmd) then false
+  else if k.lower == 0x61 or k.lower == 0x66 then {
     ui.field = field.select_all(f)
     ui.dirty = true
-  } else if cmd_text and lower == 0x63 then {
-    // Copy: the field's selection, else the terminal's.
-    if field.has_selection(f) then tabset.copy(field.selected(f))!
-    else match cur.sel {
-      some(s) => tabset.copy(view.selected_text(cur.t, s))!,
-      none => (),
-    }
-  } else if cmd_text and lower == 0x78 then {
+    true
+  } else if k.lower == 0x63 then {
+    copy_selection(cur, f)!
+    true
+  } else if k.lower == 0x78 then {
     if field.has_selection(f) then {
       tabset.copy(field.selected(f))!
       edit_field(cur, ui, field.insert(f, ""))
     }
-  } else if cmd_text and lower == 0x76 then {
-    // The first line of the clipboard: a search stays within a line.
+    true
+  } else if k.lower == 0x76 then {
     edit_field(cur, ui, field.insert(f, list.first(string.lines(tabset.clipboard()!)) ?? ""))
-  } else if key and (code == window.KEY_LEFT or code == window.KEY_RIGHT) then {
-    let dir = if code == window.KEY_LEFT then -1 else 1
-    ui.field = if cmd then field.move_to(f, if dir < 0 then 0 else list.len(f.chars), shift)
-      else if alt then field.move_to(f, field.word_edge(f, f.caret, dir), shift)
-      else field.step(f, dir, shift)
-    ui.dirty = true
-  } else if key and (code == window.KEY_HOME or code == window.KEY_END) then {
-    ui.field = field.move_to(f, if code == window.KEY_HOME then 0 else list.len(f.chars), shift)
-    ui.dirty = true
-  } else if key and code == window.KEY_BACKSPACE then
-    edit_field(cur, ui, field.delete_to(f, if cmd then 0 else if alt then field.word_edge(f, f.caret, -1) else f.caret - 1))
-  else if key and code == window.KEY_DELETE then
-    edit_field(cur, ui, field.delete_to(f, if alt then field.word_edge(f, f.caret, 1) else f.caret + 1))
-  else if kind == window.TEXT and int.band(mods, window.MOD_SUPER + window.MOD_CTRL) == 0 then
-    edit_field(cur, ui, field.insert(f, string.from_codepoint(code)))
-  else ()
+    true
+  } else false
 }
+
+/// The field's selection to the clipboard, else the terminal's.
+effect fn copy_selection(cur: tabset.Tab, f: field.Field) -> Unit =
+  if field.has_selection(f) then tabset.copy(field.selected(f))!
+  else match cur.sel {
+    some(s) => tabset.copy(view.selected_text(cur.t, s))!,
+    none => (),
+  }
+
+/// Moving the caret, deleting, typing.
+fn field_edit(mut cur: tabset.Tab, mut ui: uistate.Ui, k: FieldKey, mods: Int) -> Unit =
+  match moved(ui.field, k) {
+    some(g) => {
+      ui.field = g
+      ui.dirty = true
+    },
+    none => match edited(ui.field, k, mods) {
+      some(g) => edit_field(cur, ui, g),
+      none => (),
+    },
+  }
+
+/// The field with its caret moved by an arrow, Home or End.
+fn moved(f: field.Field, k: FieldKey) -> Option[field.Field] =
+  if not k.key then none
+  else if k.code == window.KEY_LEFT then some(arrow(f, -1, k))
+  else if k.code == window.KEY_RIGHT then some(arrow(f, 1, k))
+  else if k.code == window.KEY_HOME then some(field.move_to(f, 0, k.shift))
+  else if k.code == window.KEY_END then some(field.move_to(f, list.len(f.chars), k.shift))
+  else none
+
+/// The field with a Backspace or Delete — Option by word, Cmd+Backspace to
+/// the start — or typing applied.
+fn edited(f: field.Field, k: FieldKey, mods: Int) -> Option[field.Field] =
+  if k.key and k.code == window.KEY_BACKSPACE then
+    some(field.delete_to(f, if k.cmd then 0 else if k.alt then field.word_edge(f, f.caret, -1) else f.caret - 1))
+  else if k.key and k.code == window.KEY_DELETE then
+    some(field.delete_to(f, if k.alt then field.word_edge(f, f.caret, 1) else f.caret + 1))
+  else if k.text and int.band(mods, window.MOD_SUPER + window.MOD_CTRL) == 0 then
+    some(field.insert(f, string.from_codepoint(k.code)))
+  else none
+
+/// Left or right (`dir`): Cmd to the end, Option by word, Shift selecting.
+fn arrow(f: field.Field, dir: Int, k: FieldKey) -> field.Field =
+  if k.cmd then field.move_to(f, if dir < 0 then 0 else list.len(f.chars), k.shift)
+  else if k.alt then field.move_to(f, field.word_edge(f, f.caret, dir), k.shift)
+  else field.step(f, dir, k.shift)
 
 /// The field edited to `g`, searched again when its text changed.
 fn edit_field(mut cur: tabset.Tab, mut ui: uistate.Ui, g: field.Field) -> Unit = {

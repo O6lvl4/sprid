@@ -1,0 +1,150 @@
+// The loop's upkeep between inputs: how long to sleep, the cursor's blink,
+// the config reloaded when saved, the window resized, SPRID_DEBUG's report
+// and SPRID_AUTOSCROLL's turns.
+
+import snaidhm.native.window as window
+import self.gui.fonts
+import self.gui.render
+import self.pty
+import self.sys
+import self.gui.tabset
+import self.gui.uistate
+import self.gui.prefs
+import self.gui.findkeys
+import self.gui.pointer
+import self.gui.session
+
+/// The PTYs, and the config file's watch.
+fn watched(a: session.Session) -> List[Int] =
+  list.map(a.tabs, (tb) => tb.fd) + (if a.config_fd >= 0 then [a.config_fd] else [])
+
+/// How long to sleep: until input, output on any tab, or the next frame is
+/// due — with nothing to draw that is indefinitely, so an idle window costs
+/// nothing — or the next thing timed: settling after a resize, the cursor's
+/// blink, the bell's light going out, a write to retry, a turn of the
+/// autoscroll. -1 for no limit.
+fn wait_for(mut a: session.Session) -> Int = {
+  let now = sys.now_ms()
+  blink(a, now)
+  if a.flash_until >= 0 and now >= a.flash_until then {
+    session.set_flash(a.r, false)
+    a.flash_until = -1
+    uistate.touch(a.ui)
+  }
+  let frame_wait = int.max(0, a.last_frame + session.frame_ms(a) - now)
+  let idle = if a.capture == none then -1 else 50
+  let drawn = if a.ui.dirty then int.max(frame_wait, tabset.sync_wait(a.tabs, a.active, now)) else idle
+  let until = (at: Int) => if at < 0 then -1 else int.max(0, at - now)
+  // Input a program hasn't taken yet (a big paste) is offered again soon.
+  let write = if list.any(a.tabs, (tb) => pty.pending(tb.fd)) then session.WRITE_RETRY_MS else -1
+  let settle = if a.resized_at < 0 then -1 else a.resized_at + session.SETTLE_MS
+  list.fold([until(settle), until(a.stats.auto_next), write, until(a.blink_at), until(a.flash_until)], drawn,
+    (acc, w) => session.sooner(acc, w))
+}
+
+/// A blinking cursor turns on and off while the window has the focus.
+fn blink(mut a: session.Session, now: Int) -> Unit =
+  if a.r.focused and tabset.cursor_blinks(a.tabs, a.active, a.r) then {
+    if a.blink_at < 0 then a.blink_at = now + session.BLINK_MS
+    else if now >= a.blink_at then {
+      session.set_blink_off(a.r, not a.r.blink_off)
+      a.blink_at = now + session.BLINK_MS
+      uistate.touch(a.ui)
+    }
+  } else {
+    a.blink_at = -1
+    session.set_blink_off(a.r, false)
+  }
+
+/// The config file was saved: it applies now — the theme, the font and its
+/// size, the cursor, Option — over what was set before. (One save can be
+/// seen more than once — the file, then its directory.)
+effect fn reload(mut a: session.Session) -> Unit = {
+  let saved = sys.watch_changed(a.config_fd)
+  let fresh = if saved then prefs.read_settings()! else a.st
+  if saved and fresh != a.st then {
+    prefs.report(fresh)!
+    let new_faces = fresh.font_family != a.st.font_family
+    let resize = new_faces or (fresh.font_size, fresh.pad_x, fresh.pad_y, fresh.cell_height) != (a.st.font_size, a.st.pad_x, a.st.pad_y, a.st.cell_height)
+    a.st = fresh
+    window.set_option_as_alt(fresh.option_as_alt)
+    if new_faces then new_font(a)!
+    a.r = prefs.styled(a.r, fresh)!
+    if resize then {
+      a.font_size = fresh.font_size
+      a.r = render.with_size(a.r, float.to_int(float.round(a.font_size * a.scale)),
+        float.to_int(fresh.pad_x * a.scale), float.to_int(fresh.pad_y * a.scale), fresh.cell_height)
+      tabset.relayout_live(a.tabs, a.r, a.width, a.height)
+      a.resized_at = sys.now_ms()
+    }
+    uistate.touch(a.ui)
+  }
+}
+
+/// A renderer for the config's font family, when it is found.
+effect fn new_font(mut a: session.Session) -> Unit = match fonts.find(a.st.font_family)! {
+  some(f) => {
+    let st = a.st
+    a.r = { ...render.new(a.device, f, float.to_int(float.round(st.font_size * a.scale)),
+      float.to_int(st.pad_x * a.scale), float.to_int(st.pad_y * a.scale), st.cell_height), focused: a.r.focused }
+  },
+  none => (),
+}
+
+/// SPRID_DEBUG: every 2 s, how often the loop woke and how long input took
+/// to show.
+fn report_wakes(mut a: session.Session, timeout: Int) -> Unit = {
+  session.count_wake(a.stats)
+  if a.stats.debug and sys.now_ms() - a.stats.wake_report >= 2000 then {
+    let s = a.stats
+    eprintln("sprid: ${int.to_string(s.wakes)} wakes in 2 s (dirty ${if a.ui.dirty then "yes" else "no"}, timeout ${int.to_string(timeout)})"
+      + ", input to frame avg ${int.to_string(s.latency_sum / int.max(1, s.latency_n))} max ${int.to_string(s.latency_max)} ms over ${int.to_string(s.latency_n)}")
+    a.stats = { ...s, latency_max: 0, latency_sum: 0, latency_n: 0, wakes: 0, wake_report: sys.now_ms() }
+  }
+}
+
+/// The window changed size: the screens follow now, scrollback once the
+/// size has held for a moment — and then the search is run again, the
+/// lines being numbered anew.
+fn resized(mut a: session.Session) -> Unit = {
+  if window.resized() then {
+    a.width = window.width()
+    a.height = window.height()
+    tabset.relayout_live(a.tabs, a.r, a.width, a.height)
+    a.resized_at = sys.now_ms()
+    uistate.touch(a.ui)
+  }
+  if a.resized_at >= 0 and sys.now_ms() - a.resized_at >= session.SETTLE_MS then {
+    tabset.settle_all(a.tabs)
+    a.resized_at = -1
+    uistate.touch(a.ui)
+    match tabset.take(a.tabs, a.active) {
+      some(tb) => {
+        var cur = tb
+        findkeys.refresh_find(cur, a.ui)
+        list.push(a.tabs, cur)
+        a.tabs = list.swap(a.tabs, a.active, list.len(a.tabs) - 1)
+      },
+      none => (),
+    }
+  }
+}
+
+/// SPRID_AUTOSCROLL's turn of the wheel, when one is due.
+fn autoscroll(mut a: session.Session) -> Unit = {
+  let next = a.stats.auto_next
+  if next >= 0 and sys.now_ms() >= next then {
+    let auto = a.stats.auto
+    match tabset.take(a.tabs, a.active) {
+      some(tb) => {
+        var cur = tb
+        pointer.wheel(cur, a.ui, a.r, a.scale, auto[0], 40, 10)
+        if a.stats.trace then eprintln("wheel ${int.to_string(sys.now_ms())}")
+        list.push(a.tabs, cur)
+        a.tabs = list.swap(a.tabs, a.active, list.len(a.tabs) - 1)
+      },
+      none => (),
+    }
+    session.set_auto_next(a.stats, if sys.now_ms() >= float.to_int(auto[2]) then -1 else next + float.to_int(auto[3]))
+  }
+}

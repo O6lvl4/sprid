@@ -1,0 +1,90 @@
+// The session as the window opens: the login shell, the renderer, the
+// first tab, the input state.
+
+import env
+import snaidhm.native.window as window
+import self.gui.fonts
+import self.gui.render
+import self.pty
+import self.search
+import self.field
+import self.settings
+import self.sys
+import self.terminal
+import self.gui.tabset
+import self.gui.uistate
+import self.gui.prefs
+import self.gui.session
+
+/// The login shell, from $SHELL — started from Finder there is none: from
+/// the password database then.
+effect fn login_command() -> String = {
+  let shell = match env.get("SHELL") {
+    some(s) => s,
+    none => if sys.login_shell() != "" then sys.login_shell() else "/bin/zsh",
+  }
+  "exec ${shell} -l"
+}
+
+/// The session as the window opens, its first tab on `first_fd`.
+effect fn start(capture: Option[String], faces: fonts.Faces, st: settings.Settings, login: String, first_fd: Int, expected: (Int, Int)) -> session.Session = {
+  let scale = window.scale_factor()
+  let device = 1
+  // The theme also colours what a window being resized uncovers, until it is
+  // drawn for its size.
+  var r = prefs.styled(render.new(device, faces, float.to_int(float.round(st.font_size * scale)),
+    float.to_int(st.pad_x * scale), float.to_int(st.pad_y * scale), st.cell_height), st)!
+  // Opened behind another app's window, it has no focus until clicked.
+  r.focused = window.focused()
+  let width = window.width()
+  let height = window.height()
+  let (cols, rows) = render.grid_size(r, width, height, 1)
+  if (cols, rows) != expected then { let _ = pty.resize(first_fd, cols, rows) } else ()
+  let home = env.get("HOME") ?? ""
+  var a = session.Session {
+    capture: capture, login: login, home: home,
+    // Questions in Japanese on a Japanese system.
+    ja: string.starts_with(env.get("LANG") ?? "", "ja"),
+    scale: scale, device: device,
+    // The config file, watched: saved, it applies at once.
+    config_fd: if capture == none then sys.watch(prefs.config_path()!) else -1,
+    st: st, r: r,
+    tabs: [tabset.Tab { t: terminal.with_scrollback(cols, rows, st.scrollback), fd: first_fd, back: 0, shift: 0, sel: none,
+      up: tabset.Updates { syncs: 0, sync_at: 0, hides: 0, hide_at: 0 }, name: "", alert: false }],
+    active: 0, ui: fresh_ui(home), width: width, height: height, font_size: st.font_size,
+    blink_at: -1, flash_until: -1, alive: true, last_frame: 0, streaming: false, resized_at: -1,
+    front: first_fd, window_title: "", stats: fresh_stats()!,
+  }
+  // For captures of the tab bar: more tabs running the login shell.
+  let extra = if capture != none then int.parse(env.get("SPRID_CAPTURE_TABS") ?? "1") ?? 1 else 1
+  for _ in 1..<extra {
+    match tabset.open_tab(a.r, width, height, list.len(a.tabs) + 1, login, "", st.scrollback) {
+      some(tb) => {
+        list.push(a.tabs, tb)
+        tabset.relayout(a.tabs, a.r, width, height)
+      },
+      none => (),
+    }
+  }
+  a
+}
+
+fn fresh_ui(home: String) -> uistate.Ui = uistate.Ui {
+  preedit: [], preedit_caret: 0, preedit_from: 0, preedit_to: 0, wheel_acc: 0.0, dragging: false, unit: 0, anchor_line: 0, anchor_col: 0,
+  anchor_end_line: 0, anchor_end_col: 0, clicks: 0, click_line: 0, click_col: 0, dirty: true,
+  renaming: false, draft: "", click_ms: 0, click_tab: -1, home: home, finding: false, find: search.empty(),
+  field: field.of(""), find_focus: false, field_drag: false, scroll_drag: false, scroll_grab: 0,
+  ime_x: -1, ime_y: -1,
+  app_button: -1, report_col: -1, report_row: -1,
+}
+
+effect fn fresh_stats() -> session.Stats = {
+  let auto = list.map(string.split(env.get("SPRID_AUTOSCROLL") ?? "", ","), (x) => float.parse(x) ?? 0.0)
+  session.Stats {
+    debug: env.get("SPRID_DEBUG") != none, trace: env.get("SPRID_TRACE") != none,
+    frames: 0, draw_ms: 0, wakes: 0, wake_report: 0,
+    input_at: -1, latency_max: 0, latency_sum: 0, latency_n: 0,
+    auto: auto, auto_next: if list.len(auto) == 4 then float.to_int(auto[1]) else -1,
+  }
+}
+

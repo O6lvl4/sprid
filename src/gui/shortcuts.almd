@@ -1,0 +1,238 @@
+// Keys typed at the terminal: the window's shortcuts — tabs, windows, font
+// size, full screen, selecting, scrolling, find, clear, copy, paste — and
+// everything else to the program.
+
+import snaidhm.native.window as window
+import self.keys
+import self.pty
+import self.scrollback
+import self.field
+import self.sys
+import self.terminal
+import self.view
+import self.gui.tabset
+import self.gui.uistate
+import self.gui.findkeys
+
+/// A key or text input as the shortcuts read it.
+type Key = {
+  kind: Int,
+  code: Int,
+  // What was held, and what a shortcut reads it as (Ctrl+Shift is Cmd on
+  // Linux, see `keys.shortcut_mods`); a key no shortcut takes goes to the
+  // program as it was pressed.
+  held: Int,
+  mods: Int,
+  // Letters as typed without Shift or Caps Lock.
+  lower: Int,
+  linux: Bool,
+  command: Bool,
+  command_shift: Bool,
+  // Cmd with a key that types nothing: Enter, the arrows, Home, End, ...
+  command_key: Bool,
+}
+
+/// The current input, `kind` TEXT or KEY.
+fn key_of(kind: Int) -> Key = {
+  let code = window.event_code()
+  let mods = keys.shortcut_mods(sys.is_linux(), kind, code, window.event_mods())
+  Key {
+    kind: kind, code: code, held: window.event_mods(), mods: mods,
+    lower: if code >= 0x41 and code <= 0x5A then code + 32 else code,
+    linux: sys.is_linux(),
+    command: kind == window.TEXT and mods == window.MOD_SUPER,
+    command_shift: mods == window.MOD_SUPER + window.MOD_SHIFT,
+    command_key: kind == window.KEY and mods == window.MOD_SUPER,
+  }
+}
+
+/// A key typed at the terminal of tab `cur`; what it asks of the tabs.
+effect fn key_input(mut cur: tabset.Tab, mut ui: uistate.Ui, kind: Int) -> uistate.Act = {
+  let k = key_of(kind)
+  match tab_act(k) {
+    some(act) => act,
+    none => if window_key(k) or view_key(cur, ui, k) or command_key(cur, ui, k)! then uistate.Stay else to_program(cur, ui, k),
+  }
+}
+
+/// Shortcuts for tabs and windows, and the font size.
+fn tab_act(k: Key) -> Option[uistate.Act] = match switch_act(k) {
+  some(act) => some(act),
+  none => match open_act(k) {
+    some(act) => some(act),
+    none => zoom_act(k),
+  },
+}
+
+/// Ctrl+Tab / Ctrl+Shift+Tab, as in browsers (Tab and Shift+Tab alone stay
+/// the program's: completion, a CLI's mode cycling); on Linux also Ctrl+Page
+/// Down / Up, as its terminals do; Cmd+Shift+] / [ and Cmd+Shift+Right /
+/// Left.
+fn switch_act(k: Key) -> Option[uistate.Act] =
+  if ctrl_tab(k, window.MOD_CTRL) or ctrl_page(k, window.KEY_PAGE_DOWN) or command_shift_side(k, 0x5D, window.KEY_RIGHT) then some(uistate.NextTab)
+  else if ctrl_tab(k, window.MOD_CTRL + window.MOD_SHIFT) or ctrl_page(k, window.KEY_PAGE_UP) or command_shift_side(k, 0x5B, window.KEY_LEFT) then some(uistate.PrevTab)
+  else none
+
+fn ctrl_tab(k: Key, mods: Int) -> Bool = k.kind == window.KEY and k.code == window.KEY_TAB and k.mods == mods
+
+fn ctrl_page(k: Key, code: Int) -> Bool = k.linux and k.kind == window.KEY and k.held == window.MOD_CTRL and k.code == code
+
+/// Cmd+Shift with the bracket `text` or the arrow `arrow`.
+fn command_shift_side(k: Key, text: Int, arrow: Int) -> Bool =
+  k.command_shift and (if k.kind == window.TEXT then k.code == text else k.kind == window.KEY and k.code == arrow)
+
+/// What Cmd with a letter opens or closes.
+let COMMAND_ACTS = [(0x74, uistate.NewTab), (0x77, uistate.CloseTab), (0x6E, uistate.NewWindow)]
+
+/// Cmd+T, Cmd+W, Cmd+N, Cmd+1..9, Cmd+Shift+W; on Linux Ctrl+Shift+Q closes
+/// the window (a Mac's Cmd+Q is the menu's).
+fn open_act(k: Key) -> Option[uistate.Act] =
+  if k.command and k.code >= 0x31 and k.code <= 0x39 then some(uistate.GoTo(k.code - 0x31))
+  else if closes_window(k) then some(uistate.CloseWindow)
+  else if k.command then list.find(COMMAND_ACTS, (e) => e.0 == k.lower) |> option.map((e) => e.1)
+  else none
+
+fn closes_window(k: Key) -> Bool =
+  (k.command_shift and k.kind == window.TEXT and k.lower == 0x77) or (k.linux and k.command and k.lower == 0x71)
+
+/// Font size: Cmd+Plus — Cmd+= on a US keyboard, Cmd+; on a Japanese one,
+/// with or without Shift — Cmd+Minus, and Cmd+0 back to the default.
+fn zoom_act(k: Key) -> Option[uistate.Act] =
+  if (k.command or k.command_shift) and list.contains([0x3D, 0x2B, 0x3B], k.code) then some(uistate.Zoom(1))
+  else if k.command and k.code == 0x2D then some(uistate.Zoom(-1))
+  else if k.command and k.code == 0x30 then some(uistate.Zoom(0))
+  else none
+
+/// Cmd+M minimizes; Cmd+Enter or Cmd+Ctrl+F (as every Mac app), F11 on
+/// Linux, go full screen. Whether it was one.
+fn window_key(k: Key) -> Bool =
+  if k.command and k.lower == 0x6D then {
+    window.minimize()
+    true
+  } else if fullscreen_key(k) then {
+    window.toggle_fullscreen()
+    true
+  } else false
+
+fn fullscreen_key(k: Key) -> Bool =
+  (k.command_key and k.code == window.KEY_ENTER)
+    or (k.kind == window.TEXT and k.mods == window.MOD_SUPER + window.MOD_CTRL and k.lower == 0x66)
+    or (k.linux and k.kind == window.KEY and k.held == 0 and k.code == window.KEY_F1 + 10)
+
+/// Cmd+A selects; Cmd+Home / End, PageUp / PageDown, Up / Down and
+/// Shift+PageUp / PageDown scroll — on the main screen: on the alternate
+/// screen there is no scrollback, and the keys are the program's. Whether
+/// it was one.
+fn view_key(mut cur: tabset.Tab, mut ui: uistate.Ui, k: Key) -> Bool =
+  if k.command and k.lower == 0x61 then {
+    select_all(cur)
+    ui.dirty = true
+    true
+  } else if cur.t.alt then false
+  else match scroll_target(cur, k) {
+    some(back) => {
+      if back > cur.back then terminal.settle(cur.t)
+      tabset.scroll_to(cur, int.clamp(back, 0, view.max_back(cur.t)))
+      ui.dirty = true
+      true
+    },
+    none => false,
+  }
+
+/// Everything, scrollback and screen, down to the cursor's line — below it
+/// the screen is empty — or on the alternate screen all of it.
+fn select_all(mut cur: tabset.Tab) -> Unit = {
+  terminal.settle(cur.t)
+  let screen = view.screen_line(cur.t)
+  cur.sel = some(view.Selection { anchor_line: screen - view.max_back(cur.t), anchor_col: 0,
+                                  head_line: screen + (if cur.t.alt then cur.t.rows - 1 else cur.t.y), head_col: cur.t.cols - 1 })
+}
+
+/// Where a scrolling key takes the view, lines back; none for another key.
+fn scroll_target(cur: tabset.Tab, k: Key) -> Option[Int] =
+  if k.command_key then command_scroll(cur, k.code)
+  else if k.kind == window.KEY and k.mods == window.MOD_SHIFT then page_scroll(cur, k.code)
+  else none
+
+/// Cmd+Home / End to the top and the bottom, Cmd+PageUp / PageDown by
+/// pages, Cmd+Up / Down by lines.
+fn command_scroll(cur: tabset.Tab, code: Int) -> Option[Int] =
+  if code == window.KEY_HOME then some(view.max_back(cur.t))
+  else if code == window.KEY_END then some(0)
+  else if code == window.KEY_UP then some(cur.back + 1)
+  else if code == window.KEY_DOWN then some(cur.back - 1)
+  else page_scroll(cur, code)
+
+/// PageUp / PageDown: by pages.
+fn page_scroll(cur: tabset.Tab, code: Int) -> Option[Int] =
+  if code == window.KEY_PAGE_UP then some(cur.back + cur.t.rows - 1)
+  else if code == window.KEY_PAGE_DOWN then some(cur.back - cur.t.rows + 1)
+  else none
+
+/// The Mac's line-editing keys, Cmd+F, Cmd+G, Cmd+K, Cmd+C. Whether it was
+/// one.
+effect fn command_key(mut cur: tabset.Tab, mut ui: uistate.Ui, k: Key) -> Bool = {
+  let edit = if k.linux then "" else keys.mac_edit(k.kind, k.code, k.mods)
+  if edit != "" then {
+    send(cur, ui, edit)
+    true
+  } else if find_key(cur, ui, k) then true
+  else if k.command and k.lower == 0x6B then {
+    clear(cur, ui)
+    true
+  } else if k.command and k.lower == 0x63 then {
+    // Cmd+C: the selection to the clipboard.
+    match cur.sel {
+      some(s) => tabset.copy(view.selected_text(cur.t, s))!,
+      none => (),
+    }
+    true
+  } else false
+}
+
+/// Cmd+F: the find bar, focused, its last query selected — typing replaces
+/// it — and searched again from the bottom. Cmd+G / Cmd+Shift+G from the
+/// terminal: the last search goes on. Whether it was one.
+fn find_key(mut cur: tabset.Tab, mut ui: uistate.Ui, k: Key) -> Bool =
+  if k.command and k.lower == 0x66 then {
+    ui.finding = true
+    ui.find_focus = true
+    ui.field = field.select_all(ui.field)
+    findkeys.set_query(cur, ui, field.text(ui.field), true)
+    true
+  } else if (k.command or k.command_shift) and k.lower == 0x67 and ui.find.query != "" then {
+    ui.finding = true
+    findkeys.find_step(cur, ui, if k.command_shift then 1 else -1)
+    true
+  } else false
+
+/// Cmd+K: clear. Scrollback always; the screen too when the shell waits at
+/// its prompt — it is sent Ctrl+L, and draws the prompt, with what was
+/// typed, at the top. A program running keeps its screen: clearing it under
+/// the program would leave its drawing out of step.
+fn clear(mut cur: tabset.Tab, mut ui: uistate.Ui) -> Unit = {
+  scrollback.clear(cur.t.sb)
+  tabset.scroll_to(cur, 0)
+  cur.sel = none
+  findkeys.refresh_find(cur, ui)
+  if pty.busy(cur.fd) == "" then {
+    let _ = pty.write(cur.fd, "\x0c")
+  }
+  ui.dirty = true
+}
+
+/// Cmd+V pastes (see `acts.paste`); any other key goes to the program.
+fn to_program(mut cur: tabset.Tab, mut ui: uistate.Ui, k: Key) -> uistate.Act =
+  if k.command and k.lower == 0x76 then uistate.Paste
+  else {
+    send(cur, ui, keys.encode_with(k.kind, k.code, k.held, cur.t.app_cursor, cur.t.kitty_flags))
+    uistate.Stay
+  }
+
+/// `out` to the program; typing brings the viewport back to the prompt.
+fn send(mut cur: tabset.Tab, mut ui: uistate.Ui, out: String) -> Unit =
+  if out != "" then {
+    let _ = pty.write(cur.fd, out)
+    if cur.back != 0 then ui.dirty = true
+    tabset.scroll_to(cur, 0)
+  }

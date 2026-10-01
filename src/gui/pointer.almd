@@ -18,39 +18,43 @@ fn app_mouse(t: terminal.Terminal, ui: uistate.Ui, r: render.Renderer, scale: Fl
   (wanted and not on_bar and not ui.dragging) or (kind == window.MOUSE_UP and ui.app_button >= 0)
 }
 
-/// Longest gap between the presses of a double click, ms (macOS's default).
-let DOUBLE_CLICK_MS = 500
-
 /// The wheel moved `dy` logical pixels (positive: toward the end) over cell
 /// (`col`, `row`). Scrollback follows it by the pixel — a trackpad moves the
 /// text with the fingers, not a line at a time once a line's worth adds up.
 /// A program that asked for the mouse is told of it a line at a time, and a
 /// full-screen one without the mouse gets arrow keys.
 fn wheel(mut cur: tabset.Tab, mut ui: uistate.Ui, r: render.Renderer, scale: Float, dy: Float, col: Int, row: Int) -> Unit = {
-  let t = cur.t
-  let reports = t.mouse_mode != 0 and t.mouse_sgr
-  if not reports and not t.alt then {
-    ui.wheel_acc = ui.wheel_acc + dy * scale
-    let px = float.to_int(ui.wheel_acc)
-    ui.wheel_acc = ui.wheel_acc - int.to_float(px)
-    if px < 0 then terminal.settle(cur.t)
-    let pos = int.clamp(cur.back * r.cell_h + cur.shift - px, 0, view.max_back(cur.t) * r.cell_h)
-    if pos != cur.back * r.cell_h + cur.shift then {
-      cur.back = pos / r.cell_h
-      cur.shift = pos % r.cell_h
-      ui.dirty = true
-    }
-  } else {
-    ui.wheel_acc = ui.wheel_acc + dy
-    let line_px = int.to_float(r.cell_h) / scale
-    let lines = float.to_int(ui.wheel_acc / line_px)
-    ui.wheel_acc = ui.wheel_acc - int.to_float(lines) * line_px
-    if lines != 0 then {
-      // All of a move in one write: the program reads them together.
-      let one = if reports then "\x1b[<${int.to_string(if lines < 0 then 64 else 65)};${int.to_string(col + 1)};${int.to_string(row + 1)}M"
-        else keys.encode(keys.KEY, if lines < 0 then keys.KEY_UP else keys.KEY_DOWN, 0, t.app_cursor)
-      let _ = pty.write(cur.fd, string.repeat(one, int.abs(lines)))
-    }
+  let reports = cur.t.mouse_mode != 0 and cur.t.mouse_sgr
+  if not reports and not cur.t.alt then wheel_scroll(cur, ui, r, dy * scale)
+  else wheel_lines(cur, ui, r, scale, dy, reports, col, row)
+}
+
+/// Scrollback moved by `px` pixels (positive: toward the end).
+fn wheel_scroll(mut cur: tabset.Tab, mut ui: uistate.Ui, r: render.Renderer, px: Float) -> Unit = {
+  ui.wheel_acc = ui.wheel_acc + px
+  let whole = float.to_int(ui.wheel_acc)
+  ui.wheel_acc = ui.wheel_acc - int.to_float(whole)
+  if whole < 0 then terminal.settle(cur.t)
+  let pos = int.clamp(cur.back * r.cell_h + cur.shift - whole, 0, view.max_back(cur.t) * r.cell_h)
+  if pos != cur.back * r.cell_h + cur.shift then {
+    cur.back = pos / r.cell_h
+    cur.shift = pos % r.cell_h
+    ui.dirty = true
+  }
+}
+
+/// The program told of the wheel a line at a time: as mouse reports when
+/// it asked for them, else as arrow keys. All of a move in one write: the
+/// program reads them together.
+fn wheel_lines(mut cur: tabset.Tab, mut ui: uistate.Ui, r: render.Renderer, scale: Float, dy: Float, reports: Bool, col: Int, row: Int) -> Unit = {
+  ui.wheel_acc = ui.wheel_acc + dy
+  let line_px = int.to_float(r.cell_h) / scale
+  let lines = float.to_int(ui.wheel_acc / line_px)
+  ui.wheel_acc = ui.wheel_acc - int.to_float(lines) * line_px
+  if lines != 0 then {
+    let one = if reports then "\x1b[<${int.to_string(if lines < 0 then 64 else 65)};${int.to_string(col + 1)};${int.to_string(row + 1)}M"
+      else keys.encode(keys.KEY, if lines < 0 then keys.KEY_UP else keys.KEY_DOWN, 0, cur.t.app_cursor)
+    let _ = pty.write(cur.fd, string.repeat(one, int.abs(lines)))
   }
 }
 

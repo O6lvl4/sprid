@@ -13,15 +13,16 @@ import self.sys
 
 effect fn apply(mut a: session.Session, act: uistate.Act) -> Unit = match act {
   uistate.NewTab => new_tab(a)!,
-  uistate.CloseTab => if tabset.may_close_tab(a.tabs, a.active, a.ja) then {
-    tabset.close_tab(a.tabs, a.active)
-    a.active = int.min(a.active, list.len(a.tabs) - 1)
-    tabset.relayout(a.tabs, a.r, a.width, a.height)
-    uistate.touch(a.ui)
-  },
+  uistate.CloseTab => close_tab(a),
   uistate.NextTab => go_to(a, (a.active + 1) % list.len(a.tabs)),
   uistate.PrevTab => go_to(a, (a.active + list.len(a.tabs) - 1) % list.len(a.tabs)),
   uistate.GoTo(i) => if i < list.len(a.tabs) and i != a.active then go_to(a, i),
+  _ => window_act(a, act)!,
+}
+
+/// What an input asks of the window: another, closing this one, the font
+/// size, the system's appearance, the focus, a paste.
+effect fn window_act(mut a: session.Session, act: uistate.Act) -> Unit = match act {
   uistate.NewWindow => {
     let _ = sys.open_window(tabset.cwd_of(a.tabs, a.active, a.home))
   },
@@ -33,8 +34,17 @@ effect fn apply(mut a: session.Session, act: uistate.Act) -> Unit = match act {
   },
   uistate.Focus(on) => focus(a, on),
   uistate.Paste => paste(a)!,
-  uistate.Stay => (),
+  _ => (),
 }
+
+/// The tab in front closed, if it may.
+fn close_tab(mut a: session.Session) -> Unit =
+  if tabset.may_close_tab(a.tabs, a.active, a.ja) then {
+    tabset.close_tab(a.tabs, a.active)
+    a.active = int.min(a.active, list.len(a.tabs) - 1)
+    tabset.relayout(a.tabs, a.r, a.width, a.height)
+    uistate.touch(a.ui)
+  }
 
 fn go_to(mut a: session.Session, i: Int) -> Unit = {
   a.active = i

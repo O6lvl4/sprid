@@ -47,6 +47,21 @@ effect fn read_tab(mut a: session.Session, mut cur: tabset.Tab, i: Int) -> Unit 
 /// What the program in tab `i` asked of the window: the clipboard set or
 /// read, a bell (`bell`), notifications.
 effect fn asks(mut a: session.Session, mut cur: tabset.Tab, i: Int, bell: Bool) -> Unit = {
+  clipboard(a, cur)!
+  let notices = terminal.take_notices(cur.t)
+  let looked_at = i == a.active and a.r.focused
+  // A bell: the screen lit where it is being looked at, a sound if asked
+  // for.
+  if bell and looked_at and a.st.bell_flash then flash(a)
+  if bell and a.st.bell_system then dialog.beep()
+  let noticed = list.len(notices) > 0
+  if (bell and a.st.bell_title or noticed) and not looked_at then mark(a, cur)
+  if not a.r.focused then away(a, cur, bell, notices)!
+}
+
+/// OSC 52: the clipboard set, if the config lets programs; read, if the
+/// user does.
+effect fn clipboard(a: session.Session, mut cur: tabset.Tab) -> Unit = {
   match terminal.take_clipboard(cur.t) {
     some(text) => if a.st.clipboard_write then { let _ = sys.clipboard_set(text) },
     none => (),
@@ -55,25 +70,27 @@ effect fn asks(mut a: session.Session, mut cur: tabset.Tab, i: Int, bell: Bool) 
   if asked != "" and may_read_clipboard(a, cur)! then {
     let _ = pty.write(cur.fd, terminal.clipboard_reply(asked, tabset.clipboard()!))
   }
-  let notices = terminal.take_notices(cur.t)
-  let looked_at = i == a.active and a.r.focused
-  // A bell: the screen lit where it is being looked at, a sound if asked
-  // for.
-  if bell and looked_at and a.st.bell_flash then {
-    session.set_flash(a.r, true)
-    a.flash_until = sys.now_ms() + session.FLASH_MS
-    uistate.touch(a.ui)
-  }
-  if bell and a.st.bell_system then dialog.beep()
-  // Marked where it isn't being looked at; the Dock asked to show it when
-  // the window is in the background, and notifications shown there.
-  let noticed = list.len(notices) > 0
-  if (bell and a.st.bell_title or noticed) and not looked_at and not cur.alert then {
+}
+
+/// The visual bell's light on.
+fn flash(mut a: session.Session) -> Unit = {
+  session.set_flash(a.r, true)
+  a.flash_until = sys.now_ms() + session.FLASH_MS
+  uistate.touch(a.ui)
+}
+
+/// A tab not being looked at marked.
+fn mark(mut a: session.Session, mut cur: tabset.Tab) -> Unit =
+  if not cur.alert then {
     cur.alert = true
     uistate.touch(a.ui)
   }
-  if not a.r.focused and (bell and a.st.bell_attention or noticed) then window.request_attention()
-  if not a.r.focused then for (title, body) in notices {
+
+/// With the window in the background: the Dock asked to show a bell or
+/// notification, and the notifications shown in Notification Center.
+effect fn away(a: session.Session, cur: tabset.Tab, bell: Bool, notices: List[(String, String)]) -> Unit = {
+  if bell and a.st.bell_attention or list.len(notices) > 0 then window.request_attention()
+  for (title, body) in notices {
     dialog.notify(if title != "" then title else tabset.title_of(cur, a.home), body)
   }
 }

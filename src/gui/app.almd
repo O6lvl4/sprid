@@ -32,6 +32,8 @@ import self.gui.session
 import self.gui.acts
 import self.gui.outputs
 import self.gui.paint
+import self.gui.setup
+import self.gui.upkeep
 
 /// How the window starts: a command for the first tab instead of the login
 /// shell (the window closes when it exits), and the grid to size the window
@@ -51,16 +53,6 @@ effect fn run_fonts(opts: Options, st: settings.Settings) -> Unit = match fonts.
   none => println("sprid: no font found"),
 }
 
-/// The login shell, from $SHELL — started from Finder there is none: from
-/// the password database then.
-effect fn login_command() -> String = {
-  let shell = match env.get("SHELL") {
-    some(s) => s,
-    none => if sys.login_shell() != "" then sys.login_shell() else "/bin/zsh",
-  }
-  "exec ${shell} -l"
-}
-
 effect fn run_with(opts: Options, faces: fonts.Faces, st: settings.Settings) -> Unit = {
   // Sized to a grid, the window is measured before it opens, for a Retina
   // display (the scale is only known once it is open).
@@ -69,7 +61,7 @@ effect fn run_with(opts: Options, faces: fonts.Faces, st: settings.Settings) -> 
   let (win_w, win_h) = if opts.cols > 0 and opts.rows > 0 then
     ((opts.cols * cw) / 2 + pad_x / 2 + 1, (opts.rows * ch) / 2 + pad_y / 2 + 1)
   else (960, 620)
-  let login = login_command()!
+  let login = setup.login_command()!
   let first = match opts.command {
     some(c) => c,
     none => if opts.capture != none then env.get("SPRID_CAPTURE_CMD") ?? login else login,
@@ -88,7 +80,7 @@ effect fn run_with(opts: Options, faces: fonts.Faces, st: settings.Settings) -> 
   // later.
   gpu.set_low_latency(true)
   window.set_option_as_alt(st.option_as_alt)
-  var a = start(opts, faces, st, login, first_fd, expected)!
+  var a = setup.start(opts.capture, faces, st, login, first_fd, expected)!
   while a.alive {
     turn(a)!
   }
@@ -97,86 +89,24 @@ effect fn run_with(opts: Options, faces: fonts.Faces, st: settings.Settings) -> 
   }
 }
 
-/// The session as the window opens, its first tab on `first_fd`.
-effect fn start(opts: Options, faces: fonts.Faces, st: settings.Settings, login: String, first_fd: Int, expected: (Int, Int)) -> session.Session = {
-  let scale = window.scale_factor()
-  let device = 1
-  // The theme also colours what a window being resized uncovers, until it is
-  // drawn for its size.
-  var r = prefs.styled(render.new(device, faces, float.to_int(float.round(st.font_size * scale)),
-    float.to_int(st.pad_x * scale), float.to_int(st.pad_y * scale), st.cell_height), st)!
-  // Opened behind another app's window, it has no focus until clicked.
-  r.focused = window.focused()
-  let width = window.width()
-  let height = window.height()
-  let (cols, rows) = render.grid_size(r, width, height, 1)
-  if (cols, rows) != expected then { let _ = pty.resize(first_fd, cols, rows) } else ()
-  let home = env.get("HOME") ?? ""
-  var a = session.Session {
-    capture: opts.capture, login: login, home: home,
-    // Questions in Japanese on a Japanese system.
-    ja: string.starts_with(env.get("LANG") ?? "", "ja"),
-    scale: scale, device: device,
-    // The config file, watched: saved, it applies at once.
-    config_fd: if opts.capture == none then sys.watch(prefs.config_path()!) else -1,
-    st: st, r: r,
-    tabs: [tabset.Tab { t: terminal.with_scrollback(cols, rows, st.scrollback), fd: first_fd, back: 0, shift: 0, sel: none,
-      up: tabset.Updates { syncs: 0, sync_at: 0, hides: 0, hide_at: 0 }, name: "", alert: false }],
-    active: 0, ui: fresh_ui(home), width: width, height: height, font_size: st.font_size,
-    blink_at: -1, flash_until: -1, alive: true, last_frame: 0, streaming: false, resized_at: -1,
-    front: first_fd, window_title: "", stats: fresh_stats()!,
-  }
-  // For captures of the tab bar: more tabs running the login shell.
-  let extra = if opts.capture != none then int.parse(env.get("SPRID_CAPTURE_TABS") ?? "1") ?? 1 else 1
-  for _ in 1..<extra {
-    match tabset.open_tab(a.r, width, height, list.len(a.tabs) + 1, login, "", st.scrollback) {
-      some(tb) => {
-        list.push(a.tabs, tb)
-        tabset.relayout(a.tabs, a.r, width, height)
-      },
-      none => (),
-    }
-  }
-  a
-}
-
-fn fresh_ui(home: String) -> uistate.Ui = uistate.Ui {
-  preedit: [], preedit_caret: 0, preedit_from: 0, preedit_to: 0, wheel_acc: 0.0, dragging: false, unit: 0, anchor_line: 0, anchor_col: 0,
-  anchor_end_line: 0, anchor_end_col: 0, clicks: 0, click_line: 0, click_col: 0, dirty: true,
-  renaming: false, draft: "", click_ms: 0, click_tab: -1, home: home, finding: false, find: search.empty(),
-  field: field.of(""), find_focus: false, field_drag: false, scroll_drag: false, scroll_grab: 0,
-  ime_x: -1, ime_y: -1,
-  app_button: -1, report_col: -1, report_row: -1,
-}
-
-effect fn fresh_stats() -> session.Stats = {
-  let auto = list.map(string.split(env.get("SPRID_AUTOSCROLL") ?? "", ","), (x) => float.parse(x) ?? 0.0)
-  session.Stats {
-    debug: env.get("SPRID_DEBUG") != none, trace: env.get("SPRID_TRACE") != none,
-    frames: 0, draw_ms: 0, wakes: 0, wake_report: 0,
-    input_at: -1, latency_max: 0, latency_sum: 0, latency_n: 0,
-    auto: auto, auto_next: if list.len(auto) == 4 then float.to_int(auto[1]) else -1,
-  }
-}
-
 /// One turn of the loop: sleep until something is to be done, then do it —
 /// the config reloaded, the window resized, input, output, a frame.
 effect fn turn(mut a: session.Session) -> Unit = {
-  let timeout = wait_for(a)
+  let timeout = upkeep.wait_for(a)
   // With no time to wait, just take the window's events: arming the fd
   // watcher on every turn of a streaming loop costs more than it saves.
-  a.alive = if timeout == 0 then window.pump() else window.wait_fds(watched(a), timeout)
-  reload(a)!
+  a.alive = if timeout == 0 then window.pump() else window.wait_fds(upkeep.watched(a), timeout)
+  upkeep.reload(a)!
   // The window's close button: asked first when a program is running.
   if not a.alive and list.len(a.tabs) > 0 and a.capture == none and not tabset.may_close_window(a.tabs, a.ja) then {
     window.keep_open()
     a.alive = true
   }
-  report_wakes(a, timeout)
-  resized(a)
+  upkeep.report_wakes(a, timeout)
+  upkeep.resized(a)
   events(a)!
   if list.len(a.tabs) == 0 then a.alive = false
-  autoscroll(a)
+  upkeep.autoscroll(a)
   for tb in a.tabs {
     if pty.pending(tb.fd) then {
       let _ = pty.flush(tb.fd)
@@ -194,122 +124,6 @@ effect fn turn(mut a: session.Session) -> Unit = {
   match a.capture {
     some(path) => paint.capture_due(a, path)!,
     none => (),
-  }
-}
-
-/// The PTYs, and the config file's watch.
-fn watched(a: session.Session) -> List[Int] =
-  list.map(a.tabs, (tb) => tb.fd) + (if a.config_fd >= 0 then [a.config_fd] else [])
-
-/// How long to sleep: until input, output on any tab, or the next frame is
-/// due — with nothing to draw that is indefinitely, so an idle window costs
-/// nothing — or the next thing timed: settling after a resize, the cursor's
-/// blink, the bell's light going out, a write to retry, a turn of the
-/// autoscroll. -1 for no limit.
-fn wait_for(mut a: session.Session) -> Int = {
-  let now = sys.now_ms()
-  blink(a, now)
-  if a.flash_until >= 0 and now >= a.flash_until then {
-    session.set_flash(a.r, false)
-    a.flash_until = -1
-    uistate.touch(a.ui)
-  }
-  let frame_wait = int.max(0, a.last_frame + session.frame_ms(a) - now)
-  let idle = if a.capture == none then -1 else 50
-  let drawn = if a.ui.dirty then int.max(frame_wait, tabset.sync_wait(a.tabs, a.active, now)) else idle
-  let until = (at: Int) => if at < 0 then -1 else int.max(0, at - now)
-  // Input a program hasn't taken yet (a big paste) is offered again soon.
-  let write = if list.any(a.tabs, (tb) => pty.pending(tb.fd)) then session.WRITE_RETRY_MS else -1
-  let settle = if a.resized_at < 0 then -1 else a.resized_at + session.SETTLE_MS
-  list.fold([until(settle), until(a.stats.auto_next), write, until(a.blink_at), until(a.flash_until)], drawn,
-    (acc, w) => session.sooner(acc, w))
-}
-
-/// A blinking cursor turns on and off while the window has the focus.
-fn blink(mut a: session.Session, now: Int) -> Unit =
-  if a.r.focused and tabset.cursor_blinks(a.tabs, a.active, a.r) then {
-    if a.blink_at < 0 then a.blink_at = now + session.BLINK_MS
-    else if now >= a.blink_at then {
-      session.set_blink_off(a.r, not a.r.blink_off)
-      a.blink_at = now + session.BLINK_MS
-      uistate.touch(a.ui)
-    }
-  } else {
-    a.blink_at = -1
-    session.set_blink_off(a.r, false)
-  }
-
-/// The config file was saved: it applies now — the theme, the font and its
-/// size, the cursor, Option — over what was set before. (One save can be
-/// seen more than once — the file, then its directory.)
-effect fn reload(mut a: session.Session) -> Unit = {
-  let saved = sys.watch_changed(a.config_fd)
-  let fresh = if saved then prefs.read_settings()! else a.st
-  if saved and fresh != a.st then {
-    prefs.report(fresh)!
-    let new_faces = fresh.font_family != a.st.font_family
-    let resize = new_faces or (fresh.font_size, fresh.pad_x, fresh.pad_y, fresh.cell_height) != (a.st.font_size, a.st.pad_x, a.st.pad_y, a.st.cell_height)
-    a.st = fresh
-    window.set_option_as_alt(fresh.option_as_alt)
-    if new_faces then new_font(a)!
-    a.r = prefs.styled(a.r, fresh)!
-    if resize then {
-      a.font_size = fresh.font_size
-      a.r = render.with_size(a.r, float.to_int(float.round(a.font_size * a.scale)),
-        float.to_int(fresh.pad_x * a.scale), float.to_int(fresh.pad_y * a.scale), fresh.cell_height)
-      tabset.relayout_live(a.tabs, a.r, a.width, a.height)
-      a.resized_at = sys.now_ms()
-    }
-    uistate.touch(a.ui)
-  }
-}
-
-/// A renderer for the config's font family, when it is found.
-effect fn new_font(mut a: session.Session) -> Unit = match fonts.find(a.st.font_family)! {
-  some(f) => {
-    let st = a.st
-    a.r = { ...render.new(a.device, f, float.to_int(float.round(st.font_size * a.scale)),
-      float.to_int(st.pad_x * a.scale), float.to_int(st.pad_y * a.scale), st.cell_height), focused: a.r.focused }
-  },
-  none => (),
-}
-
-/// SPRID_DEBUG: every 2 s, how often the loop woke and how long input took
-/// to show.
-fn report_wakes(mut a: session.Session, timeout: Int) -> Unit = {
-  session.count_wake(a.stats)
-  if a.stats.debug and sys.now_ms() - a.stats.wake_report >= 2000 then {
-    let s = a.stats
-    eprintln("sprid: ${int.to_string(s.wakes)} wakes in 2 s (dirty ${if a.ui.dirty then "yes" else "no"}, timeout ${int.to_string(timeout)})"
-      + ", input to frame avg ${int.to_string(s.latency_sum / int.max(1, s.latency_n))} max ${int.to_string(s.latency_max)} ms over ${int.to_string(s.latency_n)}")
-    a.stats = { ...s, latency_max: 0, latency_sum: 0, latency_n: 0, wakes: 0, wake_report: sys.now_ms() }
-  }
-}
-
-/// The window changed size: the screens follow now, scrollback once the
-/// size has held for a moment — and then the search is run again, the
-/// lines being numbered anew.
-fn resized(mut a: session.Session) -> Unit = {
-  if window.resized() then {
-    a.width = window.width()
-    a.height = window.height()
-    tabset.relayout_live(a.tabs, a.r, a.width, a.height)
-    a.resized_at = sys.now_ms()
-    uistate.touch(a.ui)
-  }
-  if a.resized_at >= 0 and sys.now_ms() - a.resized_at >= session.SETTLE_MS then {
-    tabset.settle_all(a.tabs)
-    a.resized_at = -1
-    uistate.touch(a.ui)
-    match tabset.take(a.tabs, a.active) {
-      some(tb) => {
-        var cur = tb
-        findkeys.refresh_find(cur, a.ui)
-        list.push(a.tabs, cur)
-        a.tabs = list.swap(a.tabs, a.active, list.len(a.tabs) - 1)
-      },
-      none => (),
-    }
   }
 }
 
@@ -358,21 +172,3 @@ fn front_changed(mut a: session.Session) -> Unit =
     a.front = tabset.fd_of(a.tabs, a.active)
   }
 
-/// SPRID_AUTOSCROLL's turn of the wheel, when one is due.
-fn autoscroll(mut a: session.Session) -> Unit = {
-  let next = a.stats.auto_next
-  if next >= 0 and sys.now_ms() >= next then {
-    let auto = a.stats.auto
-    match tabset.take(a.tabs, a.active) {
-      some(tb) => {
-        var cur = tb
-        pointer.wheel(cur, a.ui, a.r, a.scale, auto[0], 40, 10)
-        if a.stats.trace then eprintln("wheel ${int.to_string(sys.now_ms())}")
-        list.push(a.tabs, cur)
-        a.tabs = list.swap(a.tabs, a.active, list.len(a.tabs) - 1)
-      },
-      none => (),
-    }
-    session.set_auto_next(a.stats, if sys.now_ms() >= float.to_int(auto[2]) then -1 else next + float.to_int(auto[3]))
-  }
-}
