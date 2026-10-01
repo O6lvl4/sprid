@@ -84,8 +84,12 @@ before closing a busy tab or pasting line breaks, are macOS only for now.
   first.
   Pasting line breaks into a shell that would run each line asks first.
 - **Tabs**: open in the current directory, switch by click or keys, rename by
-  double-click; the window takes the title of the tab in front. Closing a tab, the window or the app asks first while a
-  program is running.
+  double-click, drag to reorder — or out of the tab bar for a window of
+  their own; the window takes the title of the tab in front. Closing a tab,
+  the window or the app asks first while a program is running.
+- **Windows**: all in one app (one Dock icon), with a full menu bar on
+  macOS. They reopen where they were; their tabs come back too when the
+  system keeps windows on quitting, or with `window-save-state = always`.
 - **Resize**: lines are rewrapped at the new width, scrollback included.
 
 ### Keys
@@ -99,6 +103,7 @@ before closing a busy tab or pasting line breaks, are macOS only for now.
 | New window / close window | Cmd+N / Cmd+Shift+W | Ctrl+Shift+N / Q |
 | Font size | Cmd+Plus / Minus / 0 | Ctrl+Shift+Plus / Minus / 0 |
 | Clear | Cmd+K | Ctrl+Shift+K |
+| Settings | Cmd+, | Ctrl+Shift+, |
 | Full screen | Cmd+Enter, Cmd+Ctrl+F | F11 |
 | Line start / end, word | Cmd+← / →, Option+← / → | (the shell's own keys) |
 | Scroll | Cmd+Home / End / PageUp / PageDown | Ctrl+Shift+Home / End / PageUp / PageDown |
@@ -138,6 +143,7 @@ macos-option-as-alt = left      # true, false, left, right
 | `clipboard-paste-protection` | `true` — ask before pasting line breaks |
 | `copy-on-select` | `true` — a selection becomes the PRIMARY selection (Linux); `clipboard` copies it too; `false` |
 | `shell-integration` | `detect` — or `none` to start the shell as it is |
+| `window-save-state` | `default` — tabs come back as the system's setting says; `always`, `never` |
 
 Themes built in: Tokyo Night Storm, Almide Light, Almide Dark, Catppuccin
 Mocha, Catppuccin Latte, Dracula, Solarized Dark, Solarized Light. Any other
