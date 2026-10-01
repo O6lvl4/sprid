@@ -1,6 +1,6 @@
 // The tab bar's tabs, each a group of panes (layout.almd): which is in front,
 // where each pane goes, and what a tab does to its panes — open, split,
-// close, focus, resize, zoom.
+// close, focus. Moving between them and sizing them: panes.almd.
 //
 // A session's `tabs` are its panes, every one in exactly one group, and
 // `active` is the pane keys go to: the focus of the group in front. The
@@ -13,9 +13,6 @@ import self.gui.beside
 import self.gui.surface
 import self.gui.tabset
 import self.gui.uistate
-
-/// How much a resize key moves a divider, of what it splits.
-let RESIZE_STEP = 0.05
 
 /// Where pane `fd` is in `tabs`; -1 when it isn't.
 fn index_of(tabs: List[tabset.Tab], fd: Int) -> Int =
@@ -126,6 +123,21 @@ fn add_tab(mut a: session.Session, tb: tabset.Tab) -> Unit = {
   uistate.touch(a.ui)
 }
 
+/// Tab `gi`, of one pane, given `panes` beside it, laid out as `shape`
+/// says (`layout.shape`) — side by side when it says nothing they fit —
+/// with the `focus`th the one keys go to.
+fn arrange(mut a: session.Session, gi: Int, panes: List[tabset.Tab], shape: String, focus: Int) -> Unit = match list.get(a.groups, gi) {
+  some(g) => {
+    let ids = layout.panes(g.layout) + list.map(panes, (tb) => tb.fd)
+    let side_by_side = list.fold(list.drop(ids, 1), g.layout, (l, id) => layout.split(l, list.last(layout.panes(l)) ?? id, id, true))
+    let l = layout.of_shape(shape, ids) ?? side_by_side
+    a.tabs = a.tabs + panes
+    a.groups = list.set(a.groups, gi, { ...g, layout: l, focus: list.get(ids, focus) ?? g.focus })
+    relayout(a)
+  },
+  none => (),
+}
+
 /// The grid a new tab's pane gets: the whole area, with the tab bar there
 /// is about to be.
 fn new_tab_grid(a: session.Session) -> (Int, Int) =
@@ -193,59 +205,6 @@ fn drop_pane(mut a: session.Session, gi: Int, fd: Int, middle: (Int, Int)) -> Un
     if g.focus == fd then a.groups = list.set(a.groups, gi, { ...a.groups[gi], focus: heir })
   },
   none => { a.groups = list.take(a.groups, gi) + list.drop(a.groups, gi + 1) },
-}
-
-/// The pane next to the one in front toward (`dx`, `dy`) takes the keys.
-fn focus_toward(mut a: session.Session, dx: Int, dy: Int) -> Unit =
-  match layout.neighbor(regions(a, current(a)), tabset.fd_of(a.tabs, a.active), dx, dy) {
-    some(fd) => focus(a, fd),
-    none => (),
-  }
-
-/// The next pane of the tab in front, in reading order (`step` 1), or the
-/// one before (-1).
-fn cycle(mut a: session.Session, step: Int) -> Unit = {
-  let gi = current(a)
-  if gi >= 0 then {
-    let ps = layout.panes(a.groups[gi].layout)
-    let n = list.len(ps)
-    // FIXME(almide#3177): `tabset.fd_of(a.tabs, a.active)` in the closure
-    // once that doesn't lose the focus set below.
-    let front = tabset.fd_of(a.tabs, a.active)
-    let at = list.find_index(ps, (p) => p == front) ?? 0
-    if n > 1 then focus(a, ps[(at + step + n) % n])
-  }
-}
-
-/// The divider nearest the pane in front moved toward (`dx`, `dy`).
-fn resize(mut a: session.Session, dx: Int, dy: Int) -> Unit = {
-  let gi = current(a)
-  if gi >= 0 then {
-    let g = a.groups[gi]
-    a.groups = list.set(a.groups, gi, { ...g, layout: layout.resize(g.layout, g.focus, dx, dy, RESIZE_STEP) })
-    relayout_live(a)
-    uistate.touch(a.ui)
-  }
-}
-
-/// The pane in front made to fill its tab, or back to its place.
-fn toggle_zoom(mut a: session.Session) -> Unit = {
-  let gi = current(a)
-  if gi >= 0 and list.len(layout.panes(a.groups[gi].layout)) > 1 then {
-    a.groups = list.set(a.groups, gi, { ...a.groups[gi], zoomed: not a.groups[gi].zoomed })
-    relayout_live(a)
-    uistate.touch(a.ui)
-  }
-}
-
-/// The tab in front's panes made equal again.
-fn equalize(mut a: session.Session) -> Unit = {
-  let gi = current(a)
-  if gi >= 0 then {
-    a.groups = list.set(a.groups, gi, { ...a.groups[gi], layout: layout.equalize(a.groups[gi].layout) })
-    relayout_live(a)
-    uistate.touch(a.ui)
-  }
 }
 
 /// The tab in front moved to place `to` of the tab bar.

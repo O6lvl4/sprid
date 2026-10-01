@@ -9,6 +9,7 @@ import self.gui.uistate
 import self.gui.prefs
 import self.gui.session
 import self.gui.groups
+import self.gui.panes
 import self.keys
 import self.pty
 import self.shell
@@ -33,11 +34,11 @@ effect fn apply(mut a: session.Session, act: uistate.Act) -> Unit = match act {
 /// What an input asks of the panes of the tab in front.
 effect fn pane_act(mut a: session.Session, act: uistate.Act) -> Unit = match act {
   uistate.SplitPane(across) => split(a, across)!,
-  uistate.FocusPane(dx, dy) => groups.focus_toward(a, dx, dy),
-  uistate.CyclePane(step) => groups.cycle(a, step),
-  uistate.ResizePane(dx, dy) => groups.resize(a, dx, dy),
-  uistate.ZoomPane => groups.toggle_zoom(a),
-  uistate.EqualPanes => groups.equalize(a),
+  uistate.FocusPane(dx, dy) => panes.focus_toward(a, dx, dy),
+  uistate.CyclePane(step) => panes.cycle(a, step),
+  uistate.ResizePane(dx, dy) => panes.resize(a, dx, dy),
+  uistate.ZoomPane => panes.toggle_zoom(a),
+  uistate.EqualPanes => panes.equalize(a),
   _ => window_act(a, act)!,
 }
 

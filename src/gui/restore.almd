@@ -7,7 +7,12 @@
 // The file is lines of tab-separated fields:
 //
 //   window  x  y  width  height      (logical pixels, the frame's top left)
-//   tab     directory  name          (one per tab, under its window)
+//   tab     directory  name  [shape  focus]
+//   pane    directory  name
+//
+// A tab line for each tab, under its window: its first pane's directory
+// and name, and when it has others, a `pane` line for each — in reading
+// order — and its layout's shape (`layout.shape`) and the pane keys go to.
 
 import env
 import fs
@@ -17,12 +22,19 @@ import self.gui.dialog
 import self.gui.session
 import self.gui.tabset
 import self.gui.groups
+import self.gui.layout
 import self.gui.setup
 import self.gui.windows
 import self.shell
 
-/// A window kept: its frame, and its tabs as (directory, name).
-type Kept = { x: Float, y: Float, width: Float, height: Float, tabs: List[(String, String)] }
+/// A window kept: its frame, and its tabs.
+type Kept = { x: Float, y: Float, width: Float, height: Float, tabs: List[KeptTab] }
+
+/// A tab kept: its panes as (directory, name), their layout's shape and
+/// which of them keys go to.
+type KeptTab = { panes: List[(String, String)], shape: String, focus: Int }
+
+fn single(dir: String, name: String) -> KeptTab = KeptTab { panes: [(dir, name)], shape: ".", focus: 0 }
 
 effect fn path() -> String = {
   let home = env.get("HOME") ?? ""
@@ -67,7 +79,7 @@ effect fn reopen(mut wins: List[session.Session], kept: List[Kept]) -> Unit = {
     none => (),
   }
   for k in list.drop(kept, 1) {
-    let first = list.first(k.tabs) |> option.map((t) => t.0) ?? ""
+    let first = list.first(k.tabs) |> option.flat_map((t) => list.first(t.panes)) |> option.map((p) => p.0) ?? ""
     match setup.open_window(wins[0], first)! {
       some(b) => {
         var c = b
@@ -81,30 +93,34 @@ effect fn reopen(mut wins: List[session.Session], kept: List[Kept]) -> Unit = {
   }
 }
 
-/// Window session `a`'s first tab named as `tabs` says, and its other tabs
-/// opened, each in its directory with its name.
-effect fn fill(mut a: session.Session, tabs: List[(String, String)]) -> Unit = {
-  match list.first(tabs) {
-    some(t) => if list.len(a.tabs) > 0 then { a.tabs = list.set(a.tabs, 0, { ...a.tabs[0], name: t.1 }) },
-    none => (),
-  }
-  for t in list.drop(tabs, 1) {
-    let (cols, rows) = groups.new_tab_grid(a)
-    match tabset.open_tab(cols, rows, shell.command(a.st.shell_integration)!, t.0, a.st.scrollback) {
-      some(tb) => groups.add_tab(a, { ...tb, name: t.1 }),
-      none => (),
+/// Window session `a`'s first pane named as `tabs` says, and the rest of
+/// its tabs and panes opened, each in its directory with its name.
+effect fn fill(mut a: session.Session, tabs: List[KeptTab]) -> Unit = {
+  let login = shell.command(a.st.shell_integration)!
+  for (k, t) in list.enumerate(tabs) {
+    let first = list.first(t.panes) ?? ("", "")
+    if k == 0 then {
+      if list.len(a.tabs) > 0 then { a.tabs = list.set(a.tabs, 0, { ...a.tabs[0], name: first.1 }) }
+    } else {
+      let (cols, rows) = groups.new_tab_grid(a)
+      match tabset.open_tab(cols, rows, login, first.0, a.st.scrollback) {
+        some(tb) => groups.add_tab(a, { ...tb, name: first.1 }),
+        none => (),
+      }
+    }
+    if list.len(t.panes) > 1 then {
+      let (cols, rows) = groups.new_tab_grid(a)
+      let others = list.filter_map(list.drop(t.panes, 1), (p) => tabset.open_tab(cols, rows, login, p.0, a.st.scrollback) |> option.map((tb) => { ...tb, name: p.1 }))
+      groups.arrange(a, groups.count(a) - 1, others, t.shape, t.focus)
     }
   }
   groups.go_to(a, 0)
 }
 
-/// Window session `a` as kept: its frame, and its tabs when `tabs` — each
-/// as its pane in front.
+/// Window session `a` as kept: its frame, and its tabs when `tabs`.
 fn frame_of(a: session.Session, tabs: Bool) -> Kept = {
   window.select(a.id)
-  let fronts = list.map(a.groups, (g) => groups.index_of(a.tabs, g.focus))
-  let kept_tabs = if not tabs then []
-    else list.map(fronts, (i) => (tabset.cwd_of(a.tabs, i, a.home), a.tabs[i].name))
+  let kept_tabs = if not tabs then [] else list.map(a.groups, (g) => tab_of(a, g))
   Kept {
     x: window.x(), y: window.y(),
     width: int.to_float(a.width) / a.scale, height: int.to_float(a.height) / a.scale,
@@ -112,44 +128,69 @@ fn frame_of(a: session.Session, tabs: Bool) -> Kept = {
   }
 }
 
+fn tab_of(a: session.Session, g: layout.Group) -> KeptTab = {
+  let ids = layout.panes(g.layout)
+  let panes = ids |> list.map((fd) => groups.index_of(a.tabs, fd)) |> list.map((i) => (tabset.cwd_of(a.tabs, i, a.home), a.tabs[i].name))
+  KeptTab { panes: panes, shape: layout.shape(g.layout), focus: list.index_of(ids, g.focus) ?? 0 }
+}
+
 fn encode(kept: List[Kept]) -> String =
   kept |> list.map((k) => {
     let head = ["window", float.to_string(k.x), float.to_string(k.y), float.to_string(k.width), float.to_string(k.height)]
-    let tabs = list.map(k.tabs, (t) => "tab\t" + clean(t.0) + "\t" + clean(t.1))
-    ([list.join(head, "\t")] + tabs) |> list.join("\n")
+    ([list.join(head, "\t")] + list.flat_map(k.tabs, tab_lines)) |> list.join("\n")
   }) |> list.map((s) => s + "\n") |> list.join("")
+
+fn tab_lines(t: KeptTab) -> List[String] = {
+  let first = list.first(t.panes) ?? ("", "")
+  let layout = if list.len(t.panes) > 1 then "\t" + t.shape + "\t" + int.to_string(t.focus) else ""
+  ["tab\t" + clean(first.0) + "\t" + clean(first.1) + layout] + list.map(list.drop(t.panes, 1), (p) => "pane\t" + clean(p.0) + "\t" + clean(p.1))
+}
 
 /// `s` without what would break a line apart.
 fn clean(s: String) -> String = string.replace(string.replace(string.replace(s, "\t", " "), "\n", " "), "\r", " ")
 
-fn decode(text: String) -> List[Kept] = {
-  var out: List[Kept] = []
-  for line in string.lines(text) {
-    let f = string.split(line, "\t")
-    if list.len(f) == 5 and f[0] == "window" then {
-      let num = (s: String) => float.parse(s) ?? 0.0
-      list.push(out, Kept { x: num(f[1]), y: num(f[2]), width: num(f[3]), height: num(f[4]), tabs: [] })
-    } else if list.len(f) == 3 and f[0] == "tab" and list.len(out) > 0 then {
-      let n = list.len(out) - 1
-      out = list.set(out, n, { ...out[n], tabs: out[n].tabs + [(f[1], f[2])] })
-    }
-  }
-  // A window too small to use is not kept.
-  list.filter(out, (k) => k.width >= 100.0 and k.height >= 60.0)
+fn decode(text: String) -> List[Kept] =
+  string.lines(text)
+    |> list.fold([], (out, line) => read_line(out, string.split(line, "\t")))
+    // A window too small to use is not kept.
+    |> list.filter((k) => k.width >= 100.0 and k.height >= 60.0)
+
+/// The windows `out` read so far, with line `f`, its fields, read too.
+fn read_line(out: List[Kept], f: List[String]) -> List[Kept] = {
+  let n = list.len(out) - 1
+  if list.len(f) == 5 and f[0] == "window" then {
+    let num = (s: String) => float.parse(s) ?? 0.0
+    out + [Kept { x: num(f[1]), y: num(f[2]), width: num(f[3]), height: num(f[4]), tabs: [] }]
+  } else if n < 0 then out
+  else if (list.len(f) == 3 or list.len(f) == 5) and f[0] == "tab" then {
+    let t = if list.len(f) == 5 then KeptTab { ...single(f[1], f[2]), shape: f[3], focus: int.parse(f[4]) ?? 0 } else single(f[1], f[2])
+    list.set(out, n, { ...out[n], tabs: out[n].tabs + [t] })
+  } else if list.len(f) == 3 and f[0] == "pane" and list.len(out[n].tabs) > 0 then
+    list.set(out, n, { ...out[n], tabs: with_pane(out[n].tabs, (f[1], f[2])) })
+  else out
+}
+
+/// `tabs` with `pane` added to the last.
+fn with_pane(tabs: List[KeptTab], pane: (String, String)) -> List[KeptTab] = {
+  let n = list.len(tabs) - 1
+  list.set(tabs, n, { ...tabs[n], panes: tabs[n].panes + [pane] })
 }
 
 test "windows and their tabs round-trip, odd names cleaned" {
+  let split = KeptTab { panes: [("/a", ""), ("/b", "b"), ("/c", "")], shape: "a0.5(.,d0.5(.,.))", focus: 2 }
   let kept = [
-    Kept { x: 10.0, y: -900.0, width: 960.0, height: 620.0, tabs: [("/Users/me", ""), ("/tmp/a b", "build\tlog")] },
-    Kept { x: 200.0, y: 40.0, width: 500.0, height: 300.0, tabs: [("/srv", "srv")] },
+    Kept { x: 10.0, y: -900.0, width: 960.0, height: 620.0, tabs: [single("/Users/me", ""), single("/tmp/a b", "build\tlog"), split] },
+    Kept { x: 200.0, y: 40.0, width: 500.0, height: 300.0, tabs: [single("/srv", "srv")] },
   ]
   let back = decode(encode(kept))
   assert_eq(list.len(back), 2)
-  assert_eq((back[0].y, back[0].tabs), (-900.0, [("/Users/me", ""), ("/tmp/a b", "build log")]))
-  assert_eq((back[1].width, back[1].tabs), (500.0, [("/srv", "srv")]))
+  assert_eq((back[0].y, back[0].tabs), (-900.0, [single("/Users/me", ""), single("/tmp/a b", "build log"), split]))
+  assert_eq((back[1].width, back[1].tabs), (500.0, [single("/srv", "srv")]))
 }
 
 test "a file that isn't one keeps nothing" {
   assert_eq(decode("window\t1\nhello\ttab\tx"), [])
   assert_eq(decode("window\t0\t0\t10\t10"), [])
+  // A pane before any tab is no pane.
+  assert_eq(decode("window\t0\t0\t500\t300\npane\t/a\t\ntab\t/b\t") |> list.map((k) => k.tabs), [[single("/b", "")]])
 }

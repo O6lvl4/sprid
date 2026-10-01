@@ -181,6 +181,55 @@ fn equalize(l: Layout) -> Layout = match l {
   Split(across, _, a, b) => Split(across, 0.5, equalize(a), equalize(b)),
 }
 
+/// `l`'s shape, its panes left out: "." a pane, "a" or "d" and the
+/// fraction, then the two parts in brackets, a split across or down —
+/// "a0.5(.,d0.5(.,.))" — for a file to keep.
+fn shape(l: Layout) -> String = match l {
+  Pane(_) => ".",
+  Split(across, f, a, b) => (if across then "a" else "d") + float.to_string(f) + "(" + shape(a) + "," + shape(b) + ")",
+}
+
+/// The layout of `shape` with `ids` its panes in reading order; none when
+/// it isn't one, or has another number of panes.
+fn of_shape(text: String, ids: List[Int]) -> Option[Layout] = match parse(string.chars(text), 0, ids, 0) {
+  some((l, at, used)) => if at == string.len(text) and used == list.len(ids) then some(l) else none,
+  none => none,
+}
+
+/// The layout at `cs[at]`, its panes from `ids[used]` on: it, where it
+/// ends, and how many of `ids` are used then.
+fn parse(cs: List[String], at: Int, ids: List[Int], used: Int) -> Option[(Layout, Int, Int)] = match list.get(cs, at) {
+  some(".") => list.get(ids, used) |> option.map((id) => (Pane(id), at + 1, used + 1)),
+  some(c) => if c == "a" or c == "d" then parse_split(cs, at + 1, c == "a", ids, used) else none,
+  none => none,
+}
+
+/// A split's fraction and parts, from `cs[at]` on.
+fn parse_split(cs: List[String], at: Int, across: Bool, ids: List[Int], used: Int) -> Option[(Layout, Int, Int)] = {
+  let rest = list.drop(cs, at)
+  let open = list.index_of(rest, "(") ?? -1
+  let f = float.parse(list.join(list.take(rest, int.max(0, open)), "")) ?? -1.0
+  if open < 0 or f <= 0.0 or f >= 1.0 then none
+  else match parse_parts(cs, at + open + 1, ids, used) {
+    some((a, b, end, n)) => some((Split(across, clamp(f), a, b), end, n)),
+    none => none,
+  }
+}
+
+/// A split's two parts, "a,b)" from `cs[at]` on: them, where they end and
+/// how many of `ids` are used then.
+fn parse_parts(cs: List[String], at: Int, ids: List[Int], used: Int) -> Option[(Layout, Layout, Int, Int)] = match parse(cs, at, ids, used) {
+  some((a, after_a, used_a)) => match parse_after(cs, after_a, ",", ids, used_a) {
+    some((b, after_b, used_b)) => if list.get(cs, after_b) == some(")") then some((a, b, after_b + 1, used_b)) else none,
+    none => none,
+  },
+  none => none,
+}
+
+/// The layout after `sep` at `cs[at]`, when that is there.
+fn parse_after(cs: List[String], at: Int, sep: String, ids: List[Int], used: Int) -> Option[(Layout, Int, Int)] =
+  if list.get(cs, at) == some(sep) then parse(cs, at + 1, ids, used) else none
+
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 fn sample() -> Layout = split(split(Pane(1), 1, 2, true), 2, 3, false)
@@ -210,6 +259,14 @@ test "dividers: where they are, the one under a point, dragging one" {
   assert_eq(divider_at(ds, 20, 10, 2), none)
   assert_eq(set_fraction(sample(), [1], fraction_at(ds[1], 60, 10, 1)), Split(true, 0.5, Pane(1), Split(false, 0.2, Pane(2), Pane(3))))
   assert_eq(set_fraction(sample(), [], fraction_at(ds[0], 1, 10, 1)), Split(true, MIN_FRACTION, Pane(1), Split(false, 0.5, Pane(2), Pane(3))))
+}
+
+test "a shape kept and read back" {
+  let l = resize(sample(), 1, 1, 0, 0.1)
+  assert_eq(shape(l), "a0.6(.,d0.5(.,.))")
+  assert_eq(of_shape(shape(l), [7, 8, 9]), some(Split(true, 0.6, Pane(7), Split(false, 0.5, Pane(8), Pane(9)))))
+  assert_eq(of_shape(".", [4]), some(Pane(4)))
+  assert_eq((of_shape(shape(l), [7, 8]), of_shape("a0.5(.,.", [1, 2]), of_shape("x", [1]), of_shape("a2(.,.)", [1, 2])), (none, none, none, none))
 }
 
 test "resizing moves the nearest divider the way asked" {

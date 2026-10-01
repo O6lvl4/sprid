@@ -1,0 +1,63 @@
+// The panes of the tab in front, as keys move between them and size them.
+
+import self.gui.groups
+import self.gui.layout
+import self.gui.session
+import self.gui.tabset
+import self.gui.uistate
+
+/// How much a resize key moves a divider, of what it splits.
+let RESIZE_STEP = 0.05
+
+/// The pane next to the one in front toward (`dx`, `dy`) takes the keys.
+fn focus_toward(mut a: session.Session, dx: Int, dy: Int) -> Unit =
+  match layout.neighbor(groups.regions(a, groups.current(a)), tabset.fd_of(a.tabs, a.active), dx, dy) {
+    some(fd) => groups.focus(a, fd),
+    none => (),
+  }
+
+/// The next pane of the tab in front, in reading order (`step` 1), or the
+/// one before (-1).
+fn cycle(mut a: session.Session, step: Int) -> Unit = {
+  let gi = groups.current(a)
+  if gi >= 0 then {
+    let ps = layout.panes(a.groups[gi].layout)
+    let n = list.len(ps)
+    // FIXME(almide#3177): `tabset.fd_of(a.tabs, a.active)` in the closure
+    // once that doesn't lose the focus set below.
+    let front = tabset.fd_of(a.tabs, a.active)
+    let at = list.find_index(ps, (p) => p == front) ?? 0
+    if n > 1 then groups.focus(a, ps[(at + step + n) % n])
+  }
+}
+
+/// The divider nearest the pane in front moved toward (`dx`, `dy`).
+fn resize(mut a: session.Session, dx: Int, dy: Int) -> Unit = {
+  let gi = groups.current(a)
+  if gi >= 0 then {
+    let g = a.groups[gi]
+    a.groups = list.set(a.groups, gi, { ...g, layout: layout.resize(g.layout, g.focus, dx, dy, RESIZE_STEP) })
+    groups.relayout_live(a)
+    uistate.touch(a.ui)
+  }
+}
+
+/// The pane in front made to fill its tab, or back to its place.
+fn toggle_zoom(mut a: session.Session) -> Unit = {
+  let gi = groups.current(a)
+  if gi >= 0 and list.len(layout.panes(a.groups[gi].layout)) > 1 then {
+    a.groups = list.set(a.groups, gi, { ...a.groups[gi], zoomed: not a.groups[gi].zoomed })
+    groups.relayout_live(a)
+    uistate.touch(a.ui)
+  }
+}
+
+/// The tab in front's panes made equal again.
+fn equalize(mut a: session.Session) -> Unit = {
+  let gi = groups.current(a)
+  if gi >= 0 then {
+    a.groups = list.set(a.groups, gi, { ...a.groups[gi], layout: layout.equalize(a.groups[gi].layout) })
+    groups.relayout_live(a)
+    uistate.touch(a.ui)
+  }
+}
