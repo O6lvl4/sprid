@@ -1,0 +1,93 @@
+// The windows as a list of sessions: taken out and put back to be worked
+// on, the loop's wait across them, quitting, and windows opened and closed.
+
+import snaidhm.native.window as window
+import self.pty
+import self.gui.tabset
+import self.gui.session
+import self.gui.setup
+import self.gui.upkeep
+
+/// How long to sleep, the soonest any window needs, and what to wake for:
+/// every window's PTYs and config watch.
+fn waits(mut wins: List[session.Session]) -> (Int, List[Int]) = {
+  var timeout = -1
+  var fds: List[Int] = []
+  for i in 0..<list.len(wins) {
+    match take(wins, i) {
+      some(w) => {
+        var a = w
+        timeout = session.sooner(timeout, upkeep.wait_for(a))
+        fds = fds + upkeep.watched(a)
+        put(wins, i, a)
+      },
+      none => (),
+    }
+  }
+  (timeout, fds)
+}
+
+/// Quitting asked for (Cmd+Q, or the only window's close button): every
+/// window closes, asked first while a program is running in one.
+fn quit_asked(mut wins: List[session.Session]) -> Unit = {
+  let tabs = list.flat_map(wins, (a) => a.tabs)
+  let ja = list.any(wins, (a) => a.ja)
+  let capturing = list.any(wins, (a) => a.capture != none)
+  if capturing or list.len(tabs) == 0 or tabset.may_close_window(tabs, ja) then {
+    for i in 0..<list.len(wins) {
+      wins = list.set(wins, i, { ...wins[i], alive: false })
+    }
+  } else window.keep_open()
+}
+
+/// The windows asked for (Cmd+N), opened in the directory of the tab in
+/// front of the one that asked.
+effect fn open_asked(mut wins: List[session.Session]) -> Unit = {
+  let n = list.len(wins)
+  for i in 0..<n {
+    match wins[i].opening {
+      some(cwd) => {
+        wins = list.set(wins, i, { ...wins[i], opening: none })
+        match setup.open_window(wins[i], cwd)! {
+          some(a) => list.push(wins, a),
+          none => (),
+        }
+      },
+      none => (),
+    }
+  }
+}
+
+/// Windows whose last tab closed, or that were closed, gone — their shells
+/// ended with them.
+fn close_ended(mut wins: List[session.Session]) -> Unit = {
+  // FIXME(almide#3170): `wins = list.filter(wins, (a) => a.alive)` once that
+  // compiles for a `mut` parameter.
+  var kept: List[session.Session] = []
+  let n = list.len(wins)
+  for a in wins {
+    if a.alive then list.push(kept, a)
+    else {
+      for tb in a.tabs {
+        pty.close(tb.fd)
+      }
+      // The last window goes when the program ends.
+      if n > 1 then window.close_window(a.id)
+    }
+  }
+  wins = kept
+}
+
+/// Session `i` taken out of `wins` to be worked on (see `tabset.take`).
+fn take(mut wins: List[session.Session], i: Int) -> Option[session.Session] =
+  if i >= list.len(wins) then none
+  else {
+    wins = list.swap(wins, i, list.len(wins) - 1)
+    list.pop(wins)
+  }
+
+/// `a` put back at `i`, where `take` took it.
+fn put(mut wins: List[session.Session], i: Int, a: session.Session) -> Unit = {
+  list.push(wins, a)
+  wins = list.swap(wins, i, list.len(wins) - 1)
+}

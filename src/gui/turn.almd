@@ -1,0 +1,154 @@
+// The loop's turn: shells on PTYs, in tabs, in windows, drawn with snaidhm.
+//
+// One loop on the main thread (macOS wants its event loop there) serves
+// every window: pump their events, turn keys into bytes for the active tab's
+// PTY of the window they went to, read what every tab's program wrote, and
+// draw each window's active tab when it changed. The loop sleeps on the
+// windows and every PTY at once (snaidhm's `wait_fds`), so it runs only when
+// there is something to do. Each window has a session of its own (session.
+// almd); snaidhm is told which one is meant (`window.select`) before anything
+// is done for it.
+//
+// Tabs live in a list. A tab is worked on by taking it out (swap it to the
+// end and pop it) and pushing it back: indexing would copy it, and with it
+// every buffer the tab's terminal writes to next. `list.swap` returns the
+// swapped list; assigning it back keeps the tabs uniquely owned.
+
+import snaidhm.native.window as window
+import self.pty
+import self.sys
+import self.gui.tabset
+import self.gui.uistate
+import self.gui.input
+import self.gui.session
+import self.gui.acts
+import self.gui.outputs
+import self.gui.paint
+import self.gui.upkeep
+import self.gui.windows
+
+/// One turn of the loop: sleep until something is to be done in a window,
+/// then do it — the config reloaded, a window resized, input, output, frames,
+/// windows opened and closed.
+effect fn turn(mut wins: List[session.Session]) -> Unit = {
+  let (timeout, fds) = windows.waits(wins)
+  // With no time to wait, just take the events: arming the fd watcher on
+  // every turn of a streaming loop costs more than it saves.
+  let alive = if timeout == 0 then window.pump() else window.wait_fds(fds, timeout)
+  if not alive then windows.quit_asked(wins)
+  for i in 0..<list.len(wins) {
+    match windows.take(wins, i) {
+      some(w) => {
+        var a = w
+        window.select(a.id)
+        upkeep.reload(a)!
+        upkeep.report_wakes(a, timeout)
+        upkeep.resized(a)
+        windows.put(wins, i, a)
+      },
+      none => (),
+    }
+  }
+  events(wins)!
+  for i in 0..<list.len(wins) {
+    match windows.take(wins, i) {
+      some(w) => {
+        var a = w
+        window.select(a.id)
+        after_events(a)!
+        windows.put(wins, i, a)
+      },
+      none => (),
+    }
+  }
+  windows.open_asked(wins)!
+  windows.close_ended(wins)
+}
+
+/// What follows the input: output read, exited tabs closed, the frame drawn.
+effect fn after_events(mut a: session.Session) -> Unit = {
+  if list.len(a.tabs) == 0 then a.alive = false
+  upkeep.autoscroll(a)
+  for tb in a.tabs {
+    if pty.pending(tb.fd) then {
+      let _ = pty.flush(tb.fd)
+    }
+  }
+  outputs.read_all(a)!
+  outputs.close_exited(a)
+  front_changed(a)
+  // The tab in front, in a window with the focus, is being looked at.
+  if a.r.focused and (list.get(a.tabs, a.active) |> option.map((tb) => tb.alert) ?? false) then {
+    a.tabs = list.set(a.tabs, a.active, { ...a.tabs[a.active], alert: false })
+    uistate.touch(a.ui)
+  }
+  paint.draw_due(a)
+  match a.capture {
+    some(path) => paint.capture_due(a, path)!,
+    none => (),
+  }
+}
+
+/// Every window's input, each to the active tab of the window it went to;
+/// what it asks of the tabs is done after the tab is back in the list.
+effect fn events(mut wins: List[session.Session]) -> Unit = {
+  var kind = window.next_event()
+  while kind != window.NONE {
+    let id = window.event_window()
+    match list.find_index(wins, (a) => a.id == id) {
+      some(i) => match windows.take(wins, i) {
+        some(w) => {
+          var a = w
+          window.select(a.id)
+          if list.len(a.tabs) > 0 then input(a, kind)!
+          windows.put(wins, i, a)
+        },
+        none => (),
+      },
+      none => (),
+    }
+    kind = window.next_event()
+  }
+}
+
+/// Input `kind` to window session `a`.
+effect fn input(mut a: session.Session, kind: Int) -> Unit = {
+  // Typing shows the cursor at once and starts its blink over.
+  if kind == window.KEY or kind == window.TEXT then {
+    session.set_blink_off(a.r, false)
+    if a.blink_at >= 0 then a.blink_at = sys.now_ms() + session.BLINK_MS
+  }
+  session.note_input(a.stats, sys.now_ms())
+  if a.stats.trace and (kind == window.COMPOSE or kind == window.TEXT or kind == window.KEY) then
+    eprintln("input ${int.to_string(sys.now_ms())} kind ${int.to_string(kind)} code ${int.to_string(window.event_code())} end ${int.to_string(window.event_end())} text \"${window.event_text()}\" preedit ${int.to_string(list.len(a.ui.preedit))}")
+  // A window's close button, with others open.
+  let act = if kind == window.CLOSE then uistate.CloseWindow else event(a, kind)!
+  acts.apply(a, act)!
+  front_changed(a)
+}
+
+/// Input `kind` applied to the active tab; what it asks of the tabs.
+effect fn event(mut a: session.Session, kind: Int) -> uistate.Act = {
+  // Counted before the active tab is taken out of the list: with it out,
+  // two tabs looked like one — no tab bar to click, and every click below
+  // it placed a tab bar's height too low.
+  let open = list.len(a.tabs)
+  match tabset.take(a.tabs, a.active) {
+    some(tb) => {
+      var cur = tb
+      let act = input.handle(cur, a.ui, kind, a.r, a.scale, open, a.width)!
+      list.push(a.tabs, cur)
+      a.tabs = list.swap(a.tabs, a.active, list.len(a.tabs) - 1)
+      act
+    },
+    none => uistate.Stay,
+  }
+}
+
+/// What belongs to the tab in front — find, a rename, a drag — ends when
+/// another tab comes to the front, before its next input.
+fn front_changed(mut a: session.Session) -> Unit =
+  if tabset.fd_of(a.tabs, a.active) != a.front then {
+    uistate.leave_tab(a.ui)
+    a.front = tabset.fd_of(a.tabs, a.active)
+  }

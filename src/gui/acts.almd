@@ -29,9 +29,7 @@ effect fn apply(mut a: session.Session, act: uistate.Act) -> Unit = match act {
 /// What an input asks of the window: another, closing this one, the font
 /// size, the system's appearance, the focus, a paste.
 effect fn window_act(mut a: session.Session, act: uistate.Act) -> Unit = match act {
-  uistate.NewWindow => {
-    let _ = sys.open_window(tabset.cwd_of(a.tabs, a.active, a.home))
-  },
+  uistate.NewWindow => { a.opening = some(tabset.cwd_of(a.tabs, a.active, a.home)) },
   uistate.CloseWindow => if tabset.may_close_window(a.tabs, a.ja) then { a.alive = false },
   uistate.Zoom(step) => zoom(a, step),
   uistate.Restyle => {

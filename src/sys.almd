@@ -32,10 +32,6 @@ fn clipboard_set(text: String) -> Bool = _
 @extern(rust, "crate::sys", "clipboard_get")
 fn clipboard_get() -> String = _
 
-/// Start another sprid, a new window, in `cwd` (see native/sys.rs).
-@extern(rust, "crate::sys", "open_window")
-fn open_window(cwd: String) -> Bool = _
-
 /// The PRIMARY selection (X11, Wayland; none on macOS), see native/sys.rs.
 @extern(rust, "crate::sys", "primary_set")
 fn primary_set(text: String) -> Bool = _

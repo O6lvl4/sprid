@@ -1,11 +1,12 @@
-// The session as the window opens: the login shell, the renderer, the
-// first tab, the input state.
+// A window's session as it opens: the renderer, the first tab, the input
+// state.
 
 import env
 import snaidhm.native.window as window
 import self.gui.fonts
 import self.gui.render
 import self.pty
+import self.shell
 import self.search
 import self.field
 import self.settings
@@ -16,8 +17,30 @@ import self.gui.uistate
 import self.gui.prefs
 import self.gui.session
 
-/// The session as the window opens, its first tab on `first_fd`.
-effect fn start(capture: Option[String], faces: fonts.Faces, st: settings.Settings, login: String, first_fd: Int, expected: (Int, Int)) -> session.Session = {
+/// Another window, its first tab's shell started in `cwd`, sized and set up
+/// as `from` is; none when it can't be opened.
+effect fn open_window(from: session.Session, cwd: String) -> Option[session.Session] = {
+  let id = window.open_window("sprid", float.to_int(int.to_float(from.width) / from.scale), float.to_int(int.to_float(from.height) / from.scale))
+  guard id > 0 else none
+  window.select(id)
+  window.set_ime(true)
+  let grid = match list.get(from.tabs, from.active) {
+    some(tb) => (tb.t.cols, tb.t.rows),
+    none => (80, 24),
+  }
+  let command = if from.capture != none then env.get("SPRID_CAPTURE_CMD") ?? "" else ""
+  let fd = pty.spawn(if command != "" then command else shell.command(from.st.shell_integration)!, cwd, grid.0, grid.1)
+  // Capturing, each window's frame goes to a file of its own: a.png, a-2.png.
+  let capture = from.capture |> option.map((path) => string.replace(path, ".png", "-${int.to_string(id)}.png"))
+  if fd < 0 then {
+    window.close_window(id)
+    none
+  } else some(start(id, capture, from.faces, from.st, "", fd, grid)!)
+}
+
+/// Window `id`'s session as it opens, its first tab on `first_fd`. The
+/// window is the selected one.
+effect fn start(id: Int, capture: Option[String], faces: fonts.Faces, st: settings.Settings, login: String, first_fd: Int, expected: (Int, Int)) -> session.Session = {
   let scale = window.scale_factor()
   let device = 1
   // The theme also colours what a window being resized uncovers, until it is
@@ -32,6 +55,7 @@ effect fn start(capture: Option[String], faces: fonts.Faces, st: settings.Settin
   if (cols, rows) != expected then { let _ = pty.resize(first_fd, cols, rows) } else ()
   let home = env.get("HOME") ?? ""
   var a = session.Session {
+    id: id, faces: faces, opening: none,
     capture: capture, home: home,
     // Questions in Japanese on a Japanese system.
     ja: string.starts_with(env.get("LANG") ?? "", "ja"),
@@ -45,6 +69,10 @@ effect fn start(capture: Option[String], faces: fonts.Faces, st: settings.Settin
     blink_at: -1, flash_until: -1, alive: true, last_frame: 0, streaming: false, resized_at: -1,
     front: first_fd, window_title: "", stats: fresh_stats()!,
   }
+  // For captures of several windows: SPRID_CAPTURE_WINDOWS of them, each
+  // opening the next.
+  let windows = if capture != none then int.parse(env.get("SPRID_CAPTURE_WINDOWS") ?? "1") ?? 1 else 1
+  if id < windows then a.opening = some("")
   // For captures of the tab bar: more tabs running the login shell.
   let extra = if capture != none then int.parse(env.get("SPRID_CAPTURE_TABS") ?? "1") ?? 1 else 1
   for _ in 1..<extra {

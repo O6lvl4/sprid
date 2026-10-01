@@ -2,6 +2,7 @@
 // next — the tabs and which is in front, the renderer, the input state, the
 // settings — and what it was started with.
 
+import self.gui.fonts
 import self.gui.render
 import self.gui.tabset
 import self.gui.uistate
@@ -41,6 +42,10 @@ let SETTLE_MS = 300
 let WRITE_RETRY_MS = 5
 
 type Session = {
+  // The window's id (snaidhm's: 1 for the first), and the fonts it draws
+  // with.
+  id: Int,
+  faces: fonts.Faces,
   // As started: a PNG to capture one frame to instead of a window, the
   // command new tabs run, $HOME, whether to ask in Japanese, the display's
   // scale, the GPU device, the config file's watch.
@@ -73,6 +78,8 @@ type Session = {
   // the window's title, the tab in front's.
   front: Int,
   window_title: String,
+  // A new window asked for, to open in this directory.
+  opening: Option[String],
   stats: Stats,
 }
 
