@@ -92,6 +92,11 @@ test "UTF-8 and CSI split across reads" {
   assert_eq(terminal.cell_fg(t, 0, 0), cell.palette(1))
 }
 
+test "a two-byte character after a longer one" {
+  let t = run(10, 2, "❯ · é")
+  assert_eq(terminal.screen_text(t), "❯ · é")
+}
+
 test "invalid UTF-8 shows the replacement char" {
   var t = terminal.new(10, 2)
   terminal.feed(t, bytes.from_list([0x61, 0xE3, 0x81, 0x62, 0xFF]))

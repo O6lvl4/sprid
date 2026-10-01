@@ -172,7 +172,7 @@ fn ground(mut t: core.Terminal, b: Int) -> Unit =
 /// The first byte of a UTF-8 sequence: how many follow, and the bits it
 /// carries; anything else shown as the replacement character.
 fn utf8_lead(mut t: core.Terminal, b: Int) -> Unit =
-  if b >= 0xC2 and b <= 0xDF then { t.utf8_need = 1; t.utf8_cp = int.band(b, 0x1F) }
+  if b >= 0xC2 and b <= 0xDF then { t.utf8_need = 1; t.utf8_cp = int.band(b, 0x1F); t.utf8_min = 0x80 }
   else if b >= 0xE0 and b <= 0xEF then { t.utf8_need = 2; t.utf8_cp = int.band(b, 0x0F); t.utf8_min = 0x800 }
   else if b >= 0xF0 and b <= 0xF4 then { t.utf8_need = 3; t.utf8_cp = int.band(b, 0x07); t.utf8_min = 0x10000 }
   else glyphs.print(t, 0xFFFD)
