@@ -22,6 +22,10 @@ type Settings = {
   cursor_shape: Int,
   // Which Option keys type as Alt: 0 neither, 1 both, 2 left, 3 right.
   option_as_alt: Int,
+  // Programs may set the clipboard (OSC 52).
+  clipboard_write: Bool,
+  // Ask before pasting line breaks where they would run each line.
+  paste_protection: Bool,
   // The file as parsed, for the colours it sets over the theme.
   file: config.Config,
   problems: List[String],
@@ -37,7 +41,7 @@ fn defaults() -> Settings = {
   Settings {
     font_family: "", font_size: DEFAULT_FONT_SIZE, cell_height: DEFAULT_CELL_HEIGHT, pad_x: 12.0, pad_y: 8.0,
     theme_light: DEFAULT_THEME, theme_dark: DEFAULT_THEME, scrollback: DEFAULT_SCROLLBACK,
-    cursor_shape: 0, option_as_alt: 0, file: config.empty(), problems: problems,
+    cursor_shape: 0, option_as_alt: 0, clipboard_write: true, paste_protection: true, file: config.empty(), problems: problems,
   }
 }
 
@@ -113,6 +117,19 @@ fn from(c: config.Config) -> Settings = {
     },
     none => (),
   }
+  match config.get(c, "clipboard-write") {
+    some(v) => if v == "allow" then { s.clipboard_write = true }
+      else if v == "deny" then { s.clipboard_write = false }
+      else list.push(problems, bad("clipboard-write", v)),
+    none => (),
+  }
+  match config.get(c, "clipboard-paste-protection") {
+    some(v) => match config.flag(v) {
+      some(b) => { s.paste_protection = b },
+      none => list.push(problems, bad("clipboard-paste-protection", v)),
+    },
+    none => (),
+  }
   { ...s, problems: problems }
 }
 
@@ -147,6 +164,8 @@ test "values from the file, problems for the rest" {
   assert_eq((s.font_size, s.theme_light, s.theme_dark), (16.0, "Almide Light", "Dracula"))
   assert_eq((s.scrollback, s.cursor_shape, s.option_as_alt), (20971520, 5, 2))
   assert_eq(s.problems, ["unknown key: font-size2", "window-padding-x: can't use \"x\""])
+  let c = from(config.parse("clipboard-write = deny\nclipboard-paste-protection = false"))
+  assert_eq((c.clipboard_write, c.paste_protection, s.clipboard_write, s.paste_protection), (false, false, true, true))
 }
 
 test "the theme for each appearance, with the file's colours over it" {

@@ -77,6 +77,9 @@ type Tab = {
   up: Updates,
   // The name the user gave it; "" for the automatic title.
   name: String,
+  // A bell or notification came while it wasn't being looked at: its title
+  // is marked until it is.
+  alert: Bool,
 }
 
 /// The latest synchronized update and redraw with the cursor hidden that
@@ -150,7 +153,7 @@ type Options = { command: Option[String], cols: Int, rows: Int, capture: Option[
 /// `Zoom` changes the font size by that many points, or with 0 resets it;
 /// `Restyle` follows the system's light or dark appearance; `Focus` the
 /// window gaining or losing the keyboard.
-type Act = | Stay | NewTab | CloseTab | NextTab | PrevTab | GoTo(Int) | NewWindow | CloseWindow | Zoom(Int) | Restyle | Focus(Bool)
+type Act = | Stay | NewTab | CloseTab | NextTab | PrevTab | GoTo(Int) | NewWindow | CloseWindow | Zoom(Int) | Restyle | Focus(Bool) | Paste
 
 effect fn run(opts: Options) -> Unit = {
   // Before anything starts a program: the shell, the clipboard's tools.
@@ -269,6 +272,8 @@ effect fn run_with(opts: Options, faces: fonts.Faces, s: settings.Settings) -> U
   // drawn for its size.
   var r = styled(render.new(device, faces, float.to_int(float.round(st.font_size * scale)),
     float.to_int(st.pad_x * scale), float.to_int(st.pad_y * scale), st.cell_height), st)!
+  // Opened behind another app's window, it has no focus until clicked.
+  r.focused = window.focused()
   var width = window.width()
   var height = window.height()
   var font_size = st.font_size
@@ -279,7 +284,7 @@ effect fn run_with(opts: Options, faces: fonts.Faces, s: settings.Settings) -> U
 
   let (cols, rows) = render.grid_size(r, width, height, 1)
   if (cols, rows) != expected then { let _ = pty.resize(first_fd, cols, rows) } else ()
-  var tabs: List[Tab] = [Tab { t: terminal.with_scrollback(cols, rows, st.scrollback), fd: first_fd, back: 0, shift: 0, sel: none, up: Updates { syncs: 0, sync_at: 0, hides: 0, hide_at: 0 }, name: "" }]
+  var tabs: List[Tab] = [Tab { t: terminal.with_scrollback(cols, rows, st.scrollback), fd: first_fd, back: 0, shift: 0, sel: none, up: Updates { syncs: 0, sync_at: 0, hides: 0, hide_at: 0 }, name: "", alert: false }]
   var active = 0
   // For captures of the tab bar: more tabs running the login shell.
   let extra = match capture { some(_) => int.parse(env.get("SPRID_CAPTURE_TABS") ?? "1") ?? 1, none => 1 }
@@ -321,6 +326,8 @@ effect fn run_with(opts: Options, faces: fonts.Faces, s: settings.Settings) -> U
   var resized_at = -1
   // The PTY of the tab in front, to tell when another comes to the front.
   var front = first_fd
+  // The window's title: the tab in front's.
+  var window_title = ""
   // Debug: SPRID_AUTOSCROLL="dy,start ms,end ms,every ms" turns the wheel by
   // itself, for measuring scrolling without a hand on the trackpad.
   let auto = list.map(string.split(env.get("SPRID_AUTOSCROLL") ?? "", ","), (x) => float.parse(x) ?? 0.0)
@@ -367,8 +374,8 @@ effect fn run_with(opts: Options, faces: fonts.Faces, s: settings.Settings) -> U
       if new_faces then {
         match fonts.find(st.font_family)! {
           some(f) => {
-            r = render.new(device, f, float.to_int(float.round(st.font_size * scale)),
-              float.to_int(st.pad_x * scale), float.to_int(st.pad_y * scale), st.cell_height)
+            r = { ...render.new(device, f, float.to_int(float.round(st.font_size * scale)),
+              float.to_int(st.pad_x * scale), float.to_int(st.pad_y * scale), st.cell_height), focused: r.focused }
           },
           none => (),
         }
@@ -517,6 +524,24 @@ effect fn run_with(opts: Options, faces: fonts.Faces, s: settings.Settings) -> U
           }
           ui.dirty = true
         },
+        Paste => {
+          match take(tabs, active) {
+            some(tb) => {
+              var cur = tb
+              let text = clipboard()!
+              // Lines pasted where nothing marks them as pasted run one by
+              // one as they arrive: asked first.
+              if text != "" and (not st.paste_protection or cur.t.bracketed_paste or not keys.multiline(text) or paste_ok(text, ja)!) then {
+                let _ = pty.write(cur.fd, keys.paste(text, cur.t.bracketed_paste))
+                if cur.back != 0 then ui.dirty = true
+                scroll_to(cur, 0)
+              }
+              list.push(tabs, cur)
+              tabs = list.swap(tabs, active, list.len(tabs) - 1)
+            },
+            none => (),
+          }
+        },
         Stay => (),
       }
       // What belongs to the tab in front — find, a rename, a drag — ends
@@ -555,7 +580,30 @@ effect fn run_with(opts: Options, faces: fonts.Faces, s: settings.Settings) -> U
         some(tb) => {
           var cur = tb
           let title_before = (cur.t.title, cur.t.cwd)
+          let bells_before = cur.t.bells
           let (got, more) = drain(cur, if i == active then STREAM_DRAIN_MS else DRAIN_MS)
+          if got then {
+            match terminal.take_clipboard(cur.t) {
+              some(text) => if st.clipboard_write then { let _ = sys.clipboard_set(text) },
+              none => (),
+            }
+            let notices = terminal.take_notices(cur.t)
+            if cur.t.bells != bells_before or list.len(notices) > 0 then {
+              // Marked where it isn't being looked at; the Dock asked to
+              // show it when the window is in the background, and the
+              // notifications shown there.
+              if i != active or not r.focused then {
+                if not cur.alert then ui.dirty = true
+                cur.alert = true
+              }
+              if not r.focused then {
+                window.request_attention()
+                for (title, body) in notices {
+                  dialog.notify(if title != "" then title else title_of(cur, home), body)
+                }
+              }
+            }
+          }
           // A tab in the back retitled itself: the tab bar shows it.
           if got and i != active and (cur.t.title, cur.t.cwd) != title_before then ui.dirty = true
           if got and trace then eprintln("out ${int.to_string(sys.now_ms())} tab ${int.to_string(i)} cursor ${int.to_string(cur.t.x)},${int.to_string(cur.t.y)}")
@@ -591,9 +639,23 @@ effect fn run_with(opts: Options, faces: fonts.Faces, s: settings.Settings) -> U
       front = fd_of(tabs, active)
     }
 
+    // The tab in front, in a window with the focus, is being looked at.
+    if r.focused and (list.get(tabs, active) |> option.map((tb) => tb.alert) ?? false) then {
+      tabs = list.set(tabs, active, { ...tabs[active], alert: false })
+      ui.dirty = true
+    }
+
     let clock = sys.now_ms()
     if alive and ui.dirty and clock - last_frame >= (if streaming then STREAM_FRAME_MS else FRAME_MS) then {
       let titles = tab_titles(tabs, active, ui, home)
+      let shown = match list.get(tabs, active) {
+        some(tb) => title_of(tb, home),
+        none => "",
+      }
+      if shown != window_title then {
+        window.set_title(if shown == "" then "sprid" else shown)
+        window_title = shown
+      }
       match take(tabs, active) {
         some(tb) => {
           var cur = tb
@@ -801,7 +863,7 @@ fn open_tab(r: render.Renderer, width: Int, height: Int, count: Int, command: St
   let (cols, rows) = render.grid_size(r, width, height, count)
   let fd = pty.spawn(command, cwd, cols, rows)
   if fd < 0 then none
-  else some(Tab { t: terminal.with_scrollback(cols, rows, scrollback), fd: fd, back: 0, shift: 0, sel: none, up: Updates { syncs: 0, sync_at: 0, hides: 0, hide_at: 0 }, name: "" })
+  else some(Tab { t: terminal.with_scrollback(cols, rows, scrollback), fd: fd, back: 0, shift: 0, sel: none, up: Updates { syncs: 0, sync_at: 0, hides: 0, hide_at: 0 }, name: "", alert: false })
 }
 
 /// Close tab `i` and its program, keeping the other tabs in order.
@@ -855,7 +917,9 @@ fn fit(mut tabs: List[Tab], r: render.Renderer, width: Int, height: Int, live: B
 /// The tab bar's titles; the tab being renamed shows its draft, with a
 /// caret.
 fn tab_titles(tabs: List[Tab], active: Int, ui: Ui, home: String) -> List[String] =
-  list.enumerate(tabs) |> list.map(((i, tb)) => if ui.renaming and i == active then ui.draft + "▏" else title_of(tb, home))
+  list.enumerate(tabs) |> list.map(((i, tb)) => if ui.renaming and i == active then ui.draft + "▏"
+    else if tb.alert then "• " + title_of(tb, home)
+    else title_of(tb, home))
 
 /// What a tab is called: the name the user gave it, else the title its
 /// program set, else its directory's name, else the shell's.
@@ -1053,15 +1117,17 @@ effect fn handle(mut cur: Tab, mut ui: Ui, kind: Int, r: render.Renderer, scale:
       ui.dirty = true
       Stay
     } else {
-      let out = if command and (code == 0x76 or code == 0x56) then keys.paste(clipboard()!, t.bracketed_paste)
-                else keys.encode_with(kind, code, held, t.app_cursor, t.kitty_flags)
-      if out != "" then {
-        let _ = pty.write(cur.fd, out)
-        // Typing brings the viewport back to the prompt.
-        if cur.back != 0 then ui.dirty = true
-        scroll_to(cur, 0)
+      if command and (code == 0x76 or code == 0x56) then Paste
+      else {
+        let out = keys.encode_with(kind, code, held, t.app_cursor, t.kitty_flags)
+        if out != "" then {
+          let _ = pty.write(cur.fd, out)
+          // Typing brings the viewport back to the prompt.
+          if cur.back != 0 then ui.dirty = true
+          scroll_to(cur, 0)
+        }
+        Stay
       }
-      Stay
     }
   } else if kind == window.WHEEL then {
     let (col, row) = cell_at(r, t, scale, tabs)
@@ -1500,3 +1566,14 @@ effect fn copy(s: String) -> Unit = {
 }
 
 effect fn clipboard() -> String = sys.clipboard_get()
+
+/// Ask before pasting `text`, which has line breaks, where they would run
+/// each line as it arrives.
+effect fn paste_ok(text: String, ja: Bool) -> Bool = {
+  let lines = string.split(string.replace(string.trim_end(text), "\r\n", "\n"), "\n")
+  let n = list.len(lines)
+  let preview = lines |> list.take(3) |> list.map((l) => if string.len(l) > 60 then string.take(l, 60) + "…" else l)
+  let shown = string.join(preview, "\n") + (if n > 3 then "\n…" else "")
+  if ja then dialog.confirm("${int.to_string(n)} 行を貼り付けますか？", "改行を含むため、貼り付けると各行がコマンドとして実行されます。\n\n${shown}", "貼り付ける", "キャンセル")
+  else dialog.confirm("Paste ${int.to_string(n)} line${if n > 1 then "s" else ""}?", "The text has line breaks: each line will run as a command as it is pasted.\n\n${shown}", "Paste", "Cancel")
+}

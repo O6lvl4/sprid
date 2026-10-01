@@ -168,6 +168,14 @@ fn paste(s: String, bracketed: Bool) -> String = {
   if bracketed then "\x1b[200~" + string.replace(body, "\x1b[201~", "") + "\x1b[201~" else body
 }
 
+/// Whether pasting `s` would press Enter: a line break anywhere in it,
+/// even the last character, runs what comes before it.
+fn multiline(s: String) -> Bool = string.contains(s, "\n") or string.contains(s, "\r")
+
+test "a line break anywhere is a press of Enter" {
+  assert_eq((multiline("ls"), multiline("ls\n"), multiline("a\r\nb")), (false, true, true))
+}
+
 test "plain text is itself" {
   assert_eq(encode(TEXT, 0x61, 0, false), "a")
   assert_eq(encode(TEXT, 0x3042, 0, false), "あ")

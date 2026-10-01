@@ -4,3 +4,8 @@
 /// True for `yes`.
 @extern(rust, "crate::dialog", "confirm")
 fn confirm(message: String, detail: String, yes: String, no: String) -> Bool = _
+
+/// Show a desktop notification (Notification Center on macOS, notify-send
+/// elsewhere); never waits.
+@extern(rust, "crate::dialog", "notify")
+fn notify(title: String, body: String) -> Unit = _

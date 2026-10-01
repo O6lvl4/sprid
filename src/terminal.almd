@@ -3,7 +3,9 @@
 // `feed` takes bytes from the PTY and applies them. Nothing here touches the
 // OS or draws: the state is a grid of cells (see cell.almd) plus a cursor,
 // modes and scrollback, and what the terminal must answer (device status,
-// device attributes) collects in `replies` for the caller to write back.
+// device attributes) collects in `replies` for the caller to write back, and
+// what it asks of the window (a notification, the clipboard set) in
+// `notices` and `clipboard`.
 //
 // The parser is the DEC VT500 state machine (vt100.net/emu/dec_ansi_parser)
 // with UTF-8 decoded in the ground state. Its state lives in the Terminal
@@ -15,6 +17,7 @@
 // one row clear, not a copy of the screen. Scrolling inside margins copies
 // rows.
 
+import base64
 import bytes
 import self.cell
 import self.scrollback
@@ -32,9 +35,11 @@ let OSC_STRING = 7
 /// DCS, SOS, PM and APC: consumed and ignored up to their terminator.
 let IGNORED_STRING = 8
 
-/// Longest OSC string kept; the rest is dropped so a runaway sequence can't
-/// grow memory.
-let OSC_MAX = 4096
+/// Longest OSC string kept — room for OSC 52 to set the clipboard to a
+/// large selection; the rest is dropped so a runaway sequence can't grow
+/// memory past it. A buffer grown past `OSC_KEEP` is let go once used.
+let OSC_MAX = 4194304
+let OSC_KEEP = 4096
 let MAX_PARAMS = 32
 
 /// What XTVERSION reports: almide.toml's version (scripts/bump-version.sh
@@ -121,6 +126,13 @@ type Terminal = {
   cwd: String,
   replies: String,
   bells: Int,
+  /// Desktop notifications asked for (OSC 9, 777, 99), as (title, body),
+  /// for the window to take.
+  notices: List[(String, String)],
+  /// A kitty notification (OSC 99) still arriving in parts: (id, title, body).
+  notice_parts: (String, String, String),
+  /// Text to put on the clipboard (OSC 52), for the window to take.
+  clipboard: Option[String],
   sb: scrollback.Scrollback,
   // Parser.
   state: Int,
@@ -200,6 +212,9 @@ fn with_scrollback(cols: Int, rows: Int, limit: Int) -> Terminal = {
     cwd: "",
     replies: "",
     bells: 0,
+    notices: [],
+    notice_parts: ("", "", ""),
+    clipboard: none,
     sb: scrollback.new(limit),
     state: GROUND,
     params: bytes.new(MAX_PARAMS * 4),
@@ -1227,11 +1242,92 @@ fn osc_byte(mut t: Terminal, b: Int) -> Unit = {
 
 fn osc_dispatch(mut t: Terminal) -> Unit = {
   let s = bytes.to_string_lossy(t.osc)
-  let parts = string.split(s, ";")
-  let cmd = list.get(parts, 0) ?? ""
-  if cmd == "0" or cmd == "2" then t.title = string.drop(s, string.len(cmd) + 1)
-  else if cmd == "7" then t.cwd = file_url_path(string.drop(s, 2))
-  bytes.clear(t.osc)
+  let (cmd, arg) = string.split_once(s, ";") ?? (s, "")
+  if cmd == "0" or cmd == "2" then t.title = arg
+  else if cmd == "7" then t.cwd = file_url_path(arg)
+  else if cmd == "9" then {
+    // iTerm2's `9;message`. ConEmu's `9;N;...` (progress and the like, N a
+    // number up to 12) shares the number and is not a message.
+    let first = (string.split_once(arg, ";") ?? (arg, "")).0
+    let conemu = match int.parse(first) {
+      ok(n) => n >= 1 and n <= 12,
+      err(_) => false,
+    }
+    if not conemu and arg != "" then notice(t, "", arg)
+  } else if cmd == "777" then {
+    // rxvt's `777;notify;title;body`.
+    match string.split_once(arg, ";") {
+      some(("notify", rest)) => {
+        let (title, body) = string.split_once(rest, ";") ?? (rest, "")
+        notice(t, title, body)
+      },
+      _ => (),
+    }
+  } else if cmd == "99" then kitty_notice(t, arg)
+  else if cmd == "52" then {
+    // `52;targets;base64`: only setting is honoured — a program reading the
+    // clipboard (`?`) could take what was copied elsewhere.
+    let data = (string.split_once(arg, ";") ?? ("", "")).1
+    if data != "?" then match base64.decode(data) {
+      ok(b) => { t.clipboard = some(bytes.to_string_lossy(b)) },
+      err(_) => (),
+    }
+  }
+  if bytes.len(t.osc) > OSC_KEEP then t.osc = bytes.new(0) else bytes.clear(t.osc)
+}
+
+fn notice(mut t: Terminal, title: String, body: String) -> Unit = {
+  // A program printing in a loop can't pile them up.
+  if list.len(t.notices) < 16 then list.push(t.notices, (title, body))
+}
+
+/// kitty's `99;metadata;payload`: the payload is the title or the body
+/// (`p=`), base64 when `e=1`, and the notification is shown at the part that
+/// says it is done (`d=1`, the default); parts of one share an id (`i=`).
+fn kitty_notice(mut t: Terminal, arg: String) -> Unit = {
+  let (meta, payload) = string.split_once(arg, ";") ?? (arg, "")
+  var id = ""
+  var done = true
+  var part = "title"
+  var encoded = false
+  for kv in string.split(meta, ":") {
+    match string.split_once(kv, "=") {
+      some(("i", v)) => { id = v },
+      some(("d", v)) => { done = v != "0" },
+      some(("p", v)) => { part = v },
+      some(("e", v)) => { encoded = v == "1" },
+      _ => (),
+    }
+  }
+  let text = if encoded then match base64.decode(payload) {
+    ok(b) => bytes.to_string_lossy(b),
+    err(_) => "",
+  } else payload
+  let (pid, ptitle, pbody) = t.notice_parts
+  let (title, body) = if pid == id then (ptitle, pbody) else ("", "")
+  let next = if part == "title" then (title + text, body)
+    else if part == "body" then (title, body + text)
+    else (title, body)
+  if done then {
+    t.notice_parts = ("", "", "")
+    // A title alone is the notification's text.
+    if next.0 != "" or next.1 != "" then notice(t, next.0, next.1)
+  } else t.notice_parts = (id, next.0, next.1)
+}
+
+/// Take the notifications asked for since last time.
+fn take_notices(mut t: Terminal) -> List[(String, String)] = {
+  let n = t.notices
+  let none_yet: List[(String, String)] = []
+  t.notices = none_yet
+  n
+}
+
+/// Take the text a program put on the clipboard since last time.
+fn take_clipboard(mut t: Terminal) -> Option[String] = {
+  let c = t.clipboard
+  t.clipboard = none
+  c
 }
 
 // ── Resizing ──────────────────────────────────────────────────────────────
@@ -1659,4 +1755,26 @@ test "each update that begins is counted, so its hold is timed from its own star
   // A full-screen program's first screen begins one too.
   feed_string(t, "\x1b[?1049h")
   assert_eq(t.hide_starts, 3)
+}
+
+test "notifications: OSC 9, 777, 99 in parts, not ConEmu's 9;4" {
+  var t = new(20, 3)
+  feed_string(t, "\x1b]9;build done\x07\x1b]9;4;1;50\x07\x1b]777;notify;Claude;waiting; really\x1b\\")
+  feed_string(t, "\x1b]99;i=1:d=0;Hello\x1b\\\x1b]99;i=1:p=body;World\x1b\\\x1b]99;e=1;aGk=\x07")
+  assert_eq(take_notices(t), [("", "build done"), ("Claude", "waiting; really"), ("Hello", "World"), ("hi", "")])
+  assert_eq(take_notices(t), [])
+}
+
+test "OSC 52 sets the clipboard, never reads it" {
+  var t = new(20, 3)
+  feed_string(t, "\x1b]52;c;5pel5pys6Kqe\x07")
+  assert_eq(take_clipboard(t), some("日本語"))
+  feed_string(t, "\x1b]52;c;?\x07")
+  assert_eq((take_clipboard(t), take_replies(t)), (none, ""))
+}
+
+test "a title with semicolons and UTF-8" {
+  var t = new(20, 3)
+  feed_string(t, "\x1b]2;a;b ✳ c\x07")
+  assert_eq(t.title, "a;b ✳ c")
 }
