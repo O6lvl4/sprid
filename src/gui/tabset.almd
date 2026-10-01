@@ -159,9 +159,8 @@ fn cwd_of(tabs: List[Tab], i: Int, home: String) -> String = match list.get(tabs
   none => home,
 }
 
-/// A new tab running `command` in `cwd`, sized for `count` tabs.
-fn open_tab(r: render.Renderer, width: Int, height: Int, count: Int, command: String, cwd: String, scrollback: Int) -> Option[Tab] = {
-  let (cols, rows) = render.grid_size(r, width, height, count)
+/// A new tab (a pane) running `command` in `cwd`, `cols` x `rows`.
+fn open_tab(cols: Int, rows: Int, command: String, cwd: String, scrollback: Int) -> Option[Tab] = {
   let fd = pty.spawn(command, cwd, cols, rows)
   if fd < 0 then none
   else some(Tab { t: terminal.with_scrollback(cols, rows, scrollback), fd: fd, back: 0, shift: 0, sel: none, up: NO_UPDATES, name: "", alert: false })
@@ -183,28 +182,19 @@ fn close_tab(mut tabs: List[Tab], i: Int) -> Unit = {
   }
 }
 
-/// Fit every tab to the window: the grid shrinks by the tab bar from two tabs
-/// on.
-fn relayout(mut tabs: List[Tab], r: render.Renderer, width: Int, height: Int) -> Unit =
-  fit(tabs, r, width, height, false, true)
-
-/// `relayout` for a size that is still changing — the font stepped larger
-/// or smaller: scrollback is reflowed once the size holds (`settle_all`).
-fn relayout_live(mut tabs: List[Tab], r: render.Renderer, width: Int, height: Int) -> Unit =
-  fit(tabs, r, width, height, true, true)
-
-/// `relayout_live` for the window being resized. Its frame is drawn at once,
-/// not held for the program to draw itself again (`hold_left`): the window
-/// has a new size, which only a new frame fills.
-fn relayout_window(mut tabs: List[Tab], r: render.Renderer, width: Int, height: Int) -> Unit =
-  fit(tabs, r, width, height, true, false)
-
-fn fit(mut tabs: List[Tab], r: render.Renderer, width: Int, height: Int, live: Bool, hold: Bool) -> Unit = {
-  let (cols, rows) = render.grid_size(r, width, height, list.len(tabs))
+/// Every tab (pane) fitted to its size in `sizes`, (fd, (cols, rows)):
+/// `live` while the size is still changing — scrollback is reflowed once it
+/// holds (`settle_all`) — and, `hold`, its frame held for its program to
+/// draw itself again (`hold_left`); a window being resized is drawn at once.
+fn fit(mut tabs: List[Tab], sizes: List[(Int, (Int, Int))], live: Bool, hold: Bool) -> Unit = {
   for i in 0..<list.len(tabs) {
     match take(tabs, i) {
       some(tb) => {
         var cur = tb
+        // FIXME(almide#3177): read `cur.fd` in the closure once doing so
+        // doesn't lose the resize below.
+        let fd = cur.fd
+        let (cols, rows) = list.find(sizes, (e) => e.0 == fd) |> option.map((e) => e.1) ?? (cur.t.cols, cur.t.rows)
         if cur.t.cols != cols or cur.t.rows != rows then {
           if live then terminal.resize_live(cur.t, cols, rows) else terminal.resize(cur.t, cols, rows)
           let _ = pty.resize(cur.fd, cols, rows)
@@ -222,13 +212,6 @@ fn fit(mut tabs: List[Tab], r: render.Renderer, width: Int, height: Int, live: B
     }
   }
 }
-
-/// The tab bar's titles; the tab being renamed shows its draft, with a
-/// caret.
-fn tab_titles(tabs: List[Tab], active: Int, ui: uistate.Ui, home: String) -> List[String] =
-  list.enumerate(tabs) |> list.map(((i, tb)) => if ui.renaming and i == active then ui.draft + "▏"
-    else if tb.alert then "• " + title_of(tb, home)
-    else title_of(tb, home))
 
 /// What a tab is called: the name the user gave it, else the title its
 /// program set, else its directory's name, else the shell's.

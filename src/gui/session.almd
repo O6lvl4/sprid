@@ -4,7 +4,7 @@
 
 import self.gui.fonts
 import self.gui.render
-import self.gui.surface
+import self.gui.layout
 import self.gui.tabset
 import self.gui.uistate
 import self.settings
@@ -58,8 +58,11 @@ type Session = {
   config_fd: Int,
   st: settings.Settings,
   r: render.Renderer,
+  // The panes, the one keys go to, and the tab bar's tabs: groups of them
+  // (groups.almd).
   tabs: List[tabset.Tab],
   active: Int,
+  groups: List[layout.Group],
   ui: uistate.Ui,
   // The drawable's size, pixels; the font size now (Cmd+Plus / Minus).
   width: Int,
@@ -82,7 +85,7 @@ type Session = {
   // A new window asked for, to open in this directory; a tab taken out of
   // this one for a window of its own.
   opening: Option[String],
-  adopting: Option[tabset.Tab],
+  adopting: Option[(layout.Group, List[tabset.Tab])],
   stats: Stats,
 }
 
@@ -154,9 +157,3 @@ fn shown(mut s: Stats, now: Int) -> Unit = {
 fn count_wake(mut s: Stats) -> Unit = { s.wakes = s.wakes + 1 }
 
 fn set_auto_next(mut s: Stats, at: Int) -> Unit = { s.auto_next = at }
-
-/// The renderer told where the tab in front is: the pane drawn and pointed
-/// at (see `surface.Renderer.box`).
-fn place_box(mut a: Session) -> Unit = {
-  a.r = { ...a.r, box: surface.content_box(a.r, a.width, a.height, list.len(a.tabs)) }
-}

@@ -8,6 +8,7 @@ import self.gui.clip
 import self.gui.uistate
 import self.gui.prefs
 import self.gui.session
+import self.gui.groups
 import self.keys
 import self.pty
 import self.shell
@@ -20,12 +21,23 @@ import self.view
 
 effect fn apply(mut a: session.Session, act: uistate.Act) -> Unit = match act {
   uistate.NewTab => new_tab(a)!,
-  uistate.CloseTab => close_tab(a),
-  uistate.NextTab => go_to(a, (a.active + 1) % list.len(a.tabs)),
-  uistate.PrevTab => go_to(a, (a.active + list.len(a.tabs) - 1) % list.len(a.tabs)),
-  uistate.GoTo(i) => if i < list.len(a.tabs) and i != a.active then go_to(a, i),
-  uistate.MoveTab(to) => move_tab(a, to),
-  uistate.DetachTab => detach_tab(a),
+  uistate.CloseTab => close_pane(a),
+  uistate.NextTab => groups.go_to(a, (groups.current(a) + 1) % groups.count(a)),
+  uistate.PrevTab => groups.go_to(a, (groups.current(a) + groups.count(a) - 1) % groups.count(a)),
+  uistate.GoTo(i) => if i < groups.count(a) and i != groups.current(a) then groups.go_to(a, i),
+  uistate.MoveTab(to) => groups.move_tab(a, to),
+  uistate.DetachTab => { a.adopting = groups.take_out(a, groups.current(a)) },
+  _ => pane_act(a, act)!,
+}
+
+/// What an input asks of the panes of the tab in front.
+effect fn pane_act(mut a: session.Session, act: uistate.Act) -> Unit = match act {
+  uistate.SplitPane(across) => split(a, across)!,
+  uistate.FocusPane(dx, dy) => groups.focus_toward(a, dx, dy),
+  uistate.CyclePane(step) => groups.cycle(a, step),
+  uistate.ResizePane(dx, dy) => groups.resize(a, dx, dy),
+  uistate.ZoomPane => groups.toggle_zoom(a),
+  uistate.EqualPanes => groups.equalize(a),
   _ => window_act(a, act)!,
 }
 
@@ -47,51 +59,30 @@ effect fn window_act(mut a: session.Session, act: uistate.Act) -> Unit = match a
   _ => (),
 }
 
-/// The tab in front closed, if it may.
-fn close_tab(mut a: session.Session) -> Unit =
-  if tabset.may_close_tab(a.tabs, a.active, a.ja) then {
-    tabset.close_tab(a.tabs, a.active)
-    a.active = int.min(a.active, list.len(a.tabs) - 1)
-    tabset.relayout(a.tabs, a.r, a.width, a.height)
-    uistate.touch(a.ui)
-  }
+/// The pane in front closed — its tab with it when it is the last — if it
+/// may.
+fn close_pane(mut a: session.Session) -> Unit =
+  if tabset.may_close_tab(a.tabs, a.active, a.ja) then groups.close_pane(a, tabset.fd_of(a.tabs, a.active))
 
-/// The tab in front moved to place `to`, the others keeping their order.
-fn move_tab(mut a: session.Session, to: Int) -> Unit =
-  if to >= 0 and to < list.len(a.tabs) and to != a.active then {
-    a.tabs = tabset.move_to(a.tabs, a.active, to)
-    a.active = to
-    uistate.touch(a.ui)
-  }
-
-/// The tab in front taken out, for a window of its own (see
-/// `windows.open_asked`).
-fn detach_tab(mut a: session.Session) -> Unit =
-  if list.len(a.tabs) > 1 then {
-    move_tab(a, list.len(a.tabs) - 1)
-    a.adopting = list.pop(a.tabs)
-    a.active = list.len(a.tabs) - 1
-    tabset.relayout(a.tabs, a.r, a.width, a.height)
-    uistate.touch(a.ui)
-  }
-
-fn go_to(mut a: session.Session, i: Int) -> Unit = {
-  a.active = i
-  uistate.touch(a.ui)
-}
-
-/// A tab in the directory of the one in front, brought to the front.
+/// A tab in the directory of the pane in front, brought to the front.
 effect fn new_tab(mut a: session.Session) -> Unit = {
   let cwd = tabset.cwd_of(a.tabs, a.active, env.get("HOME") ?? "")
-  match tabset.open_tab(a.r, a.width, a.height, list.len(a.tabs) + 1, shell.command(a.st.shell_integration)!, cwd, a.st.scrollback) {
-    some(tb) => {
-      list.push(a.tabs, tb)
-      a.active = list.len(a.tabs) - 1
-      tabset.relayout(a.tabs, a.r, a.width, a.height)
-    },
+  let (cols, rows) = groups.new_tab_grid(a)
+  match tabset.open_tab(cols, rows, shell.command(a.st.shell_integration)!, cwd, a.st.scrollback) {
+    some(tb) => groups.add_tab(a, tb),
     none => (),
   }
-  uistate.touch(a.ui)
+}
+
+/// The pane in front split across or down: a shell in its directory takes
+/// the new half, and the keys.
+effect fn split(mut a: session.Session, across: Bool) -> Unit = {
+  let cwd = tabset.cwd_of(a.tabs, a.active, env.get("HOME") ?? "")
+  let (cols, rows) = groups.split_grid(a, across)
+  match tabset.open_tab(cols, rows, shell.command(a.st.shell_integration)!, cwd, a.st.scrollback) {
+    some(tb) => groups.add_pane(a, tb, across),
+    none => (),
+  }
 }
 
 /// The font `step` points larger, or with 0 back to the config's size. As
@@ -103,7 +94,7 @@ fn zoom(mut a: session.Session, step: Int) -> Unit = {
   if size != a.font_size then {
     a.font_size = size
     a.r = session.sized(a)
-    tabset.relayout_live(a.tabs, a.r, a.width, a.height)
+    groups.relayout_live(a)
     a.resized_at = sys.now_ms()
     uistate.touch(a.ui)
   }
@@ -132,7 +123,10 @@ effect fn menu(mut a: session.Session) -> Unit = {
   let front = list.get(a.tabs, a.active)
   let has_sel = (front |> option.flat_map((tb) => tb.sel)) != none
   // The output of the command the pointer is on, as the shell marks it.
-  let output = front |> option.flat_map((tb) => prompts.output_at(tb.t, pointer.pointer_line(a.r, tb, a.scale, list.len(a.tabs))))
+  // FIXME(almide#3177): read `a` in the closure once that doesn't lose what
+  // the menu then does to it.
+  let (r, scale, open) = (a.r, a.scale, groups.count(a))
+  let output = front |> option.flat_map((tb) => prompts.output_at(tb.t, pointer.pointer_line(r, tb, scale, open)))
   let names = if a.ja then ["コピー", "貼り付け", "-", "すべてを選択", "コマンドの出力を選択", "検索", "クリア"]
     else ["Copy", "Paste", "-", "Select All", "Select Command Output", "Find", "Clear"]
   let off = (i: Int) => (i == 0 and not has_sel) or (i == 4 and output == none)

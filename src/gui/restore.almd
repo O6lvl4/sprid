@@ -16,6 +16,7 @@ import self.sys
 import self.gui.dialog
 import self.gui.session
 import self.gui.tabset
+import self.gui.groups
 import self.gui.setup
 import self.gui.windows
 import self.shell
@@ -88,21 +89,22 @@ effect fn fill(mut a: session.Session, tabs: List[(String, String)]) -> Unit = {
     none => (),
   }
   for t in list.drop(tabs, 1) {
-    match tabset.open_tab(a.r, a.width, a.height, list.len(a.tabs) + 1, shell.command(a.st.shell_integration)!, t.0, a.st.scrollback) {
-      some(tb) => {
-        list.push(a.tabs, { ...tb, name: t.1 })
-        tabset.relayout(a.tabs, a.r, a.width, a.height)
-      },
+    let (cols, rows) = groups.new_tab_grid(a)
+    match tabset.open_tab(cols, rows, shell.command(a.st.shell_integration)!, t.0, a.st.scrollback) {
+      some(tb) => groups.add_tab(a, { ...tb, name: t.1 }),
       none => (),
     }
   }
+  groups.go_to(a, 0)
 }
 
-/// Window session `a` as kept: its frame, and its tabs when `tabs`.
+/// Window session `a` as kept: its frame, and its tabs when `tabs` — each
+/// as its pane in front.
 fn frame_of(a: session.Session, tabs: Bool) -> Kept = {
   window.select(a.id)
+  let fronts = list.map(a.groups, (g) => groups.index_of(a.tabs, g.focus))
   let kept_tabs = if not tabs then []
-    else list.map(0..<list.len(a.tabs), (i) => (tabset.cwd_of(a.tabs, i, a.home), a.tabs[i].name))
+    else list.map(fronts, (i) => (tabset.cwd_of(a.tabs, i, a.home), a.tabs[i].name))
   Kept {
     x: window.x(), y: window.y(),
     width: int.to_float(a.width) / a.scale, height: int.to_float(a.height) / a.scale,

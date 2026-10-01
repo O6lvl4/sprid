@@ -1,0 +1,75 @@
+// The panes of a tab beside the one in front: drawn in the same frame,
+// each in its box, dimmed, with a hollow cursor and an edge where it meets
+// another pane.
+
+import self.terminal
+import self.view
+import self.gui.caret
+import self.gui.frame
+import self.gui.grid
+import self.gui.ink
+import self.gui.surface
+
+/// A pane drawn beside the one in front: its terminal, scrolled `back`
+/// lines and `shift` pixels, its selection, and its box (see
+/// `surface.Renderer.box`).
+// FIXME(almide#3176): `Pane` once a qualified record literal isn't taken
+// for layout.almd's variant of that name.
+type Beside = { t: terminal.Terminal, back: Int, shift: Int, sel: Option[view.Selection], box: (Int, Int, Int, Int) }
+
+/// The other panes' frames, their glyphs into the atlas: the frames, the
+/// quads their marks and sprites take, and the most quads they can take in
+/// all.
+fn prepare_others(mut r: surface.Renderer, others: List[Beside]) -> (List[frame.Frame], Int, Int) = {
+  var frames: List[frame.Frame] = []
+  var marks = 0
+  var quads = 0
+  for p in others {
+    r.box = p.box
+    let f = frame.frame_of(r, p.t, p.back, p.shift, [], [], none)
+    marks = marks + frame.prepare_rows(r, f.lines, p.t.cols)
+    // Rows, the cursor, the scrollbar, the clears, the dimming, the edges.
+    quads = quads + f.shown * (p.t.cols * 4 + 1) + 12
+    list.push(frames, f)
+  }
+  (frames, marks, quads)
+}
+
+/// The other panes, each in its box, dimmed, its cursor hollow — the keys
+/// go elsewhere — and an edge where it meets another pane. The quads drawn.
+fn draw_others(mut r: surface.Renderer, others: List[Beside], frames: List[frame.Frame], width: Int, height: Int, sx: Float, sy: Float) -> Int = {
+  var n = 0
+  let focused = r.focused
+  r.focused = false
+  for (i, p) in list.enumerate(others) {
+    r.box = p.box
+    let f = frames[i]
+    n = n + grid.draw_rows(r, f, p.t.cols, p.sel, none, sx, sy) + grid.clear_edges(r, f, p.t, sx, sy)
+    let cursor_row = view.screen_line(p.t) + p.t.y - f.top_line
+    if p.t.cursor_visible and cursor_row >= f.extra and cursor_row < f.shown then
+      n = n + caret.draw_cursor(r, p.t, f.row_y + cursor_row * r.cell_h, sx, sy)
+    n = n + grid.draw_scrollbar(r, p.t, p.back, p.shift, sx, sy)
+    let (bx, by, bw, bh) = p.box
+    ink.rect(r, bx, by, bx + bw, by + bh, r.theme.bg, 0.35, sx, sy)
+    n = n + 1 + draw_edges(r, p.box, width, height, sx, sy)
+  }
+  r.focused = focused
+  n
+}
+
+/// A hairline on the sides of `box` that meet another pane: its right and
+/// bottom, unless they are the window's. How many quads.
+fn draw_edges(mut r: surface.Renderer, box: (Int, Int, Int, Int), width: Int, height: Int, sx: Float, sy: Float) -> Int = {
+  let (bx, by, bw, bh) = box
+  let lw = int.max(1, r.line_w)
+  var n = 0
+  if bx + bw < width then {
+    ink.rect(r, bx + bw - lw, by, bx + bw, by + bh, r.theme.tab_rule, 1.0, sx, sy)
+    n = n + 1
+  }
+  if by + bh < height then {
+    ink.rect(r, bx, by + bh - lw, bx + bw, by + bh, r.theme.tab_rule, 1.0, sx, sy)
+    n = n + 1
+  }
+  n
+}

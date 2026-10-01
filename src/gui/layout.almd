@@ -8,6 +8,14 @@
 /// the two parts.
 type Layout = | Pane(Int) | Split(Bool, Float, Layout, Layout)
 
+/// A tab of the tab bar: its panes as laid out, by their PTYs; the one in
+/// front, which keys go to; and whether that one fills the tab for now
+/// (zoomed).
+type Group = { layout: Layout, focus: Int, zoomed: Bool }
+
+/// A tab of one pane.
+fn single(id: Int) -> Group = Group { layout: Pane(id), focus: id, zoomed: false }
+
 /// A pane's region: its id and its rectangle (x, y, width, height), pixels.
 type Region = { id: Int, x: Int, y: Int, w: Int, h: Int }
 
@@ -93,22 +101,29 @@ fn resize(l: Layout, id: Int, dx: Int, dy: Int, step: Float) -> Layout = match n
 /// `resize`, none when this part has no divider on that axis around `id`.
 fn nudge(l: Layout, id: Int, dx: Int, dy: Int, step: Float) -> Option[Layout] = match l {
   Pane(_) => none,
-  Split(across, f, a, b) => if not contains(l, id) then none else {
-    // FIXME(almide#3174): `|> option.map((a2) => Split(across, f, a2, b))`
-    // once a closure may capture a recursive variant's field.
-    let inner = match nudge(a, id, dx, dy, step) {
-      some(a2) => some(Split(across, f, a2, b)),
-      none => match nudge(b, id, dx, dy, step) {
-        some(b2) => some(Split(across, f, a, b2)),
-        none => none,
-      },
-    }
-    let along = if across then dx else dy
-    match inner {
-      some(found) => some(found),
-      none => if along == 0 then none else some(Split(across, clamp(f + int.to_float(along) * step), a, b)),
-    }
+  Split(across, f, a, b) => if not contains(l, id) then none else match deeper(across, f, a, b, id, dx, dy, step) {
+    some(found) => some(found),
+    none => own(across, f, a, b, dx, dy, step),
   },
+}
+
+/// The split of parts `a` and `b` with a divider inside one of them moved.
+fn deeper(across: Bool, f: Float, a: Layout, b: Layout, id: Int, dx: Int, dy: Int, step: Float) -> Option[Layout] =
+  // FIXME(almide#3174): `|> option.map((a2) => Split(across, f, a2, b))`
+  // once a closure may capture a recursive variant's field.
+  match nudge(a, id, dx, dy, step) {
+    some(a2) => some(Split(across, f, a2, b)),
+    none => match nudge(b, id, dx, dy, step) {
+      some(b2) => some(Split(across, f, a, b2)),
+      none => none,
+    },
+  }
+
+/// The split of parts `a` and `b` with its own divider moved, when it runs
+/// across the way asked.
+fn own(across: Bool, f: Float, a: Layout, b: Layout, dx: Int, dy: Int, step: Float) -> Option[Layout] = {
+  let along = if across then dx else dy
+  if along == 0 then none else some(Split(across, clamp(f + int.to_float(along) * step), a, b))
 }
 
 fn clamp(f: Float) -> Float = float.clamp(f, MIN_FRACTION, 1.0 - MIN_FRACTION)

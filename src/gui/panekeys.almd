@@ -1,0 +1,85 @@
+// The keys of split panes. On a Mac: Cmd+D splits the pane in front across,
+// Cmd+Shift+D down; Cmd+[ and Cmd+] go to the pane before and after it,
+// Cmd+Option+arrows to the one that way; Cmd+Ctrl+arrows move the divider
+// that way; Cmd+Shift+Enter zooms the pane in front, Cmd+Ctrl+= makes the
+// panes equal. On Linux, with Ctrl+Shift for Cmd as elsewhere: Ctrl+Shift+D
+// and Ctrl+Shift+E split, Ctrl+Shift+[ ], Ctrl+Alt+arrows,
+// Ctrl+Shift+Alt+arrows, Ctrl+Shift+Z.
+
+import snaidhm.native.window as window
+import self.keys
+import self.gui.uistate
+
+/// A key as the pane keys read it: what was held, and that read as a
+/// shortcut's (Ctrl+Shift is Cmd on Linux, see `keys.shortcut_mods`).
+type Key = { kind: Int, code: Int, held: Int, lower: Int, linux: Bool, command: Bool, command_shift: Bool }
+
+/// What a key — `kind` and `code`, `held` down, on Linux or not — asks of
+/// the panes, if anything.
+fn pane_act(kind: Int, code: Int, held: Int, linux: Bool) -> Option[uistate.Act] = {
+  let mods = keys.shortcut_mods(linux, kind, code, held)
+  let k = Key {
+    kind: kind, code: code, held: held, linux: linux,
+    lower: if code >= 0x41 and code <= 0x5A then code + 32 else code,
+    command: kind == window.TEXT and mods == window.MOD_SUPER,
+    command_shift: mods == window.MOD_SUPER + window.MOD_SHIFT,
+  }
+  [split_act(k), cycle_act(k), arrow_act(k), other_act(k)] |> list.filter_map((act) => act) |> list.first
+}
+
+fn split_act(k: Key) -> Option[uistate.Act] =
+  if k.command and k.lower == 0x64 then some(uistate.SplitPane(true))
+  else if (k.command_shift and k.lower == 0x64) or (k.linux and k.command and k.lower == 0x65) then some(uistate.SplitPane(false))
+  else none
+
+fn cycle_act(k: Key) -> Option[uistate.Act] =
+  if k.command and k.code == 0x5B then some(uistate.CyclePane(-1))
+  else if k.command and k.code == 0x5D then some(uistate.CyclePane(1))
+  else none
+
+/// The arrow keys with the modifiers that move the focus or a divider.
+fn arrow_act(k: Key) -> Option[uistate.Act] =
+  if k.kind != window.KEY then none
+  else {
+    let (dx, dy) = direction(k.code)
+    let focus_mods = if k.linux then window.MOD_CTRL + window.MOD_ALT else window.MOD_SUPER + window.MOD_ALT
+    let resize_mods = if k.linux then window.MOD_CTRL + window.MOD_SHIFT + window.MOD_ALT else window.MOD_SUPER + window.MOD_CTRL
+    if dx == 0 and dy == 0 then none
+    else if k.held == focus_mods then some(uistate.FocusPane(dx, dy))
+    else if k.held == resize_mods then some(uistate.ResizePane(dx, dy))
+    else none
+  }
+
+/// Cmd+Shift+Enter; Ctrl+Shift+Z on Linux, where Ctrl+Shift+Enter is the
+/// full screen's Cmd+Enter.
+fn zoom_key(k: Key) -> Bool =
+  if k.linux then k.command and k.lower == 0x7A
+  else k.kind == window.KEY and k.code == window.KEY_ENTER and k.held == window.MOD_SUPER + window.MOD_SHIFT
+
+fn direction(code: Int) -> (Int, Int) =
+  if code == window.KEY_LEFT then (-1, 0)
+  else if code == window.KEY_RIGHT then (1, 0)
+  else if code == window.KEY_UP then (0, -1)
+  else if code == window.KEY_DOWN then (0, 1)
+  else (0, 0)
+
+fn other_act(k: Key) -> Option[uistate.Act] =
+  if zoom_key(k) then some(uistate.ZoomPane)
+  else if not k.linux and k.kind == window.TEXT and k.held == window.MOD_SUPER + window.MOD_CTRL and k.code == 0x3D then some(uistate.EqualPanes)
+  else none
+
+test "the pane keys, on a Mac and on Linux" {
+  let mac = (kind: Int, code: Int, held: Int) => pane_act(kind, code, held, false)
+  let lin = (kind: Int, code: Int, held: Int) => pane_act(kind, code, held, true)
+  assert_eq(mac(window.TEXT, 0x64, window.MOD_SUPER), some(uistate.SplitPane(true)))
+  assert_eq(mac(window.TEXT, 0x64, window.MOD_SUPER + window.MOD_SHIFT), some(uistate.SplitPane(false)))
+  assert_eq(mac(window.KEY, window.KEY_LEFT, window.MOD_SUPER + window.MOD_ALT), some(uistate.FocusPane(-1, 0)))
+  assert_eq(mac(window.KEY, window.KEY_DOWN, window.MOD_SUPER + window.MOD_CTRL), some(uistate.ResizePane(0, 1)))
+  assert_eq(mac(window.KEY, window.KEY_ENTER, window.MOD_SUPER + window.MOD_SHIFT), some(uistate.ZoomPane))
+  assert_eq(mac(window.TEXT, 0x5D, window.MOD_SUPER), some(uistate.CyclePane(1)))
+  // Option+Left alone moves by word in the shell: not a pane key.
+  assert_eq(mac(window.KEY, window.KEY_LEFT, window.MOD_ALT), none)
+  assert_eq(lin(window.TEXT, 0x65, window.MOD_CTRL + window.MOD_SHIFT), some(uistate.SplitPane(false)))
+  assert_eq(lin(window.KEY, window.KEY_UP, window.MOD_CTRL + window.MOD_ALT), some(uistate.FocusPane(0, -1)))
+  assert_eq(lin(window.TEXT, 0x7A, window.MOD_CTRL + window.MOD_SHIFT), some(uistate.ZoomPane))
+}

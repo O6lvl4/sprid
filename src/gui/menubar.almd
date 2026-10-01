@@ -24,6 +24,7 @@ fn keyed(title: String, equiv: String, mask: Int, key: String, extra: Int) -> St
     + (if int.band(extra, CTRL) != 0 then window.MOD_CTRL else 0) + (if int.band(extra, OPT) != 0 then window.MOD_ALT else 0)
   let input = if key == "up" then "${int.to_string(window.KEY)}:${int.to_string(window.KEY_UP)}"
     else if key == "down" then "${int.to_string(window.KEY)}:${int.to_string(window.KEY_DOWN)}"
+    else if key == "return" then "${int.to_string(window.KEY)}:${int.to_string(window.KEY_ENTER)}"
     else "${int.to_string(window.TEXT)}:${int.to_string(string.codepoint(key) ?? 0)}"
   "${title}\t${equiv}\t${int.to_string(mask)}\tkey:${input}:${int.to_string(mods)}"
 }
@@ -73,6 +74,13 @@ fn spec(ja: Bool) -> String = {
     item(t("Close Tab", "タブを閉じる"), "w", 0),
     item(t("Close Window", "ウインドウを閉じる"), "w", SHIFT),
     item(t("Minimize", "しまう"), "m", 0),
+    "-",
+    item(t("Split Right", "左右に分割"), "d", 0),
+    item(t("Split Down", "上下に分割"), "d", SHIFT),
+    item(t("Next Pane", "次のペイン"), "]", 0),
+    item(t("Previous Pane", "前のペイン"), "[", 0),
+    item(t("Zoom Pane", "ペインを拡大"), "return", SHIFT),
+    item(t("Equalize Panes", "ペインを均等に"), "=", CTRL),
     "-",
     keyed(t("Next Tab", "次のタブ"), "}", CMD, "]", SHIFT),
     keyed(t("Previous Tab", "前のタブ"), "{", CMD, "[", SHIFT),

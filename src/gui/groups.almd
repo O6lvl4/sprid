@@ -1,0 +1,292 @@
+// The tab bar's tabs, each a group of panes (layout.almd): which is in front,
+// where each pane goes, and what a tab does to its panes — open, split,
+// close, focus, resize, zoom.
+//
+// A session's `tabs` are its panes, every one in exactly one group, and
+// `active` is the pane keys go to: the focus of the group in front. The
+// groups' order is the tab bar's.
+
+import self.pty
+import self.gui.layout
+import self.gui.session
+import self.gui.beside
+import self.gui.surface
+import self.gui.tabset
+import self.gui.uistate
+
+/// How much a resize key moves a divider, of what it splits.
+let RESIZE_STEP = 0.05
+
+/// Where pane `fd` is in `tabs`; -1 when it isn't.
+fn index_of(tabs: List[tabset.Tab], fd: Int) -> Int =
+  list.find_index(tabs, (tb) => tb.fd == fd) ?? -1
+
+/// The group pane `fd` is in; -1 when none.
+fn group_of(groups: List[layout.Group], fd: Int) -> Int =
+  list.find_index(groups, (g) => layout.contains(g.layout, fd)) ?? -1
+
+/// The group in front: the one the active pane is in.
+fn current(a: session.Session) -> Int = group_of(a.groups, tabset.fd_of(a.tabs, a.active))
+
+/// The tab of pane `fd`, for when the pane in front is out of `tabs`.
+fn current_of(a: session.Session, fd: Int) -> Int = group_of(a.groups, fd)
+
+/// How many tabs the tab bar shows.
+fn count(a: session.Session) -> Int = list.len(a.groups)
+
+/// Where group `gi`'s panes go: the window below the tab bar, split as its
+/// layout says — or, zoomed, all of it to the one in front.
+fn regions(a: session.Session, gi: Int) -> List[layout.Region] = match list.get(a.groups, gi) {
+  some(g) => {
+    let (x, y, w, h) = surface.content_box(a.r, a.width, a.height, count(a))
+    if g.zoomed then [layout.Region { id: g.focus, x: x, y: y, w: w, h: h }]
+    else layout.regions(g.layout, x, y, w, h, 0)
+  },
+  none => [],
+}
+
+fn box_of(rg: layout.Region) -> (Int, Int, Int, Int) = (rg.x, rg.y, rg.w, rg.h)
+
+/// The renderer told where the pane in front is: the pane drawn and pointed
+/// at (see `surface.Renderer.box`).
+fn place_box(mut a: session.Session) -> Unit = place_box_for(a, tabset.fd_of(a.tabs, a.active))
+
+/// The renderer told where pane `fd` is.
+fn place_box_for(mut a: session.Session, fd: Int) -> Unit = {
+  let box = list.find(regions(a, current(a)), (rg) => rg.id == fd) |> option.map(box_of) ?? surface.content_box(a.r, a.width, a.height, count(a))
+  a.r = { ...a.r, box: box }
+}
+
+/// The panes shown beside the one in front, `front`: the rest of its tab,
+/// each where it goes. None while it is zoomed.
+fn others(a: session.Session, front: Int) -> List[beside.Beside] =
+  regions(a, group_of(a.groups, front))
+    |> list.filter((rg) => rg.id != front)
+    |> list.filter_map((rg) => list.get(a.tabs, index_of(a.tabs, rg.id))
+      |> option.map((tb) => beside.Beside { t: tb.t, back: tb.back, shift: tb.shift, sel: tb.sel, box: box_of(rg) }))
+
+/// Every pane's grid size, (fd, (cols, rows)), as its group lays it out.
+fn sizes(a: session.Session) -> List[(Int, (Int, Int))] =
+  list.flat_map(0..<count(a), (gi) => regions(a, gi) |> list.map((rg) => (rg.id, surface.box_grid(a.r, box_of(rg)))))
+
+/// Every pane fitted to where it goes now.
+fn relayout(mut a: session.Session) -> Unit = tabset.fit(a.tabs, sizes(a), false, true)
+
+/// `relayout` for a size that is still changing: the font stepped.
+fn relayout_live(mut a: session.Session) -> Unit = tabset.fit(a.tabs, sizes(a), true, true)
+
+/// `relayout_live` for the window being resized: drawn at once.
+fn relayout_window(mut a: session.Session) -> Unit = tabset.fit(a.tabs, sizes(a), true, false)
+
+/// The tab bar's titles: each tab's pane in front, marked when a pane of
+/// it has an alert; the tab being renamed shows its draft, with a caret.
+fn titles(a: session.Session) -> List[String] = {
+  let front = current(a)
+  list.enumerate(a.groups) |> list.map(((gi, g)) => {
+    let i = index_of(a.tabs, g.focus)
+    let alert = list.any(a.tabs, (tb) => tb.alert and layout.contains(g.layout, tb.fd))
+    if a.ui.renaming and gi == front then a.ui.draft + "▏"
+    else match list.get(a.tabs, i) {
+      some(tb) => (if alert then "• " else "") + tabset.title_of(tb, a.home),
+      none => "",
+    }
+  })
+}
+
+/// Tab `gi` brought to the front.
+fn go_to(mut a: session.Session, gi: Int) -> Unit = match list.get(a.groups, gi) {
+  some(g) => {
+    a.active = index_of(a.tabs, g.focus)
+    uistate.touch(a.ui)
+  },
+  none => (),
+}
+
+/// Pane `fd`, of the tab in front, made the one keys go to.
+fn focus(mut a: session.Session, fd: Int) -> Unit = {
+  let gi = group_of(a.groups, fd)
+  let i = index_of(a.tabs, fd)
+  if gi >= 0 and i >= 0 and i != a.active then {
+    a.groups = list.set(a.groups, gi, { ...a.groups[gi], focus: fd })
+    a.active = i
+    // What belonged to the pane before — a find, a rename — ends now, not
+    // after the input that moved the keys (a press starting a selection).
+    uistate.leave_tab(a.ui)
+    a.front = fd
+    uistate.touch(a.ui)
+  }
+}
+
+/// Pane `tb` added as a tab of its own, brought to the front.
+fn add_tab(mut a: session.Session, tb: tabset.Tab) -> Unit = {
+  list.push(a.groups, layout.single(tb.fd))
+  list.push(a.tabs, tb)
+  a.active = list.len(a.tabs) - 1
+  relayout(a)
+  uistate.touch(a.ui)
+}
+
+/// The grid a new tab's pane gets: the whole area, with the tab bar there
+/// is about to be.
+fn new_tab_grid(a: session.Session) -> (Int, Int) =
+  surface.box_grid(a.r, surface.content_box(a.r, a.width, a.height, count(a) + 1))
+
+/// The pane in front split in two, across or down; `tb`, already started,
+/// takes the second half and the keys.
+fn add_pane(mut a: session.Session, tb: tabset.Tab, across: Bool) -> Unit = {
+  let gi = current(a)
+  let fd = tabset.fd_of(a.tabs, a.active)
+  if gi >= 0 then {
+    let g = a.groups[gi]
+    a.groups = list.set(a.groups, gi, { ...g, layout: layout.split(g.layout, fd, tb.fd, across), focus: tb.fd, zoomed: false })
+    list.push(a.tabs, tb)
+    a.active = list.len(a.tabs) - 1
+    relayout(a)
+    uistate.touch(a.ui)
+  }
+}
+
+/// The grid the pane in front would get split `across` or down: for the
+/// new pane's program to start at its size.
+fn split_grid(a: session.Session, across: Bool) -> (Int, Int) = {
+  let fd = tabset.fd_of(a.tabs, a.active)
+  match list.find(regions(a, current(a)), (rg) => rg.id == fd) {
+    some(rg) => {
+      let half = if across then layout.Region { ...rg, w: rg.w / 2 } else layout.Region { ...rg, h: rg.h / 2 }
+      surface.box_grid(a.r, box_of(half))
+    },
+    none => (80, 24),
+  }
+}
+
+/// Pane `fd` closed with its program. Its space goes back to what it was
+/// split from, and the pane now where its middle was takes the keys if it
+/// had them. A tab whose last pane closes goes; the one in its place comes
+/// to the front.
+fn close_pane(mut a: session.Session, fd: Int) -> Unit = {
+  let gi = group_of(a.groups, fd)
+  let front = tabset.fd_of(a.tabs, a.active)
+  let middle = match list.find(regions(a, gi), (rg) => rg.id == fd) {
+    some(rg) => (rg.x + rg.w / 2, rg.y + rg.h / 2),
+    none => (0, 0),
+  }
+  tabset.close_tab(a.tabs, index_of(a.tabs, fd))
+  if gi >= 0 then drop_pane(a, gi, fd, middle)
+  let target = if front != fd then front
+    else match list.get(a.groups, int.min(int.max(gi, 0), count(a) - 1)) {
+      some(g) => g.focus,
+      none => -1,
+    }
+  a.active = int.max(0, index_of(a.tabs, target))
+  relayout(a)
+  uistate.touch(a.ui)
+}
+
+/// Pane `fd` out of group `gi`'s layout: the space goes back to what it
+/// was split from, and the pane now at its `middle` takes the group's keys
+/// if it had them. A group left empty goes.
+fn drop_pane(mut a: session.Session, gi: Int, fd: Int, middle: (Int, Int)) -> Unit = match layout.remove(a.groups[gi].layout, fd) {
+  some(l) => {
+    let g = a.groups[gi]
+    a.groups = list.set(a.groups, gi, { ...g, layout: l, zoomed: false })
+    let heir = layout.pane_at(regions(a, gi), middle.0, middle.1) ?? (list.first(layout.panes(l)) ?? fd)
+    if g.focus == fd then a.groups = list.set(a.groups, gi, { ...a.groups[gi], focus: heir })
+  },
+  none => { a.groups = list.take(a.groups, gi) + list.drop(a.groups, gi + 1) },
+}
+
+/// The pane next to the one in front toward (`dx`, `dy`) takes the keys.
+fn focus_toward(mut a: session.Session, dx: Int, dy: Int) -> Unit =
+  match layout.neighbor(regions(a, current(a)), tabset.fd_of(a.tabs, a.active), dx, dy) {
+    some(fd) => focus(a, fd),
+    none => (),
+  }
+
+/// The next pane of the tab in front, in reading order (`step` 1), or the
+/// one before (-1).
+fn cycle(mut a: session.Session, step: Int) -> Unit = {
+  let gi = current(a)
+  if gi >= 0 then {
+    let ps = layout.panes(a.groups[gi].layout)
+    let n = list.len(ps)
+    // FIXME(almide#3177): `tabset.fd_of(a.tabs, a.active)` in the closure
+    // once that doesn't lose the focus set below.
+    let front = tabset.fd_of(a.tabs, a.active)
+    let at = list.find_index(ps, (p) => p == front) ?? 0
+    if n > 1 then focus(a, ps[(at + step + n) % n])
+  }
+}
+
+/// The divider nearest the pane in front moved toward (`dx`, `dy`).
+fn resize(mut a: session.Session, dx: Int, dy: Int) -> Unit = {
+  let gi = current(a)
+  if gi >= 0 then {
+    let g = a.groups[gi]
+    a.groups = list.set(a.groups, gi, { ...g, layout: layout.resize(g.layout, g.focus, dx, dy, RESIZE_STEP) })
+    relayout_live(a)
+    uistate.touch(a.ui)
+  }
+}
+
+/// The pane in front made to fill its tab, or back to its place.
+fn toggle_zoom(mut a: session.Session) -> Unit = {
+  let gi = current(a)
+  if gi >= 0 and list.len(layout.panes(a.groups[gi].layout)) > 1 then {
+    a.groups = list.set(a.groups, gi, { ...a.groups[gi], zoomed: not a.groups[gi].zoomed })
+    relayout_live(a)
+    uistate.touch(a.ui)
+  }
+}
+
+/// The tab in front's panes made equal again.
+fn equalize(mut a: session.Session) -> Unit = {
+  let gi = current(a)
+  if gi >= 0 then {
+    a.groups = list.set(a.groups, gi, { ...a.groups[gi], layout: layout.equalize(a.groups[gi].layout) })
+    relayout_live(a)
+    uistate.touch(a.ui)
+  }
+}
+
+/// The tab in front moved to place `to` of the tab bar.
+fn move_tab(mut a: session.Session, to: Int) -> Unit = {
+  let from = current(a)
+  if from >= 0 and to >= 0 and to < count(a) and to != from then {
+    a.groups = tabset.move_to(a.groups, from, to)
+    uistate.touch(a.ui)
+  }
+}
+
+/// Group `gi` taken out with its panes, for a window of its own; none when
+/// it is the only tab.
+fn take_out(mut a: session.Session, gi: Int) -> Option[(layout.Group, List[tabset.Tab])] =
+  if count(a) < 2 or gi < 0 or gi >= count(a) then none
+  else {
+    let g = a.groups[gi]
+    var panes: List[tabset.Tab] = []
+    for fd in layout.panes(g.layout) {
+      let i = index_of(a.tabs, fd)
+      match tabset.take(a.tabs, i) {
+        some(tb) => list.push(panes, tb),
+        none => (),
+      }
+    }
+    a.groups = list.take(a.groups, gi) + list.drop(a.groups, gi + 1)
+    go_to(a, int.min(gi, count(a) - 1))
+    relayout(a)
+    some((g, panes))
+  }
+
+/// The pane under pixel (`px`, `py`) of the tab in front, if one is.
+fn pane_at(a: session.Session, px: Int, py: Int) -> Option[Int] = layout.pane_at(regions(a, current(a)), px, py)
+
+/// Panes whose program has exited closed; the window closes with the last.
+fn close_exited(mut a: session.Session) -> Unit = {
+  if a.capture == none then {
+    for fd in list.filter(list.map(a.tabs, (tb) => tb.fd), (fd) => pty.eof(fd)) {
+      close_pane(a, fd)
+    }
+  }
+  pty.reap()
+  if list.len(a.tabs) == 0 then a.alive = false
+}

@@ -13,6 +13,7 @@ import self.gui.prefs
 import self.gui.findkeys
 import self.gui.pointer
 import self.gui.session
+import self.gui.groups
 
 /// The PTYs, and the config file's watch.
 fn watched(a: session.Session) -> List[Int] =
@@ -73,7 +74,7 @@ effect fn reload(mut a: session.Session) -> Unit = {
     if resize then {
       a.font_size = fresh.font_size
       a.r = session.sized(a)
-      tabset.relayout_live(a.tabs, a.r, a.width, a.height)
+      groups.relayout_live(a)
       a.resized_at = sys.now_ms()
     }
     uistate.touch(a.ui)
@@ -115,7 +116,7 @@ fn resized(mut a: session.Session) -> Unit = {
     }
     a.width = window.width()
     a.height = window.height()
-    tabset.relayout_window(a.tabs, a.r, a.width, a.height)
+    groups.relayout_window(a)
     a.resized_at = sys.now_ms()
     uistate.touch(a.ui)
   }

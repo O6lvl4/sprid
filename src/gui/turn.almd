@@ -21,6 +21,7 @@ import self.gui.tabset
 import self.gui.uistate
 import self.gui.input
 import self.gui.session
+import self.gui.groups
 import self.gui.acts
 import self.gui.outputs
 import self.gui.paint
@@ -87,7 +88,7 @@ effect fn after_events(mut a: session.Session) -> Unit = {
     }
   }
   outputs.read_all(a)!
-  outputs.close_exited(a)
+  groups.close_exited(a)
   front_changed(a)
   // The tab in front, in a window with the focus, is being looked at.
   if a.r.focused and (list.get(a.tabs, a.active) |> option.map((tb) => tb.alert) ?? false) then {
@@ -144,14 +145,23 @@ effect fn event(mut a: session.Session, kind: Int) -> uistate.Act = {
   // Counted before the active tab is taken out of the list: with it out,
   // two tabs looked like one — no tab bar to click, and every click below
   // it placed a tab bar's height too low.
-  let open = list.len(a.tabs)
-  session.place_box(a)
-  match tabset.take(a.tabs, a.active) {
+  let open = groups.count(a)
+  // A press on another pane of the tab gives it the keys; the wheel
+  // scrolls the pane under the pointer, wherever the keys go.
+  let pointed = kind == window.MOUSE_DOWN or kind == window.WHEEL
+  let under = if pointed then groups.pane_at(a, float.to_int(window.event_x() * a.scale), float.to_int(window.event_y() * a.scale)) else none
+  if kind == window.MOUSE_DOWN then match under {
+    some(fd) => groups.focus(a, fd),
+    none => (),
+  }
+  let target = if kind == window.WHEEL then (under |> option.map((fd) => groups.index_of(a.tabs, fd)) ?? a.active) else a.active
+  groups.place_box_for(a, tabset.fd_of(a.tabs, target))
+  match tabset.take(a.tabs, target) {
     some(tb) => {
       var cur = tb
       let act = input.handle(cur, a.ui, kind, a.r, a.scale, open, a.width)!
       list.push(a.tabs, cur)
-      a.tabs = list.swap(a.tabs, a.active, list.len(a.tabs) - 1)
+      a.tabs = list.swap(a.tabs, target, list.len(a.tabs) - 1)
       act
     },
     none => uistate.Stay,

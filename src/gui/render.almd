@@ -16,9 +16,6 @@
 
 import snaidhm.web.gpu as gpu
 import snaidhm.text as text
-import self.cell
-import self.gui.sprite
-import self.search
 import self.terminal
 import self.view
 import self.gui.surface
@@ -28,11 +25,10 @@ import self.gui.ink
 import self.gui.composition
 import self.gui.caret
 import self.gui.chrome
-import self.gui.rowpaint
 import self.gui.findbar
 import self.gui.hint
-import self.prompts
-import self.record
+import self.gui.grid
+import self.gui.beside
 
 /// The renderer (its fields: surface.almd).
 type Renderer = surface.Renderer
@@ -110,21 +106,26 @@ fn compose_caret(c: composition.Compose, x: Int, cols: Int) -> Int = composition
 /// — what the input method is composing — at the cursor. `width` x `height`
 /// is the drawable. With `find`, its matches are marked and its bar is shown
 /// — while the bar has the focus, with the composition in it. `link` is
-/// underlined, and where it goes shown when its text need not say.
+/// underlined, and where it goes shown when its text need not say. The
+/// `others` panes of its tab are drawn beside it, each in its box; `t` goes
+/// in `r.box`.
 fn draw(mut r: surface.Renderer, t: terminal.Terminal, back: Int, shift: Int, sel: Option[view.Selection],
         compose: composition.Compose, width: Int, height: Int, tabs: List[String], active: Int,
-        find: Option[findbar.Bar], link: Option[links.Link]) -> Unit = {
-  let f = frame.frame_of(r, t, back, shift, compose.cps, tabs, find)
+        find: Option[findbar.Bar], link: Option[links.Link], others: List[beside.Beside]) -> Unit = {
+  let front = r.box
   // Pass 1: every glyph on screen into the atlas.
   r.layer = text.solid(r.device, r.layer)
-  let marks_total = frame.prepare_rows(r, f.lines, t.cols)
+  let other_frames = beside.prepare_others(r, others)
+  r.box = front
+  let f = frame.frame_of(r, t, back, shift, compose.cps, tabs, find)
+  let marks_total = frame.prepare_rows(r, f.lines, t.cols) + other_frames.1
   let shown_hint = hint.chars(link, hint.room(r, width))
   frame.prepare_rest(r, compose.cps + shown_hint, f)
   let title_chars = list.fold(f.titles, 0, (acc, title) => acc + list.len(title))
   // Room for the worst case: per cell a background, a glyph and two lines,
   // plus marks, the cursor, the scrollbar and the composition.
   reserve(r, f.shown * (t.cols * 4 + 1) + 2 + marks_total + 7 + list.len(compose.cps) * 3 + title_chars + list.len(f.titles) * 3 + 1
-    + list.len(f.bar) * 3 + findbar.FIND_QUADS + 1 + list.len(shown_hint) + hint.HINT_QUADS)
+    + list.len(f.bar) * 3 + findbar.FIND_QUADS + 1 + list.len(shown_hint) + hint.HINT_QUADS + other_frames.2)
 
   // Pass 2: the quads.
   let sx = 2.0 / int.to_float(width)
@@ -132,13 +133,10 @@ fn draw(mut r: surface.Renderer, t: terminal.Terminal, back: Int, shift: Int, se
   r.missed = false
   r.pushing = true
   gpu.begin_data()
-  var n = draw_rows(r, f, t.cols, sel, link, sx, sy)
-  if f.extra == 1 then {
-    let (bx, by, bw, bh) = r.box
-    ink.rect(r, bx, by, bx + bw, f.gy, r.theme.bg, 1.0, sx, sy)
-    ink.rect(r, bx, f.gy + t.rows * r.cell_h, bx + bw, by + bh, r.theme.bg, 1.0, sx, sy)
-    n = n + 2
-  }
+  var n = beside.draw_others(r, others, other_frames.0, width, height, sx, sy)
+  r.box = front
+  n = n + grid.draw_rows(r, f, t.cols, sel, link, sx, sy)
+  n = n + grid.clear_edges(r, f, t, sx, sy)
   // The cursor, where its line is in view; the composition over it.
   let cursor_row = view.screen_line(t) + t.y - f.top_line
   if cursor_row >= f.extra and cursor_row < f.shown then {
@@ -167,52 +165,11 @@ fn reserve(mut r: surface.Renderer, quads: Int) -> Unit =
     r.vtx = gpu.create_stream_buffer(r.device, r.capacity * surface.VERTEX_FLOATS * 4, int.bor(gpu.VERTEX, gpu.COPY_DST))
   }
 
-/// The rows in view, find matches lit; the quads drawn.
-fn draw_rows(mut r: surface.Renderer, f: frame.Frame, cols: Int, sel: Option[view.Selection], link: Option[links.Link], sx: Float, sy: Float) -> Int = {
-  var n = 0
-  for y in 0..<f.shown {
-    match f.lines[y] {
-      some(row) => {
-        let (lf, lt) = link_cols(link, f.top_line + y, cols)
-        let (cf, ct) = if f.current.0 == y then (f.current.1, f.current.2) else (-1, -1)
-        let lit = rowpaint.Lit { spans: f.found[y], from: cf, to: ct, link_from: lf, link_to: lt }
-        n = n + rowpaint.draw_row(r, row, f.top_line + y, sel, lit, f.row_y + y * r.cell_h, cols, sx, sy)
-        n = n + failed_mark(r, row, f.row_y + y * r.cell_h, cols, sx, sy)
-      },
-      none => (),
-    }
-  }
-  n
-}
-
-/// A bar in the left margin by a prompt shown after a failed command. How
-/// many quads.
-fn failed_mark(mut r: surface.Renderer, row: record.Row, top: Int, cols: Int, sx: Float, sy: Float) -> Int =
-  if prompts.failed(row.cells, cols) then {
-    let x = r.pad_x / 3
-    ink.rect(r, x, top, x + int.max(2, r.line_w * 2), top + r.cell_h, r.theme.no_match, 1.0, sx, sy)
-    1
-  } else 0
-
-/// The columns of `link` on line `line`, [from, to); (-1, -1) off it.
-fn link_cols(link: Option[links.Link], line: Int, cols: Int) -> (Int, Int) = match link {
-  some(l) => if line < l.from_line or line > l.to_line then (-1, -1)
-    else (if line == l.from_line then l.from_col else 0, if line == l.to_line then l.to_col + 1 else cols),
-  none => (-1, -1),
-}
-
 /// The scrollbar while there is scrollback (faint at the bottom, plainer
 /// scrolled back), the visual bell, the tab bar; the quads drawn.
 fn draw_chrome(mut r: surface.Renderer, t: terminal.Terminal, back: Int, shift: Int, tabs: List[String], active: Int,
                width: Int, height: Int, sx: Float, sy: Float) -> Int = {
-  var n = 0
-  if view.max_back(t) > 0 then {
-    let (y0, y1) = chrome.thumb(r, t, back, shift)
-    let w = chrome.scrollbar_width(r)
-    let right = r.box.0 + r.box.2
-    ink.rect(r, right - w - r.pad_x / 4, y0, right - r.pad_x / 4, y1, r.theme.fg, if back > 0 or shift > 0 then 0.4 else 0.2, sx, sy)
-    n = n + 1
-  }
+  var n = grid.draw_scrollbar(r, t, back, shift, sx, sy)
   if r.flash then {
     ink.rect(r, r.box.0, r.box.1, r.box.0 + r.box.2, r.box.1 + r.box.3, r.theme.fg, 0.12, sx, sy)
     n = n + 1

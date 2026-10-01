@@ -5,6 +5,7 @@ import snaidhm.native.window as window
 import self.pty
 import self.gui.tabset
 import self.gui.session
+import self.gui.groups
 import self.gui.setup
 import self.gui.upkeep
 
@@ -51,29 +52,7 @@ fn quit_asked(mut wins: List[session.Session]) -> Bool = {
 effect fn open_asked(mut wins: List[session.Session]) -> Unit = {
   let n = list.len(wins)
   for i in 0..<n {
-    match take(wins, i) {
-      some(w) => {
-        var a = w
-        let adopting = a.adopting
-        a.adopting = none
-        match adopting {
-          some(tb) => match setup.adopt(a, tb)! {
-            some(b) => {
-              put(wins, i, a)
-              list.push(wins, b)
-            },
-            // No window to be had: the tab goes back.
-            none => {
-              list.push(a.tabs, tb)
-              tabset.relayout(a.tabs, a.r, a.width, a.height)
-              put(wins, i, a)
-            },
-          },
-          none => put(wins, i, a),
-        }
-      },
-      none => (),
-    }
+    adopt_taken(wins, i)!
   }
   for i in 0..<n {
     match wins[i].opening {
@@ -87,6 +66,32 @@ effect fn open_asked(mut wins: List[session.Session]) -> Unit = {
       none => (),
     }
   }
+}
+
+/// A tab taken out of window `i`, if one was, given a window of its own —
+/// or, with none to be had, put back.
+effect fn adopt_taken(mut wins: List[session.Session], i: Int) -> Unit = match take(wins, i) {
+  some(w) => {
+    var a = w
+    let adopting = a.adopting
+    a.adopting = none
+    match adopting {
+      some(taken) => match setup.adopt(a, taken)! {
+        some(b) => {
+          put(wins, i, a)
+          list.push(wins, b)
+        },
+        none => {
+          a.tabs = a.tabs + taken.1
+          list.push(a.groups, taken.0)
+          groups.relayout(a)
+          put(wins, i, a)
+        },
+      },
+      none => put(wins, i, a),
+    }
+  },
+  none => (),
 }
 
 /// Windows whose last tab closed, or that were closed, gone — their shells

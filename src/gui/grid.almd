@@ -1,0 +1,67 @@
+// A pane's grid drawn: its rows — find matches, the selection and a link
+// lit — what a part-line scroll leaves outside it, and its scrollbar.
+
+import self.links
+import self.prompts
+import self.terminal
+import self.view
+import self.gui.chrome
+import self.gui.frame
+import self.gui.ink
+import self.gui.rowpaint
+import self.gui.surface
+
+/// The rows in view, find matches lit; the quads drawn.
+fn draw_rows(mut r: surface.Renderer, f: frame.Frame, cols: Int, sel: Option[view.Selection], link: Option[links.Link], sx: Float, sy: Float) -> Int = {
+  var n = 0
+  for y in 0..<f.shown {
+    match f.lines[y] {
+      some(row) => {
+        let (lf, lt) = link_cols(link, f.top_line + y, cols)
+        let (cf, ct) = if f.current.0 == y then (f.current.1, f.current.2) else (-1, -1)
+        let lit = rowpaint.Lit { spans: f.found[y], from: cf, to: ct, link_from: lf, link_to: lt }
+        n = n + rowpaint.draw_row(r, row, f.top_line + y, sel, lit, f.row_y + y * r.cell_h, cols, sx, sy)
+        n = n + failed_mark(r, row, f.row_y + y * r.cell_h, cols, sx, sy)
+      },
+      none => (),
+    }
+  }
+  n
+}
+
+/// A bar in the left margin by a prompt shown after a failed command. How
+/// many quads.
+fn failed_mark(mut r: surface.Renderer, row: record.Row, top: Int, cols: Int, sx: Float, sy: Float) -> Int =
+  if prompts.failed(row.cells, cols) then {
+    let x = r.pad_x / 3
+    ink.rect(r, x, top, x + int.max(2, r.line_w * 2), top + r.cell_h, r.theme.no_match, 1.0, sx, sy)
+    1
+  } else 0
+
+/// The columns of `link` on line `line`, [from, to); (-1, -1) off it.
+fn link_cols(link: Option[links.Link], line: Int, cols: Int) -> (Int, Int) = match link {
+  some(l) => if line < l.from_line or line > l.to_line then (-1, -1)
+    else (if line == l.from_line then l.from_col else 0, if line == l.to_line then l.to_col + 1 else cols),
+  none => (-1, -1),
+}
+
+/// Scrolled by part of a line, what of the rows above and below falls
+/// outside the grid of the pane in `r.box`, covered. How many quads.
+fn clear_edges(mut r: surface.Renderer, f: frame.Frame, t: terminal.Terminal, sx: Float, sy: Float) -> Int =
+  if f.extra == 1 then {
+    let (bx, by, bw, bh) = r.box
+    ink.rect(r, bx, by, bx + bw, f.gy, r.theme.bg, 1.0, sx, sy)
+    ink.rect(r, bx, f.gy + t.rows * r.cell_h, bx + bw, by + bh, r.theme.bg, 1.0, sx, sy)
+    2
+  } else 0
+
+/// The scrollbar's thumb by the right edge of the pane in `r.box`, while
+/// there is scrollback. How many quads.
+fn draw_scrollbar(mut r: surface.Renderer, t: terminal.Terminal, back: Int, shift: Int, sx: Float, sy: Float) -> Int =
+  if view.max_back(t) > 0 then {
+    let (y0, y1) = chrome.thumb(r, t, back, shift)
+    let w = chrome.scrollbar_width(r)
+    let right = r.box.0 + r.box.2
+    ink.rect(r, right - w - r.pad_x / 4, y0, right - r.pad_x / 4, y1, r.theme.fg, if back > 0 or shift > 0 then 0.4 else 0.2, sx, sy)
+    1
+  } else 0

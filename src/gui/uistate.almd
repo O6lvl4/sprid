@@ -75,6 +75,7 @@ type Ui = {
 /// `Restyle` follows the system's light or dark appearance; `Focus` the
 /// window gaining or losing the keyboard.
 type Act = | Stay | NewTab | CloseTab | NextTab | PrevTab | GoTo(Int) | NewWindow | CloseWindow | Zoom(Int) | Restyle | Focus(Bool) | Paste | PastePrimary | Selected | Menu | MoveTab(Int) | DetachTab
+  | SplitPane(Bool) | FocusPane(Int, Int) | CyclePane(Int) | ResizePane(Int, Int) | ZoomPane | EqualPanes
 
 /// The find bar as drawn.
 // FIXME(almide#3153): `render.Bar { ... }` once a record literal works through a

@@ -15,6 +15,7 @@ import self.prompts
 import self.gui.tabset
 import self.gui.clip
 import self.gui.uistate
+import self.gui.panekeys
 import self.gui.findkeys
 
 /// A key or text input as the shortcuts read it.
@@ -63,7 +64,10 @@ fn tab_act(k: Key) -> Option[uistate.Act] = match switch_act(k) {
   some(act) => some(act),
   none => match open_act(k) {
     some(act) => some(act),
-    none => zoom_act(k),
+    none => match zoom_act(k) {
+      some(act) => some(act),
+      none => panekeys.pane_act(k.kind, k.code, k.held, k.linux),
+    },
   },
 }
 

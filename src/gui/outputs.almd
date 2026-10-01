@@ -103,18 +103,3 @@ effect fn may_read_clipboard(a: session.Session, cur: tabset.Tab) -> Bool =
   if a.st.clipboard_read == "allow" then true
   else if a.st.clipboard_read == "ask" and not sys.is_linux() then clip.clipboard_read_ok(tabset.title_of(cur, a.home), a.ja)!
   else false
-
-/// Tabs whose program has exited close; the window closes with the last.
-fn close_exited(mut a: session.Session) -> Unit = {
-  var i = 0
-  while i < list.len(a.tabs) {
-    if pty.eof(tabset.fd_of(a.tabs, i)) and a.capture == none then {
-      tabset.close_tab(a.tabs, i)
-      if a.active >= i and a.active > 0 then a.active = a.active - 1
-      tabset.relayout(a.tabs, a.r, a.width, a.height)
-      uistate.touch(a.ui)
-    } else i = i + 1
-  }
-  pty.reap()
-  if list.len(a.tabs) == 0 then a.alive = false
-}

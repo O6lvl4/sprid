@@ -12,6 +12,7 @@ import self.gui.tabset
 import self.gui.uistate
 import self.gui.findkeys
 import self.gui.session
+import self.gui.groups
 import self.field
 import self.pty
 import self.sys
@@ -23,10 +24,10 @@ fn draw_due(mut a: session.Session) -> Unit = {
   let clock = sys.now_ms()
   if a.alive and a.ui.dirty and clock - a.last_frame >= session.frame_ms(a) then {
     retitle(a)
-    session.place_box(a)
+    groups.place_box(a)
     // With every tab still in the list: taken out, the tab in front would
     // be missing from the tab bar.
-    let titles = tabset.tab_titles(a.tabs, a.active, a.ui, a.home)
+    let titles = groups.titles(a)
     match tabset.take(a.tabs, a.active) {
       some(tb) => {
         var cur = tb
@@ -59,8 +60,8 @@ fn retitle(mut a: session.Session) -> Unit = {
 
 fn draw(mut a: session.Session, cur: tabset.Tab, titles: List[String], clock: Int) -> Unit = {
   let t0 = sys.now_ms()
-  render.draw(a.r, cur.t, cur.back, cur.shift, cur.sel, uistate.compose_of(a.ui), a.width, a.height, titles, a.active,
-    uistate.bar_of(a.ui), a.ui.link)
+  render.draw(a.r, cur.t, cur.back, cur.shift, cur.sel, uistate.compose_of(a.ui), a.width, a.height, titles, groups.current_of(a, cur.fd),
+    uistate.bar_of(a.ui), a.ui.link, groups.others(a, cur.fd))
   if a.stats.trace then eprintln("frame ${int.to_string(sys.now_ms())} cursor ${int.to_string(cur.t.x)},${int.to_string(cur.t.y)} shown ${if cur.t.cursor_visible then "yes" else "no"}"
     + " preedit ${int.to_string(list.len(a.ui.preedit))} line ${view.text_of(cur.t, view.screen_line(cur.t) + cur.t.y)}")
   session.count_frame(a.stats, sys.now_ms() - t0)
@@ -104,14 +105,14 @@ effect fn capture_due(mut a: session.Session, path: String) -> Unit = {
   let ended = list.len(a.tabs) > 0 and pty.eof(tabset.fd_of(a.tabs, 0))
   if ended or clock > (int.parse(env.get("SPRID_CAPTURE_MS") ?? "3000") ?? 3000) then {
     if a.stats.debug then eprintln("sprid: ${int.to_string(a.stats.frames)} frames, draw ${int.to_string(a.stats.draw_ms)} ms")
-    let titles = tabset.tab_titles(a.tabs, a.active, a.ui, a.home)
-    session.place_box(a)
+    let titles = groups.titles(a)
+    groups.place_box(a)
     match tabset.take(a.tabs, a.active) {
       some(tb) => {
         var cur = tb
         stage(a.ui, cur, a.r.cell_h)!
-        render.draw(a.r, cur.t, cur.back, cur.shift, cur.sel, uistate.compose_of(a.ui), a.width, a.height, titles, a.active,
-          uistate.bar_of(a.ui), a.ui.link)
+        render.draw(a.r, cur.t, cur.back, cur.shift, cur.sel, uistate.compose_of(a.ui), a.width, a.height, titles, groups.current_of(a, cur.fd),
+          uistate.bar_of(a.ui), a.ui.link, groups.others(a, cur.fd))
         list.push(a.tabs, cur)
       },
       none => (),

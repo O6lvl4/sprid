@@ -16,6 +16,8 @@ import self.gui.tabset
 import self.gui.uistate
 import self.gui.prefs
 import self.gui.session
+import self.gui.groups
+import self.gui.layout
 
 /// Another window, its first tab's shell started in `cwd`, sized and set up
 /// as `from` is; none when it can't be opened.
@@ -38,17 +40,21 @@ effect fn open_window(from: session.Session, cwd: String) -> Option[session.Sess
   } else some(start(id, capture, from.faces, from.st, "", fd, grid)!)
 }
 
-/// A window for tab `tb`, taken out of `from`, sized and set up as `from`
-/// is; none when it can't be opened.
-effect fn adopt(from: session.Session, tb: tabset.Tab) -> Option[session.Session] = {
+/// A window for a tab taken out of `from` — its group and panes — sized and
+/// set up as `from` is; none when it can't be opened.
+effect fn adopt(from: session.Session, taken: (layout.Group, List[tabset.Tab])) -> Option[session.Session] = {
+  let (g, panes) = taken
+  let tb = panes[groups.index_of(panes, g.focus)]
   let id = window.open_window("sprid", float.to_int(int.to_float(from.width) / from.scale), float.to_int(int.to_float(from.height) / from.scale))
   guard id > 0 else none
   window.select(id)
   window.set_ime(true)
   var a = start(id, none, from.faces, from.st, "", tb.fd, (tb.t.cols, tb.t.rows))!
-  a.tabs = [tb]
+  a.tabs = panes
+  a.groups = [g]
+  a.active = groups.index_of(panes, g.focus)
   a.front = tb.fd
-  tabset.relayout(a.tabs, a.r, a.width, a.height)
+  groups.relayout(a)
   some(a)
 }
 
@@ -79,26 +85,37 @@ effect fn start(id: Int, capture: Option[String], faces: fonts.Faces, st: settin
     st: st, r: r,
     tabs: [tabset.Tab { t: terminal.with_scrollback(cols, rows, st.scrollback), fd: first_fd, back: 0, shift: 0, sel: none,
       up: tabset.NO_UPDATES, name: "", alert: false }],
-    active: 0, ui: fresh_ui(home), width: width, height: height, font_size: st.font_size,
+    active: 0, groups: [layout.single(first_fd)], ui: fresh_ui(home), width: width, height: height, font_size: st.font_size,
     blink_at: -1, flash_until: -1, alive: true, last_frame: 0, streaming: false, resized_at: -1,
     front: first_fd, window_title: "", stats: fresh_stats()!,
   }
-  // For captures of several windows: SPRID_CAPTURE_WINDOWS of them, each
-  // opening the next.
-  let windows = if capture != none then int.parse(env.get("SPRID_CAPTURE_WINDOWS") ?? "1") ?? 1 else 1
+  if capture != none then staged(a, id, login)!
+  a
+}
+
+/// What a capture asks for beyond one window of one tab: SPRID_CAPTURE_WINDOWS
+/// windows, each opening the next; SPRID_CAPTURE_TABS tabs running `login`;
+/// SPRID_CAPTURE_SPLITS, the pane in front split across for each "r" and
+/// down for each "d", in turn.
+effect fn staged(mut a: session.Session, id: Int, login: String) -> Unit = {
+  let windows = int.parse(env.get("SPRID_CAPTURE_WINDOWS") ?? "1") ?? 1
   if id < windows then a.opening = some("")
-  // For captures of the tab bar: more tabs running the login shell.
-  let extra = if capture != none then int.parse(env.get("SPRID_CAPTURE_TABS") ?? "1") ?? 1 else 1
+  let extra = int.parse(env.get("SPRID_CAPTURE_TABS") ?? "1") ?? 1
   for _ in 1..<extra {
-    match tabset.open_tab(a.r, width, height, list.len(a.tabs) + 1, login, "", st.scrollback) {
-      some(tb) => {
-        list.push(a.tabs, tb)
-        tabset.relayout(a.tabs, a.r, width, height)
-      },
+    let (c, r) = groups.new_tab_grid(a)
+    match tabset.open_tab(c, r, login, "", a.st.scrollback) {
+      some(tb) => groups.add_tab(a, tb),
       none => (),
     }
   }
-  a
+  if extra > 1 then groups.go_to(a, 0)
+  for c in string.chars(env.get("SPRID_CAPTURE_SPLITS") ?? "") {
+    let (sc, sr) = groups.split_grid(a, c == "r")
+    match tabset.open_tab(sc, sr, login, "", a.st.scrollback) {
+      some(tb) => groups.add_pane(a, tb, c == "r"),
+      none => (),
+    }
+  }
 }
 
 fn fresh_ui(home: String) -> uistate.Ui = uistate.Ui {
