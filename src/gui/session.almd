@@ -86,6 +86,8 @@ type Session = {
   // this one for a window of its own.
   opening: Option[String],
   adopting: Option[(layout.Group, List[tabset.Tab])],
+  // The divider being dragged.
+  dividing: Option[layout.Divider],
   stats: Stats,
 }
 

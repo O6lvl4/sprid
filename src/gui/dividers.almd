@@ -1,0 +1,70 @@
+// The dividers between panes, dragged with the pointer.
+
+import snaidhm.native.window as window
+import self.gui.groups
+import self.gui.layout
+import self.gui.session
+import self.gui.surface
+import self.gui.uistate
+
+/// How near a divider the pointer takes it, in points.
+let SLOP = 3
+
+/// Mouse input `kind`, as far as it is for a divider: a press on one picks
+/// it up, and it follows the pointer — the panes either side fitted to it
+/// as it goes — until the button is let go; the pointer over one shows it
+/// can be dragged. Whether it was for one.
+effect fn mouse(mut a: session.Session, kind: Int) -> Bool =
+  if kind == window.MOUSE_DOWN or kind == window.MOUSE_MOVE or kind == window.MOUSE_UP then pointed(a, kind)! else false
+
+effect fn pointed(mut a: session.Session, kind: Int) -> Bool = {
+  let px = float.to_int(window.event_x() * a.scale)
+  let py = float.to_int(window.event_y() * a.scale)
+  match a.dividing {
+    some(d) => {
+      if kind != window.MOUSE_DOWN then drag(a, d, px, py, kind == window.MOUSE_UP)
+      true
+    },
+    none => match under(a, px, py) {
+      some(d) => over(a, d, kind),
+      none => false,
+    },
+  }
+}
+
+/// Input `kind` with the pointer over divider `d`: a press picks it up, a
+/// move shows it can be. Whether it was either.
+fn over(mut a: session.Session, d: layout.Divider, kind: Int) -> Bool =
+  if kind == window.MOUSE_DOWN and window.event_code() == 0 then {
+    a.dividing = some(d)
+    true
+  } else if kind == window.MOUSE_MOVE and idle(a.ui) then {
+    uistate.shape_pointer(a.ui, if d.across then window.POINTER_COL_RESIZE else window.POINTER_ROW_RESIZE)
+    true
+  } else false
+
+/// Divider `d` of the tab in front moved to (`px`, `py`); let go when `done`.
+fn drag(mut a: session.Session, d: layout.Divider, px: Int, py: Int, done: Bool) -> Unit = {
+  let gi = groups.current(a)
+  match list.get(a.groups, gi) {
+    some(g) => {
+      a.groups = list.set(a.groups, gi, { ...g, layout: layout.set_fraction(g.layout, d.path, layout.fraction_at(d, px, py, 0)) })
+      if done then groups.relayout(a) else groups.relayout_live(a)
+      uistate.touch(a.ui)
+    },
+    none => (),
+  }
+  if done then a.dividing = none
+}
+
+/// The divider of the tab in front at (`px`, `py`), if one is.
+fn under(a: session.Session, px: Int, py: Int) -> Option[layout.Divider] = match list.get(a.groups, groups.current(a)) {
+  some(g) => if g.zoomed then none else {
+    let (x, y, w, h) = surface.content_box(a.r, a.width, a.height, groups.count(a))
+    layout.divider_at(layout.dividers(g.layout, x, y, w, h, 0), px, py, float.to_int(int.to_float(SLOP) * a.scale))
+  },
+  none => none,
+}
+
+/// Whether the pointer is free: no selection, scrollbar or tab dragged.
+fn idle(ui: uistate.Ui) -> Bool = not ui.dragging and not ui.scroll_drag and not ui.field_drag and ui.tab_drag < 0

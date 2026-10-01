@@ -1,5 +1,6 @@
 // The window's input state, and what an input asks of the tabs.
 
+import snaidhm.native.window as window
 import self.links
 import self.gui.composition
 import self.gui.findbar
@@ -114,6 +115,13 @@ fn leave_tab(mut ui: Ui) -> Unit = {
 fn touch(mut ui: Ui) -> Unit = { ui.dirty = true }
 
 fn set_dirty(mut ui: Ui, dirty: Bool) -> Unit = { ui.dirty = dirty }
+
+/// The pointer's shape, set.
+fn shape_pointer(mut ui: Ui, shape: Int) -> Unit =
+  if shape != ui.pointer then {
+    window.set_pointer(shape)
+    ui.pointer = shape
+  }
 
 /// Where the input method was told the caret is.
 fn set_ime(mut ui: Ui, x: Int, y: Int) -> Unit = {

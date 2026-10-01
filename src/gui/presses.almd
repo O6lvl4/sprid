@@ -63,11 +63,7 @@ fn hover(cur: tabset.Tab, mut ui: uistate.Ui, p: place.Place) -> Unit = {
     ui.link = link
     ui.dirty = true
   }
-  let shape = if link != none then window.POINTER_LINK else if on_grid then window.POINTER_TEXT else window.POINTER_ARROW
-  if shape != ui.pointer then {
-    window.set_pointer(shape)
-    ui.pointer = shape
-  }
+  uistate.shape_pointer(ui, if link != none then window.POINTER_LINK else if on_grid then window.POINTER_TEXT else window.POINTER_ARROW)
 }
 
 /// Whether a press opens what it is on: Cmd held, Ctrl on Linux — and

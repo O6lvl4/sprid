@@ -28,6 +28,7 @@ import self.gui.paint
 import self.gui.upkeep
 import self.gui.windows
 import self.gui.restore
+import self.gui.dividers
 
 /// One turn of the loop: sleep until something is to be done in a window,
 /// then do it — the config reloaded, a window resized, input, output, frames,
@@ -135,7 +136,9 @@ effect fn input(mut a: session.Session, kind: Int) -> Unit = {
   if a.stats.trace and (kind == window.COMPOSE or kind == window.TEXT or kind == window.KEY) then
     eprintln("input ${int.to_string(sys.now_ms())} kind ${int.to_string(kind)} code ${int.to_string(window.event_code())} end ${int.to_string(window.event_end())} text \"${window.event_text()}\" preedit ${int.to_string(list.len(a.ui.preedit))}")
   // A window's close button, with others open.
-  let act = if kind == window.CLOSE then uistate.CloseWindow else event(a, kind)!
+  let act = if kind == window.CLOSE then uistate.CloseWindow
+    else if dividers.mouse(a, kind)! then uistate.Stay
+    else event(a, kind)!
   acts.apply(a, act)!
   front_changed(a)
 }

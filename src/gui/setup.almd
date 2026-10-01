@@ -75,7 +75,7 @@ effect fn start(id: Int, capture: Option[String], faces: fonts.Faces, st: settin
   if (cols, rows) != expected then { let _ = pty.resize(first_fd, cols, rows) } else ()
   let home = env.get("HOME") ?? ""
   var a = session.Session {
-    id: id, faces: faces, opening: none, adopting: none,
+    id: id, faces: faces, opening: none, adopting: none, dividing: none,
     capture: capture, home: home,
     // Questions in Japanese on a Japanese system.
     ja: string.starts_with(env.get("LANG") ?? "", "ja"),
@@ -96,7 +96,8 @@ effect fn start(id: Int, capture: Option[String], faces: fonts.Faces, st: settin
 /// What a capture asks for beyond one window of one tab: SPRID_CAPTURE_WINDOWS
 /// windows, each opening the next; SPRID_CAPTURE_TABS tabs running `login`;
 /// SPRID_CAPTURE_SPLITS, the pane in front split across for each "r" and
-/// down for each "d", in turn.
+/// down for each "d", in turn; then SPRID_CAPTURE_KEYS, inputs apart by
+/// spaces (see `typed`).
 effect fn staged(mut a: session.Session, id: Int, login: String) -> Unit = {
   let windows = int.parse(env.get("SPRID_CAPTURE_WINDOWS") ?? "1") ?? 1
   if id < windows then a.opening = some("")
@@ -115,6 +116,19 @@ effect fn staged(mut a: session.Session, id: Int, login: String) -> Unit = {
       some(tb) => groups.add_pane(a, tb, c == "r"),
       none => (),
     }
+  }  for k in string.split(env.get("SPRID_CAPTURE_KEYS") ?? "", " ") { typed(k) }
+}
+
+/// An input, "kind:code:mods" — and "@x,y" in points for one of the mouse —
+/// queued as if made.
+fn typed(input: String) -> Unit = {
+  let (head, at) = match string.split(input, "@") {
+    [h, xy] => (h, list.map(string.split(xy, ","), (x) => float.parse(x) ?? 0.0)),
+    parts => (list.first(parts) ?? "", []),
+  }
+  let n = list.map(string.split(head, ":"), (x) => int.parse(x) ?? 0)
+  if list.len(n) == 3 then {
+    if list.len(at) == 2 then window.inject_at(n[0], n[1], n[2], at[0], at[1]) else window.inject(n[0], n[1], n[2])
   }
 }
 

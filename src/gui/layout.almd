@@ -19,6 +19,11 @@ fn single(id: Int) -> Group = Group { layout: Pane(id), focus: id, zoomed: false
 /// A pane's region: its id and its rectangle (x, y, width, height), pixels.
 type Region = { id: Int, x: Int, y: Int, w: Int, h: Int }
 
+/// A divider: the split it is — `path` the way down to it, 0 into the
+/// first part and 1 into the second — across or down, where it is (`at`, x
+/// across, y down) and the rectangle of what it splits.
+type Divider = { path: List[Int], across: Bool, at: Int, x: Int, y: Int, w: Int, h: Int }
+
 /// The least a part may be of what it splits.
 let MIN_FRACTION = 0.1
 
@@ -54,11 +59,53 @@ fn remove(l: Layout, id: Int) -> Option[Layout] = match l {
 fn regions(l: Layout, x: Int, y: Int, w: Int, h: Int, gap: Int) -> List[Region] = match l {
   Pane(id) => [Region { id: id, x: x, y: y, w: w, h: h }],
   Split(across, f, a, b) => if across then {
-    let first = int.max(1, float.to_int(int.to_float(w - gap) * f))
+    let first = part(w, gap, f)
     regions(a, x, y, first, h, gap) + regions(b, x + first + gap, y, int.max(1, w - first - gap), h, gap)
   } else {
-    let first = int.max(1, float.to_int(int.to_float(h - gap) * f))
+    let first = part(h, gap, f)
     regions(a, x, y, w, first, gap) + regions(b, x, y + first + gap, w, int.max(1, h - first - gap), gap)
+  },
+}
+
+/// The first part's length, of `len` split at `f` with `gap` between.
+fn part(len: Int, gap: Int, f: Float) -> Int = int.max(1, float.to_int(int.to_float(len - gap) * f))
+
+/// Every divider, outermost first, laid out as `regions` lays the panes.
+fn dividers(l: Layout, x: Int, y: Int, w: Int, h: Int, gap: Int) -> List[Divider] = dividers_in(l, [], x, y, w, h, gap)
+
+fn dividers_in(l: Layout, path: List[Int], x: Int, y: Int, w: Int, h: Int, gap: Int) -> List[Divider] = match l {
+  Pane(_) => [],
+  Split(across, f, a, b) => if across then {
+    let first = part(w, gap, f)
+    [Divider { path: path, across: true, at: x + first, x: x, y: y, w: w, h: h }]
+      + dividers_in(a, path + [0], x, y, first, h, gap) + dividers_in(b, path + [1], x + first + gap, y, int.max(1, w - first - gap), h, gap)
+  } else {
+    let first = part(h, gap, f)
+    [Divider { path: path, across: false, at: y + first, x: x, y: y, w: w, h: h }]
+      + dividers_in(a, path + [0], x, y, w, first, gap) + dividers_in(b, path + [1], x, y + first + gap, w, int.max(1, h - first - gap), gap)
+  },
+}
+
+/// The divider within `slop` pixels of (`px`, `py`), if one is; the
+/// innermost where two meet.
+fn divider_at(ds: List[Divider], px: Int, py: Int, slop: Int) -> Option[Divider] =
+  list.reverse(ds) |> list.find((d) =>
+    if d.across then int.abs(px - d.at) <= slop and py >= d.y and py < d.y + d.h
+    else int.abs(py - d.at) <= slop and px >= d.x and px < d.x + d.w)
+
+/// The fraction divider `d` splits at with the pointer at (`px`, `py`).
+fn fraction_at(d: Divider, px: Int, py: Int, gap: Int) -> Float = {
+  let (from, len) = if d.across then (px - d.x, d.w) else (py - d.y, d.h)
+  clamp(int.to_float(from) / int.to_float(int.max(1, len - gap)))
+}
+
+/// `l` with the split at `path` (see `Divider`) at fraction `f`.
+fn set_fraction(l: Layout, path: List[Int], f: Float) -> Layout = match l {
+  Pane(id) => Pane(id),
+  Split(across, g, a, b) => match list.first(path) {
+    none => Split(across, f, a, b),
+    some(0) => Split(across, g, set_fraction(a, list.drop(path, 1), f), b),
+    some(_) => Split(across, g, a, set_fraction(b, list.drop(path, 1), f)),
   },
 }
 
@@ -152,6 +199,17 @@ test "regions, the pane under a point, and neighbours" {
   assert_eq(list.map(ps, (p) => (p.id, p.x, p.y, p.w, p.h)), [(1, 0, 0, 50, 51), (2, 51, 0, 50, 25), (3, 51, 26, 50, 25)])
   assert_eq((pane_at(ps, 10, 40), pane_at(ps, 60, 40), pane_at(ps, 50, 10)), (some(1), some(3), none))
   assert_eq((neighbor(ps, 1, 1, 0), neighbor(ps, 3, 0, -1), neighbor(ps, 2, -1, 0), neighbor(ps, 1, -1, 0)), (some(2), some(2), some(1), none))
+}
+
+test "dividers: where they are, the one under a point, dragging one" {
+  let ds = dividers(sample(), 0, 0, 101, 51, 1)
+  assert_eq(list.map(ds, (d) => (d.path, d.across, d.at)), [([], true, 50), ([1], false, 25)])
+  assert_eq(divider_at(ds, 52, 10, 2) |> option.map((d) => d.path), some([]))
+  // Where the two meet, the inner one.
+  assert_eq(divider_at(ds, 52, 25, 2) |> option.map((d) => d.path), some([1]))
+  assert_eq(divider_at(ds, 20, 10, 2), none)
+  assert_eq(set_fraction(sample(), [1], fraction_at(ds[1], 60, 10, 1)), Split(true, 0.5, Pane(1), Split(false, 0.2, Pane(2), Pane(3))))
+  assert_eq(set_fraction(sample(), [], fraction_at(ds[0], 1, 10, 1)), Split(true, MIN_FRACTION, Pane(1), Split(false, 0.5, Pane(2), Pane(3))))
 }
 
 test "resizing moves the nearest divider the way asked" {
