@@ -66,8 +66,15 @@ before closing a busy tab or pasting line breaks, are macOS only for now.
   the pointer, or a link a program made (OSC 8, as `ls --hyperlink` does);
   with Cmd held, a link is underlined and, for a program's, where it goes is
   shown first.
+- **Shell integration** (zsh, bash, fish, loaded automatically — your
+  startup files are left as they are): prompts are marked, so Cmd+↑ / ↓
+  jump from one to the next; a command that failed gets a red mark by its
+  prompt; Cmd+Shift+A selects the last command's output; new tabs open in
+  the shell's directory. Programs and shells that mark prompts themselves
+  (OSC 133) get the same.
 - **Selection**: double-click a word, triple-click a line, Option+drag a
-  rectangle. A right click offers copy, paste, select all, find and clear.
+  rectangle. A right click offers copy, paste, select all, the output of
+  the command under the pointer, find and clear.
   On Linux a selection is the PRIMARY selection, which a middle click pastes.
 - **Notifications**: a program's notifications (OSC 9, 777, 99) appear in
   Notification Center (notify-send on Linux) while the window is in the
@@ -94,7 +101,9 @@ before closing a busy tab or pasting line breaks, are macOS only for now.
 | Clear | Cmd+K | Ctrl+Shift+K |
 | Full screen | Cmd+Enter, Cmd+Ctrl+F | F11 |
 | Line start / end, word | Cmd+← / →, Option+← / → | (the shell's own keys) |
-| Scroll | Cmd+Home / End / PageUp / PageDown / ↑ / ↓ | Ctrl+Shift+Home / End / PageUp / PageDown / ↑ / ↓ |
+| Scroll | Cmd+Home / End / PageUp / PageDown | Ctrl+Shift+Home / End / PageUp / PageDown |
+| Previous / next prompt | Cmd+↑ / ↓ (by lines without shell integration) | Ctrl+Shift+↑ / ↓ |
+| Select the last command's output | Cmd+Shift+A | (right-click menu) |
 
 Not yet: split panes, emoji sequences (ZWJ, skin tones, flags).
 
@@ -128,6 +137,7 @@ macos-option-as-alt = left      # true, false, left, right
 | `bell-features` | `flash,attention,title` — add `system` for the alert sound, `no-flash` etc. to turn one off |
 | `clipboard-paste-protection` | `true` — ask before pasting line breaks |
 | `copy-on-select` | `true` — a selection becomes the PRIMARY selection (Linux); `clipboard` copies it too; `false` |
+| `shell-integration` | `detect` — or `none` to start the shell as it is |
 
 Themes built in: Tokyo Night Storm, Almide Light, Almide Dark, Catppuccin
 Mocha, Catppuccin Latte, Dracula, Solarized Dark, Solarized Light. Any other
