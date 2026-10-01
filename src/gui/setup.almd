@@ -117,6 +117,10 @@ effect fn fresh_stats() -> session.Stats = {
     frames: 0, draw_ms: 0, wakes: 0, wake_report: 0,
     input_at: -1, latency_max: 0, latency_sum: 0, latency_n: 0,
     auto: auto, auto_next: if list.len(auto) == 4 then float.to_int(auto[1]) else -1,
+    quit_at: match int.parse(env.get("SPRID_QUIT_MS") ?? "") {
+      ok(ms) => sys.now_ms() + ms,
+      err(_) => -1,
+    },
   }
 }
 

@@ -1,0 +1,153 @@
+// Windows as they were: where each was and how big, and its tabs — each
+// tab's directory and name — kept when sprid quits and opened again when it
+// starts. Whether the tabs come back is `window-save-state`: by default as
+// the system does it (macOS's "Close windows when quitting an application");
+// where the window was always does.
+//
+// The file is lines of tab-separated fields:
+//
+//   window  x  y  width  height      (logical pixels, the frame's top left)
+//   tab     directory  name          (one per tab, under its window)
+
+import env
+import fs
+import snaidhm.native.window as window
+import self.sys
+import self.gui.dialog
+import self.gui.session
+import self.gui.tabset
+import self.gui.setup
+import self.gui.windows
+import self.shell
+
+/// A window kept: its frame, and its tabs as (directory, name).
+type Kept = { x: Float, y: Float, width: Float, height: Float, tabs: List[(String, String)] }
+
+effect fn path() -> String = {
+  let home = env.get("HOME") ?? ""
+  if sys.is_linux() then {
+    let xdg = env.get("XDG_STATE_HOME") ?? ""
+    (if xdg != "" then xdg else home + "/.local/state") + "/sprid/windows"
+  } else home + "/Library/Application Support/sprid/windows"
+}
+
+/// Whether the tabs come back, as `window-save-state` says.
+fn reopens(setting: String) -> Bool =
+  if setting == "always" then true
+  else if setting == "never" then false
+  else dialog.keeps_windows()
+
+/// The windows kept, none when there are none.
+effect fn load() -> List[Kept] = match fs.read_text_if_exists(path()!) {
+  ok(found) => decode(found ?? ""),
+  err(_) => [],
+}
+
+/// `wins` kept — with their tabs when `tabs`, else only where the first
+/// was. Nothing kept when that fails.
+effect fn save(wins: List[session.Session], tabs: Bool) -> Unit = {
+  let kept = list.map(0..<list.len(wins), (i) => frame_of(wins[i], tabs))
+  let shown = if tabs then kept else list.take(kept, 1)
+  let file = path()!
+  let parts = string.split(file, "/")
+  let _ = fs.mkdir_p(list.take(parts, list.len(parts) - 1) |> list.join("/"))
+  let _ = fs.write(file, encode(shown))
+}
+
+/// The windows `kept` opened again: the first in `wins[0]`, which opened
+/// with the first tab's shell; the others after it.
+effect fn reopen(mut wins: List[session.Session], kept: List[Kept]) -> Unit = {
+  match windows.take(wins, 0) {
+    some(w) => {
+      var a = w
+      fill(a, kept[0].tabs)!
+      windows.put(wins, 0, a)
+    },
+    none => (),
+  }
+  for k in list.drop(kept, 1) {
+    let first = list.first(k.tabs) |> option.map((t) => t.0) ?? ""
+    match setup.open_window(wins[0], first)! {
+      some(b) => {
+        var c = b
+        window.set_position(k.x, k.y)
+        window.set_size(k.width, k.height)
+        fill(c, k.tabs)!
+        list.push(wins, c)
+      },
+      none => (),
+    }
+  }
+}
+
+/// Window session `a`'s first tab named as `tabs` says, and its other tabs
+/// opened, each in its directory with its name.
+effect fn fill(mut a: session.Session, tabs: List[(String, String)]) -> Unit = {
+  match list.first(tabs) {
+    some(t) => if list.len(a.tabs) > 0 then { a.tabs = list.set(a.tabs, 0, { ...a.tabs[0], name: t.1 }) },
+    none => (),
+  }
+  for t in list.drop(tabs, 1) {
+    match tabset.open_tab(a.r, a.width, a.height, list.len(a.tabs) + 1, shell.command(a.st.shell_integration)!, t.0, a.st.scrollback) {
+      some(tb) => {
+        list.push(a.tabs, { ...tb, name: t.1 })
+        tabset.relayout(a.tabs, a.r, a.width, a.height)
+      },
+      none => (),
+    }
+  }
+}
+
+/// Window session `a` as kept: its frame, and its tabs when `tabs`.
+fn frame_of(a: session.Session, tabs: Bool) -> Kept = {
+  window.select(a.id)
+  let kept_tabs = if not tabs then []
+    else list.map(0..<list.len(a.tabs), (i) => (tabset.cwd_of(a.tabs, i, a.home), a.tabs[i].name))
+  Kept {
+    x: window.x(), y: window.y(),
+    width: int.to_float(a.width) / a.scale, height: int.to_float(a.height) / a.scale,
+    tabs: kept_tabs,
+  }
+}
+
+fn encode(kept: List[Kept]) -> String =
+  kept |> list.map((k) => {
+    let head = ["window", float.to_string(k.x), float.to_string(k.y), float.to_string(k.width), float.to_string(k.height)]
+    let tabs = list.map(k.tabs, (t) => "tab\t" + clean(t.0) + "\t" + clean(t.1))
+    ([list.join(head, "\t")] + tabs) |> list.join("\n")
+  }) |> list.map((s) => s + "\n") |> list.join("")
+
+/// `s` without what would break a line apart.
+fn clean(s: String) -> String = string.replace(string.replace(string.replace(s, "\t", " "), "\n", " "), "\r", " ")
+
+fn decode(text: String) -> List[Kept] = {
+  var out: List[Kept] = []
+  for line in string.lines(text) {
+    let f = string.split(line, "\t")
+    if list.len(f) == 5 and f[0] == "window" then {
+      let num = (s: String) => float.parse(s) ?? 0.0
+      list.push(out, Kept { x: num(f[1]), y: num(f[2]), width: num(f[3]), height: num(f[4]), tabs: [] })
+    } else if list.len(f) == 3 and f[0] == "tab" and list.len(out) > 0 then {
+      let n = list.len(out) - 1
+      out = list.set(out, n, { ...out[n], tabs: out[n].tabs + [(f[1], f[2])] })
+    }
+  }
+  // A window too small to use is not kept.
+  list.filter(out, (k) => k.width >= 100.0 and k.height >= 60.0)
+}
+
+test "windows and their tabs round-trip, odd names cleaned" {
+  let kept = [
+    Kept { x: 10.0, y: -900.0, width: 960.0, height: 620.0, tabs: [("/Users/me", ""), ("/tmp/a b", "build\tlog")] },
+    Kept { x: 200.0, y: 40.0, width: 500.0, height: 300.0, tabs: [("/srv", "srv")] },
+  ]
+  let back = decode(encode(kept))
+  assert_eq(list.len(back), 2)
+  assert_eq((back[0].y, back[0].tabs), (-900.0, [("/Users/me", ""), ("/tmp/a b", "build log")]))
+  assert_eq((back[1].width, back[1].tabs), (500.0, [("/srv", "srv")]))
+}
+
+test "a file that isn't one keeps nothing" {
+  assert_eq(decode("window\t1\nhello\ttab\tx"), [])
+  assert_eq(decode("window\t0\t0\t10\t10"), [])
+}

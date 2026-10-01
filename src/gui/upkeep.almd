@@ -38,7 +38,7 @@ fn wait_for(mut a: session.Session) -> Int = {
   // Input a program hasn't taken yet (a big paste) is offered again soon.
   let write = if list.any(a.tabs, (tb) => pty.pending(tb.fd)) then session.WRITE_RETRY_MS else -1
   let settle = if a.resized_at < 0 then -1 else a.resized_at + session.SETTLE_MS
-  list.fold([until(settle), until(a.stats.auto_next), write, until(a.blink_at), until(a.flash_until)], drawn,
+  list.fold([until(settle), until(a.stats.auto_next), write, until(a.blink_at), until(a.flash_until), until(a.stats.quit_at)], drawn,
     (acc, w) => session.sooner(acc, w))
 }
 

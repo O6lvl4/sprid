@@ -103,6 +103,9 @@ type Stats = {
   latency_n: Int,
   auto: List[Float],
   auto_next: Int,
+  // SPRID_QUIT_MS: when to quit as Cmd+Q does, for a test of what quitting
+  // keeps; -1 when not.
+  quit_at: Int,
 }
 
 /// The sooner of two waits, ms; -1 is no limit.

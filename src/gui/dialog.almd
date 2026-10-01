@@ -19,3 +19,8 @@ fn beep() -> Unit = _
 /// Linux, which has no menu yet). Waits until it closes.
 @extern(rust, "crate::dialog", "context_menu")
 fn context_menu(items: String) -> Int = _
+
+/// Whether the system reopens an app's windows when it starts again (see
+/// native/dialog.rs).
+@extern(rust, "crate::dialog", "keeps_windows")
+fn keeps_windows() -> Bool = _

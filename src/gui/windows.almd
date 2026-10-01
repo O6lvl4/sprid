@@ -28,8 +28,9 @@ fn waits(mut wins: List[session.Session]) -> (Int, List[Int]) = {
 }
 
 /// Quitting asked for (Cmd+Q, or the only window's close button): every
-/// window closes, asked first while a program is running in one.
-fn quit_asked(mut wins: List[session.Session]) -> Unit = {
+/// window closes, asked first while a program is running in one. Whether
+/// they do.
+fn quit_asked(mut wins: List[session.Session]) -> Bool = {
   let tabs = list.flat_map(wins, (a) => a.tabs)
   let ja = list.any(wins, (a) => a.ja)
   let capturing = list.any(wins, (a) => a.capture != none)
@@ -37,7 +38,11 @@ fn quit_asked(mut wins: List[session.Session]) -> Unit = {
     for i in 0..<list.len(wins) {
       wins = list.set(wins, i, { ...wins[i], alive: false })
     }
-  } else window.keep_open()
+    true
+  } else {
+    window.keep_open()
+    false
+  }
 }
 
 /// The windows asked for: for tabs dragged out of a window, and new ones

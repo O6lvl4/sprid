@@ -46,6 +46,20 @@ pub fn beep() {
     }
 }
 
+/// Whether the system reopens an app's windows when it starts again: on
+/// macOS, "Close windows when quitting an application" turned off in System
+/// Settings. Elsewhere `false`.
+pub fn keeps_windows() -> bool {
+    #[cfg(target_os = "macos")]
+    unsafe {
+        mac::keeps_windows()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
+
 /// A menu of `items` at the pointer — one per line of `items`, a line
 /// starting with `!` shown disabled, `-` a separator — and which was
 /// picked: its index, or -1 for none. Blocks until it closes. Elsewhere
@@ -101,6 +115,14 @@ mod mac {
         let f: unsafe extern "C" fn(Id, Id) -> isize = unsafe { std::mem::transmute(objc_msgSend as unsafe extern "C" fn()) };
         unsafe { f(obj, sel("runModal")) }
     }
+    pub unsafe fn keeps_windows() -> bool {
+        unsafe {
+            let defaults = send(objc_getClass(c"NSUserDefaults".as_ptr()), "standardUserDefaults");
+            let f: unsafe extern "C" fn(Id, Id, Id) -> bool = std::mem::transmute(objc_msgSend as unsafe extern "C" fn());
+            f(defaults, sel("boolForKey:"), ns_string("NSQuitAlwaysKeepsWindows"))
+        }
+    }
+
     unsafe fn ns_string(s: &str) -> Id {
         let c = CString::new(s.replace('\0', "")).unwrap();
         let class = unsafe { objc_getClass(c"NSString".as_ptr()) };

@@ -13,6 +13,7 @@ import self.sys
 import self.gui.prefs
 import self.gui.setup
 import self.gui.turn
+import self.gui.restore
 
 /// How the window starts: a command for the first tab instead of the login
 /// shell (the window closes when it exits), and the grid to size the window
@@ -32,21 +33,39 @@ effect fn run_fonts(opts: Options, st: settings.Settings) -> Unit = match fonts.
   none => println("sprid: no font found"),
 }
 
+/// The first window's size, logical pixels: as it was kept, else the default.
+fn first_size(kept: List[restore.Kept]) -> (Int, Int) = match list.first(kept) {
+  some(k) => (float.to_int(k.width), float.to_int(k.height)),
+  none => (960, 620),
+}
+
+/// What the first tab runs: the command given, SPRID_CAPTURE_CMD for a
+/// capture, else the login shell.
+effect fn first_command(opts: Options, login: String) -> String = match opts.command {
+  some(c) => c,
+  none => if opts.capture != none then env.get("SPRID_CAPTURE_CMD") ?? login else login,
+}
+
+/// Where the first shell starts: where sprid was started — but started
+/// from Finder the directory is /, and then at home.
+effect fn first_dir() -> String =
+  if sys.cwd() == "/" or sys.cwd() == "" then env.get("HOME") ?? "" else ""
+
 effect fn run_with(opts: Options, faces: fonts.Faces, st: settings.Settings) -> Unit = {
   // Sized to a grid, the window is measured before it opens, for a Retina
   // display (the scale is only known once it is open).
   let (cw, ch) = render.cell_size(faces, float.to_int(float.round(st.font_size * 2.0)), st.cell_height)
   let (pad_x, pad_y) = (float.to_int(st.pad_x * 2.0), float.to_int(st.pad_y * 2.0))
+  // The windows as they were when sprid last quit: where the first was, and
+  // their tabs if they come back. Not for a command, a size or a capture.
+  let kept = if opts.capture == none and opts.command == none and opts.cols == 0 then restore.load()! else []
+  let reopen = list.len(kept) > 0 and list.len(kept[0].tabs) > 0 and restore.reopens(st.window_save_state)
   let (win_w, win_h) = if opts.cols > 0 and opts.rows > 0 then
     ((opts.cols * cw) / 2 + pad_x / 2 + 1, (opts.rows * ch) / 2 + pad_y / 2 + 1)
-  else (960, 620)
+  else first_size(kept)
   let login = shell.command(st.shell_integration)!
-  let first = match opts.command {
-    some(c) => c,
-    none => if opts.capture != none then env.get("SPRID_CAPTURE_CMD") ?? login else login,
-  }
-  // Started from Finder the directory is /: start at home.
-  let start_dir = if sys.cwd() == "/" or sys.cwd() == "" then env.get("HOME") ?? "" else ""
+  let first = first_command(opts, login)!
+  let start_dir = if reopen then kept[0].tabs[0].0 else first_dir()!
   // The first program starts before the window opens and the GPU is set up —
   // a login shell's startup files run meanwhile — on the grid the window is
   // expected to hold; it is told the actual one if that differs.
@@ -54,12 +73,14 @@ effect fn run_with(opts: Options, faces: fonts.Faces, st: settings.Settings) -> 
   let first_fd = pty.spawn(first, start_dir, expected.0, expected.1)
   guard first_fd >= 0 else println("sprid: could not start ${first}")
   guard window.open("sprid", win_w, win_h) else println("sprid: could not open a window")
+  if list.len(kept) > 0 then window.set_position(kept[0].x, kept[0].y)
   window.set_ime(true)
   // A key's echo shows as soon as it is drawn, not a display refresh or two
   // later.
   gpu.set_low_latency(true)
   window.set_option_as_alt(st.option_as_alt)
   var wins = [setup.start(1, opts.capture, faces, st, login, first_fd, expected)!]
+  if reopen then restore.reopen(wins, kept)!
   while list.len(wins) > 0 {
     turn.turn(wins)!
   }

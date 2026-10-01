@@ -40,6 +40,9 @@ type Settings = {
   copy_on_select: String,
   // Load sprid's shell integration into zsh, bash and fish.
   shell_integration: Bool,
+  // Whether quitting keeps the windows' tabs to open again: "default" as
+  // the system does, "always", "never".
+  window_save_state: String,
   // The file as parsed, for the colours it sets over the theme.
   file: config.Config,
   problems: List[String],
@@ -56,7 +59,7 @@ fn defaults() -> Settings = {
     font_family: "", font_size: DEFAULT_FONT_SIZE, cell_height: DEFAULT_CELL_HEIGHT, pad_x: 12.0, pad_y: 8.0,
     theme_light: DEFAULT_THEME, theme_dark: DEFAULT_THEME, scrollback: DEFAULT_SCROLLBACK,
     cursor_shape: 0, option_as_alt: 0, clipboard_write: true, clipboard_read: "ask",
-    bell_flash: true, bell_attention: true, bell_title: true, bell_system: false, paste_protection: true, copy_on_select: "true", shell_integration: true, file: config.empty(), problems: problems,
+    bell_flash: true, bell_attention: true, bell_title: true, bell_system: false, paste_protection: true, copy_on_select: "true", shell_integration: true, window_save_state: "default", file: config.empty(), problems: problems,
   }
 }
 
@@ -86,6 +89,7 @@ fn from(c: config.Config) -> Settings = {
     paste_protection: read(c, "clipboard-paste-protection", config.flag) ?? d.paste_protection,
     copy_on_select: read(c, "copy-on-select", (v) => one_of(v, ["true", "false", "clipboard"])) ?? d.copy_on_select,
     shell_integration: read(c, "shell-integration", (v) => one_of(v, ["detect", "none"])) |> option.map((v) => v == "detect") ?? d.shell_integration,
+    window_save_state: read(c, "window-save-state", (v) => one_of(v, ["default", "always", "never"])) ?? d.window_save_state,
     file: c,
     problems: problems_in(c, bells),
   }
@@ -110,6 +114,7 @@ fn checks() -> List[(String, (String) -> Bool)] = [
   ("clipboard-paste-protection", (v) => config.flag(v) != none),
   ("copy-on-select", (v) => one_of(v, ["true", "false", "clipboard"]) != none),
   ("shell-integration", (v) => one_of(v, ["detect", "none"]) != none),
+  ("window-save-state", (v) => one_of(v, ["default", "always", "never"]) != none),
 ]
 
 /// What is wrong with `c`: the parser's complaints, keys sprid doesn't
