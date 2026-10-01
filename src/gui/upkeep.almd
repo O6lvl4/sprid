@@ -72,8 +72,7 @@ effect fn reload(mut a: session.Session) -> Unit = {
     a.r = prefs.styled(a.r, fresh)!
     if resize then {
       a.font_size = fresh.font_size
-      a.r = render.with_size(a.r, float.to_int(float.round(a.font_size * a.scale)),
-        float.to_int(fresh.pad_x * a.scale), float.to_int(fresh.pad_y * a.scale), fresh.cell_height)
+      a.r = session.sized(a)
       tabset.relayout_live(a.tabs, a.r, a.width, a.height)
       a.resized_at = sys.now_ms()
     }
@@ -105,9 +104,15 @@ fn report_wakes(mut a: session.Session, timeout: Int) -> Unit = {
 
 /// The window changed size: the screens follow now, scrollback once the
 /// size has held for a moment — and then the search is run again, the
-/// lines being numbered anew.
+/// lines being numbered anew. Moved to a display of another scale, the
+/// text is drawn again at that scale, the same size to the eye.
 fn resized(mut a: session.Session) -> Unit = {
   if window.resized() then {
+    let scale = window.scale_factor()
+    if scale != a.scale then {
+      a.scale = scale
+      a.r = session.sized(a)
+    }
     a.width = window.width()
     a.height = window.height()
     tabset.relayout_live(a.tabs, a.r, a.width, a.height)

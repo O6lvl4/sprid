@@ -114,6 +114,12 @@ fn sooner(a: Int, b: Int) -> Int = if a < 0 then b else if b < 0 then a else int
 /// The least time between frames now.
 fn frame_ms(a: Session) -> Int = if a.streaming then STREAM_FRAME_MS else FRAME_MS
 
+/// The renderer sized for the font size, padding and line height in use, in
+/// pixels of the display the window is on.
+fn sized(a: Session) -> render.Renderer =
+  render.with_size(a.r, float.to_int(float.round(a.font_size * a.scale)),
+    float.to_int(a.st.pad_x * a.scale), float.to_int(a.st.pad_y * a.scale), a.st.cell_height)
+
 // FIXME(almide#3064): the setters below stand in for assignments two fields
 // deep (`a.r.flash = false`, `a.stats.wakes = ...`), which the compiler in
 // use doesn't parse yet (fixed on develop).

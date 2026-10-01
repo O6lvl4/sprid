@@ -102,8 +102,7 @@ fn zoom(mut a: session.Session, step: Int) -> Unit = {
     else float.clamp(a.font_size + int.to_float(step), session.MIN_FONT_SIZE, session.MAX_FONT_SIZE)
   if size != a.font_size then {
     a.font_size = size
-    a.r = render.with_size(a.r, float.to_int(float.round(size * a.scale)),
-      float.to_int(a.st.pad_x * a.scale), float.to_int(a.st.pad_y * a.scale), a.st.cell_height)
+    a.r = session.sized(a)
     tabset.relayout_live(a.tabs, a.r, a.width, a.height)
     a.resized_at = sys.now_ms()
     uistate.touch(a.ui)
