@@ -87,9 +87,14 @@ before closing a busy tab or pasting line breaks, are macOS only for now.
   double-click, drag to reorder — or out of the tab bar for a window of
   their own; the window takes the title of the tab in front. Closing a tab,
   the window or the app asks first while a program is running.
+- **Split panes**: split a tab across or down, again and again; move
+  between panes by keys or a click, drag a divider or move it by keys, zoom
+  a pane to fill the tab for a while, and make them equal again. The panes
+  beside the one in front are dimmed.
 - **Windows**: all in one app (one Dock icon), with a full menu bar on
-  macOS. They reopen where they were; their tabs come back too when the
-  system keeps windows on quitting, or with `window-save-state = always`.
+  macOS. They reopen where they were; their tabs — split as they were —
+  come back too when the system keeps windows on quitting, or with
+  `window-save-state = always`.
 - **Resize**: lines are rewrapped at the new width, scrollback included.
 
 ### Keys
@@ -98,8 +103,12 @@ before closing a busy tab or pasting line breaks, are macOS only for now.
 |---|---|---|
 | Copy / paste | Cmd+C / V | Ctrl+Shift+C / V |
 | Select all / find | Cmd+A / F (Cmd+G next) | Ctrl+Shift+A / F (Ctrl+Shift+G next) |
-| New tab / close tab | Cmd+T / W | Ctrl+Shift+T / W |
+| New tab / close tab or pane | Cmd+T / W | Ctrl+Shift+T / W |
 | Switch tab | Cmd+1–9, Ctrl+Tab, Cmd+Shift+[ ] | Ctrl+Shift+1–9, Ctrl+Tab, Ctrl+Page Up / Down |
+| Split across / down | Cmd+D / Cmd+Shift+D | Ctrl+Shift+D / E |
+| Next / previous pane, the pane that way | Cmd+] / [, Cmd+Option+arrows | Ctrl+Shift+] / [, Ctrl+Alt+arrows |
+| Move a divider / equal panes | Cmd+Ctrl+arrows / = | Ctrl+Shift+Alt+arrows / = |
+| Zoom a pane | Cmd+Shift+Enter | Ctrl+Shift+Z |
 | New window / close window | Cmd+N / Cmd+Shift+W | Ctrl+Shift+N / Q |
 | Font size | Cmd+Plus / Minus / 0 | Ctrl+Shift+Plus / Minus / 0 |
 | Clear | Cmd+K | Ctrl+Shift+K |
@@ -110,7 +119,7 @@ before closing a busy tab or pasting line breaks, are macOS only for now.
 | Previous / next prompt | Cmd+↑ / ↓ (by lines without shell integration) | Ctrl+Shift+↑ / ↓ |
 | Select the last command's output | Cmd+Shift+A | (right-click menu) |
 
-Not yet: split panes, emoji sequences (ZWJ, skin tones, flags).
+Not yet: emoji sequences (ZWJ, skin tones, flags).
 
 ## Config
 

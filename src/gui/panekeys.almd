@@ -4,7 +4,7 @@
 // that way; Cmd+Shift+Enter zooms the pane in front, Cmd+Ctrl+= makes the
 // panes equal. On Linux, with Ctrl+Shift for Cmd as elsewhere: Ctrl+Shift+D
 // and Ctrl+Shift+E split, Ctrl+Shift+[ ], Ctrl+Alt+arrows,
-// Ctrl+Shift+Alt+arrows, Ctrl+Shift+Z.
+// Ctrl+Shift+Alt+arrows and =, Ctrl+Shift+Z.
 
 import snaidhm.native.window as window
 import self.keys
@@ -65,8 +65,12 @@ fn direction(code: Int) -> (Int, Int) =
 
 fn other_act(k: Key) -> Option[uistate.Act] =
   if zoom_key(k) then some(uistate.ZoomPane)
-  else if not k.linux and k.kind == window.TEXT and k.held == window.MOD_SUPER + window.MOD_CTRL and k.code == 0x3D then some(uistate.EqualPanes)
+  else if k.kind == window.TEXT and k.code == 0x3D and k.held == equal_mods(k.linux) then some(uistate.EqualPanes)
   else none
+
+/// What = is held with to make the panes equal: the resize keys' modifiers.
+fn equal_mods(linux: Bool) -> Int =
+  if linux then window.MOD_CTRL + window.MOD_SHIFT + window.MOD_ALT else window.MOD_SUPER + window.MOD_CTRL
 
 test "the pane keys, on a Mac and on Linux" {
   let mac = (kind: Int, code: Int, held: Int) => pane_act(kind, code, held, false)
@@ -82,4 +86,6 @@ test "the pane keys, on a Mac and on Linux" {
   assert_eq(lin(window.TEXT, 0x65, window.MOD_CTRL + window.MOD_SHIFT), some(uistate.SplitPane(false)))
   assert_eq(lin(window.KEY, window.KEY_UP, window.MOD_CTRL + window.MOD_ALT), some(uistate.FocusPane(0, -1)))
   assert_eq(lin(window.TEXT, 0x7A, window.MOD_CTRL + window.MOD_SHIFT), some(uistate.ZoomPane))
+  assert_eq(lin(window.TEXT, 0x5B, window.MOD_CTRL + window.MOD_SHIFT), some(uistate.CyclePane(-1)))
+  assert_eq((mac(window.TEXT, 0x3D, window.MOD_SUPER + window.MOD_CTRL), lin(window.TEXT, 0x3D, window.MOD_CTRL + window.MOD_SHIFT + window.MOD_ALT)), (some(uistate.EqualPanes), some(uistate.EqualPanes)))
 }
