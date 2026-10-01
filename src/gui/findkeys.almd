@@ -1,0 +1,159 @@
+// Keys for the find bar's field and for renaming a tab.
+
+import snaidhm.native.window as window
+import self.search
+import self.field
+import self.terminal
+import self.view
+import self.gui.tabset
+import self.gui.uistate
+
+/// Whether an input goes to the focused find bar: every key without Cmd —
+/// the program gets nothing while the bar has the focus — and the Cmd keys
+/// of a text field (A, C, X, V, arrows, Backspace) and of finding (F, G).
+/// Other Cmd shortcuts (tabs, font size) work as ever.
+fn find_owns(kind: Int, code: Int, mods: Int) -> Bool = {
+  let lower = if code >= 0x41 and code <= 0x5A then code + 32 else code
+  let cmd = int.band(mods, window.MOD_SUPER) != 0
+  not cmd
+    or (kind == window.TEXT and (lower == 0x61 or lower == 0x63 or lower == 0x78 or lower == 0x76 or lower == 0x66 or lower == 0x67))
+    or (kind == window.KEY and (code == window.KEY_BACKSPACE or code == window.KEY_DELETE
+      or code == window.KEY_LEFT or code == window.KEY_RIGHT))
+}
+
+/// An input to the focused find bar. Its field edits as a Mac text field
+/// does — Cmd+A, C, X, V; arrows, Option by word, Cmd or Home / End to the
+/// ends, Shift selecting; Backspace and Delete, Option by word, Cmd to the
+/// start — and searches as it changes. Enter or Up goes to the match above,
+/// Shift+Enter or Down the one below (Cmd+G and Cmd+Shift+G too); Escape
+/// closes the bar.
+effect fn find_key(mut cur: tabset.Tab, mut ui: uistate.Ui, kind: Int, code: Int, mods: Int) -> Unit = {
+  let lower = if code >= 0x41 and code <= 0x5A then code + 32 else code
+  let cmd = int.band(mods, window.MOD_SUPER) != 0
+  let shift = int.band(mods, window.MOD_SHIFT) != 0
+  let alt = int.band(mods, window.MOD_ALT) != 0
+  let f = ui.field
+  let key = kind == window.KEY
+  let cmd_text = kind == window.TEXT and cmd
+  if key and code == window.KEY_ESCAPE then {
+    ui.finding = false
+    ui.find_focus = false
+    let nothing: List[Int] = []
+    ui.preedit = nothing
+    ui.dirty = true
+  } else if (key and code == window.KEY_ENTER) or (cmd_text and lower == 0x67) then
+    find_step(cur, ui, if shift then 1 else -1)
+  else if key and (code == window.KEY_UP or code == window.KEY_DOWN) then
+    find_step(cur, ui, if code == window.KEY_UP then -1 else 1)
+  else if (cmd_text and (lower == 0x61 or lower == 0x66)) then {
+    ui.field = field.select_all(f)
+    ui.dirty = true
+  } else if cmd_text and lower == 0x63 then {
+    // Copy: the field's selection, else the terminal's.
+    if field.has_selection(f) then tabset.copy(field.selected(f))!
+    else match cur.sel {
+      some(s) => tabset.copy(view.selected_text(cur.t, s))!,
+      none => (),
+    }
+  } else if cmd_text and lower == 0x78 then {
+    if field.has_selection(f) then {
+      tabset.copy(field.selected(f))!
+      edit_field(cur, ui, field.insert(f, ""))
+    }
+  } else if cmd_text and lower == 0x76 then {
+    // The first line of the clipboard: a search stays within a line.
+    edit_field(cur, ui, field.insert(f, list.first(string.lines(tabset.clipboard()!)) ?? ""))
+  } else if key and (code == window.KEY_LEFT or code == window.KEY_RIGHT) then {
+    let dir = if code == window.KEY_LEFT then -1 else 1
+    ui.field = if cmd then field.move_to(f, if dir < 0 then 0 else list.len(f.chars), shift)
+      else if alt then field.move_to(f, field.word_edge(f, f.caret, dir), shift)
+      else field.step(f, dir, shift)
+    ui.dirty = true
+  } else if key and (code == window.KEY_HOME or code == window.KEY_END) then {
+    ui.field = field.move_to(f, if code == window.KEY_HOME then 0 else list.len(f.chars), shift)
+    ui.dirty = true
+  } else if key and code == window.KEY_BACKSPACE then
+    edit_field(cur, ui, field.delete_to(f, if cmd then 0 else if alt then field.word_edge(f, f.caret, -1) else f.caret - 1))
+  else if key and code == window.KEY_DELETE then
+    edit_field(cur, ui, field.delete_to(f, if alt then field.word_edge(f, f.caret, 1) else f.caret + 1))
+  else if kind == window.TEXT and int.band(mods, window.MOD_SUPER + window.MOD_CTRL) == 0 then
+    edit_field(cur, ui, field.insert(f, string.from_codepoint(code)))
+  else ()
+}
+
+/// The field edited to `g`, searched again when its text changed.
+fn edit_field(mut cur: tabset.Tab, mut ui: uistate.Ui, g: field.Field) -> Unit = {
+  let changed = field.text(g) != field.text(ui.field)
+  ui.field = g
+  if changed then set_query(cur, ui, field.text(g), false)
+  ui.dirty = true
+}
+
+/// Search for `query`: from the bottom when `fresh`, else narrowing where
+/// the search stands; the view follows the current match.
+fn set_query(mut cur: tabset.Tab, mut ui: uistate.Ui, query: String, fresh: Bool) -> Unit = {
+  settle_for_find(cur)
+  let from = if fresh then search.empty() else ui.find
+  ui.find = search.with_query(cur.t, from, query)
+  follow(cur, ui.find)
+  ui.dirty = true
+}
+
+/// The match above (`dir` -1) or below (1) the current one.
+fn find_step(mut cur: tabset.Tab, mut ui: uistate.Ui, dir: Int) -> Unit = {
+  settle_for_find(cur)
+  ui.find = search.next(cur.t, ui.find, dir)
+  follow(cur, ui.find)
+  ui.dirty = true
+}
+
+/// Scrollback reflowed to the window, if it waits for that: matches are
+/// found by line number, and a reflow numbers the lines anew.
+fn settle_for_find(mut cur: tabset.Tab) -> Unit = {
+  if cur.t.reflow_pending then {
+    terminal.settle(cur.t)
+    tabset.scroll_to(cur, 0)
+    cur.sel = none
+  }
+}
+
+/// Scroll so the current match is in view, in the middle when it wasn't.
+fn follow(mut cur: tabset.Tab, f: search.Find) -> Unit = {
+  let top = view.top_line(cur.t, cur.back)
+  if f.index >= 0 and (f.line < top or f.line >= top + cur.t.rows) then
+    tabset.scroll_to(cur, int.clamp(view.screen_line(cur.t) - f.line + cur.t.rows / 2, 0, view.max_back(cur.t)))
+}
+
+/// The search run again over `cur` as it is now — after a reflow numbered
+/// its lines anew, or scrollback was cleared — its current match the
+/// nearest at or above the bottom of the view, which stays where it is.
+fn refresh_find(mut cur: tabset.Tab, mut ui: uistate.Ui) -> Unit = {
+  if ui.find.query != "" then {
+    let from = { ...search.empty(), line: view.top_line(cur.t, cur.back) + cur.t.rows - 1 }
+    ui.find = search.with_query(cur.t, from, ui.find.query)
+    ui.dirty = true
+  }
+}
+
+/// Edit the name being given to tab `cur`: typing adds, Backspace takes the
+/// last character off, Enter keeps it, Escape drops it.
+fn rename_key(mut cur: tabset.Tab, mut ui: uistate.Ui, kind: Int, code: Int, mods: Int) -> Unit = {
+  if kind == window.KEY and code == window.KEY_ENTER then finish_rename(cur, ui, true)
+  else if kind == window.KEY and code == window.KEY_ESCAPE then finish_rename(cur, ui, false)
+  else if kind == window.KEY and code == window.KEY_BACKSPACE then {
+    ui.draft = string.take(ui.draft, int.max(0, string.len(ui.draft) - 1))
+    ui.dirty = true
+  } else if kind == window.TEXT and int.band(mods, window.MOD_SUPER + window.MOD_CTRL) == 0 then {
+    ui.draft = ui.draft + string.from_codepoint(code)
+    ui.dirty = true
+  } else ()
+}
+
+/// End a rename, giving the tab the draft when `keep` (an empty one: back to
+/// the automatic title).
+fn finish_rename(mut cur: tabset.Tab, mut ui: uistate.Ui, keep: Bool) -> Unit = {
+  if keep then cur.name = string.trim(ui.draft) else ()
+  ui.renaming = false
+  ui.draft = ""
+  ui.dirty = true
+}

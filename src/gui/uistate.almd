@@ -1,0 +1,93 @@
+// The window's input state, and what an input asks of the tabs.
+
+import self.gui.composition
+import self.gui.findbar
+import self.gui.render
+import self.search
+import self.field
+import self.view
+
+/// Window-wide input state.
+type Ui = {
+  preedit: List[Int],
+  // Where the input method's caret is in it, and the part it is converting
+  // ([from, to), empty when none), in characters.
+  preedit_caret: Int,
+  preedit_from: Int,
+  preedit_to: Int,
+  wheel_acc: Float,
+  // Selecting with the pointer: by cell, word or line (`view.unit_span`),
+  // from what the press took — its first and last cell.
+  dragging: Bool,
+  unit: Int,
+  anchor_line: Int,
+  anchor_col: Int,
+  anchor_end_line: Int,
+  anchor_end_col: Int,
+  // Presses on the grid in a row, to tell a double and a triple click: how
+  // many, and the cell of the last.
+  clicks: Int,
+  click_line: Int,
+  click_col: Int,
+  dirty: Bool,
+  // Renaming the active tab: what its name reads so far.
+  renaming: Bool,
+  draft: String,
+  // The last press, when; on the tab bar, which tab (-1: on the grid).
+  click_ms: Int,
+  click_tab: Int,
+  // The button held in a press reported to the program, -1 when none, and
+  // the cell the pointer was last reported at.
+  app_button: Int,
+  report_col: Int,
+  report_row: Int,
+  // $HOME, which titles show as "~".
+  home: String,
+  // Find (Cmd+F): whether its bar is open, and the search. The search
+  // stays when the bar closes, for Cmd+G and the next Cmd+F.
+  finding: Bool,
+  find: search.Find,
+  // The bar's text field, whether it has the focus (typing goes to it, not
+  // the program; a click on the terminal gives the focus back), and whether
+  // a drag in it is selecting.
+  field: field.Field,
+  find_focus: Bool,
+  field_drag: Bool,
+  // Dragging the scrollbar, and where in its thumb it was taken, pixels.
+  scroll_drag: Bool,
+  scroll_grab: Int,
+  // Where the input method was last told the caret is.
+  ime_x: Int,
+  ime_y: Int,
+}
+
+/// What an input asks of the tabs.
+/// `Zoom` changes the font size by that many points, or with 0 resets it;
+/// `Restyle` follows the system's light or dark appearance; `Focus` the
+/// window gaining or losing the keyboard.
+type Act = | Stay | NewTab | CloseTab | NextTab | PrevTab | GoTo(Int) | NewWindow | CloseWindow | Zoom(Int) | Restyle | Focus(Bool) | Paste
+
+/// The find bar as drawn.
+fn bar(ui: Ui) -> render.Bar = findbar.Bar { find: ui.find, field: ui.field, focused: ui.find_focus }
+
+fn bar_of(ui: Ui) -> Option[render.Bar] = if ui.finding then some(bar(ui)) else none
+
+/// The input method's composition, as drawn.
+fn compose_of(ui: Ui) -> render.Compose =
+  composition.Compose { cps: ui.preedit, caret: ui.preedit_caret, from: ui.preedit_from, to: ui.preedit_to }
+
+/// End what belonged to the tab that was in front: its find bar and
+/// search, a rename, a drag or a press reported to its program.
+fn leave_tab(mut ui: Ui) -> Unit = {
+  ui.finding = false
+  ui.find_focus = false
+  ui.find = search.empty()
+  ui.field = field.of("")
+  ui.renaming = false
+  ui.draft = ""
+  ui.dragging = false
+  ui.app_button = -1
+  ui.scroll_drag = false
+  ui.field_drag = false
+  ui.dirty = true
+}

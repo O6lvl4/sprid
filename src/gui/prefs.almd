@@ -1,0 +1,71 @@
+// The config file: where it is, read into settings, the theme it picks.
+
+import env
+import fs
+import snaidhm.native.window as window
+import self.gui.fonts
+import self.gui.render
+import self.config
+import self.settings
+import self.theme
+
+/// Where config lives: $XDG_CONFIG_HOME/sprid, else ~/.config/sprid.
+effect fn config_dir() -> String = match env.get("XDG_CONFIG_HOME") {
+  some(d) => if d != "" then d + "/sprid" else (env.get("HOME") ?? "") + "/.config/sprid",
+  none => (env.get("HOME") ?? "") + "/.config/sprid",
+}
+
+effect fn config_path() -> String = config_dir()! + "/config"
+
+/// The settings in the config file (the defaults when there is none); what
+/// is wrong with it goes to stderr.
+effect fn load_settings() -> settings.Settings = {
+  let st = read_settings()!
+  report(st)!
+  st
+}
+
+effect fn read_settings() -> settings.Settings = {
+  let text = match fs.read_text_if_exists(config_path()!) {
+    ok(found) => found ?? "",
+    err(_) => "",
+  }
+  settings.from(config.parse(text))
+}
+
+effect fn report(st: settings.Settings) -> Unit = {
+  for p in st.problems {
+    eprintln("sprid: ${config_path()!}: ${p}")
+  }
+}
+
+/// A theme file in the config's format (background, foreground, palette,
+/// ...): `name` as a path, or a file of that name in the config's `themes`
+/// directory.
+effect fn theme_file(name: String) -> Option[theme.Theme] = {
+  let path = if string.contains(name, "/") then fonts.expand(name)! else config_dir()! + "/themes/" + name
+  match fs.read_text_if_exists(path) {
+    ok(found) => match found {
+      some(text) => some({ ...theme.apply(theme.default(), config.parse(text)), name: name }),
+      none => none,
+    },
+    err(_) => none,
+  }
+}
+
+/// The theme for the system's appearance now.
+effect fn pick_theme(st: settings.Settings, dark: Bool) -> theme.Theme = {
+  let name = if dark then st.theme_dark else st.theme_light
+  let file = if theme.named(name) == none then theme_file(name)! else none
+  settings.theme_for(st, dark, (n) => file)
+}
+
+/// `r` dressed by the settings: the theme for the appearance now, the
+/// cursor's default shape; the window's uncovered edge in the theme's
+/// background.
+effect fn styled(r: render.Renderer, st: settings.Settings) -> render.Renderer = {
+  let t = pick_theme(st, window.dark())!
+  let (bg_r, bg_g, bg_b) = render.rgb_floats(t.bg)
+  window.set_background(bg_r, bg_g, bg_b)
+  { ...render.with_theme(r, t), cursor_default: st.cursor_shape }
+}

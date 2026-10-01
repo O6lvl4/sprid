@@ -1,0 +1,289 @@
+// Tabs: a shell on a PTY with its terminal and view, opened, laid out,
+// closed, named; their output read.
+
+import bytes
+import self.gui.dialog
+import self.gui.render
+import self.pty
+import self.sys
+import self.terminal
+import self.view
+import self.gui.uistate
+
+/// Longest a synchronized update (mode 2026) may hold the screen, ms.
+let SYNC_LIMIT = 150
+
+/// Longest the screen waits while a program has hidden the cursor to draw, ms.
+let HIDDEN_LIMIT = 100
+
+/// Longest a read waits for the rest of a screen a program is drawing, ms.
+let MID_UPDATE_GAP_MS = 10
+
+/// Longest the screen waits for a full-screen program's first screen, ms.
+let FIRST_SCREEN_LIMIT = 1000
+
+/// One tab: a terminal, the PTY its program runs on, and how it is viewed.
+type Tab = {
+  t: terminal.Terminal,
+  fd: Int,
+  // Lines scrolled back into scrollback, 0 at the bottom, and pixels
+  // further back than that: a trackpad scrolls by the pixel.
+  back: Int,
+  shift: Int,
+  sel: Option[view.Selection],
+  // The program's updates the frame is held for, and when each began.
+  up: Updates,
+  // The name the user gave it; "" for the automatic title.
+  name: String,
+  // A bell or notification came while it wasn't being looked at: its title
+  // is marked until it is.
+  alert: Bool,
+}
+
+/// The latest synchronized update and redraw with the cursor hidden that
+/// the tab's program began — by the terminal's counts of them — and when
+/// each was first seen, ms. A hold is timed from the start of the update it
+/// is for: timed from the first of a run of them, a program that keeps the
+/// cursor hidden, drawing in synchronized updates, would soon have none of
+/// them held, and its half-drawn screens shown.
+type Updates = { syncs: Int, sync_at: Int, hides: Int, hide_at: Int }
+
+/// Whether tab `i` may close: at once when its shell waits at the prompt,
+/// else when the user says so — closing ends what runs in it.
+fn may_close_tab(tabs: List[Tab], i: Int, ja: Bool) -> Bool = {
+  let running = pty.busy(fd_of(tabs, i))
+  running == "" or (if ja then dialog.confirm("このタブを閉じますか？", "「${running}」が実行中です。閉じると終了します。", "閉じる", "キャンセル")
+    else dialog.confirm("Close this tab?", "${running} is still running in it, and will be ended.", "Close", "Cancel"))
+}
+
+/// Whether the window may close: at once when every shell waits at its
+/// prompt, else when the user says so.
+fn may_close_window(tabs: List[Tab], ja: Bool) -> Bool = {
+  let running = list.map(tabs, (tb) => pty.busy(tb.fd)) |> list.filter((n) => n != "")
+  let n = list.len(running)
+  let names = list.join(list.take(running, 3), ", ") + (if n > 3 then ", …" else "")
+  n == 0 or (if ja then dialog.confirm("ウィンドウを閉じますか？", "${int.to_string(n)} 個のタブでプログラムが実行中です（${names}）。閉じると終了します。", "閉じる", "キャンセル")
+    else dialog.confirm("Close the window?", "Programs are running in ${int.to_string(n)} tab${if n > 1 then "s" else ""} (${names}), and will be ended.", "Close", "Cancel"))
+}
+
+/// Reflow every tab's scrollback to the size the window settled at.
+fn settle_all(mut tabs: List[Tab]) -> Unit = {
+  for i in 0..<list.len(tabs) {
+    match take(tabs, i) {
+      some(tb) => {
+        var cur = tb
+        if cur.t.reflow_pending then {
+          terminal.settle(cur.t)
+          scroll_to(cur, 0)
+          cur.sel = none
+        }
+        list.push(tabs, cur)
+        tabs = list.swap(tabs, i, list.len(tabs) - 1)
+      },
+      none => (),
+    }
+  }
+}
+
+/// Tab `i`, taken out of `tabs`: the last tab moves into its place until the
+/// caller pushes it back and swaps it home.
+fn take(mut tabs: List[Tab], i: Int) -> Option[Tab] = {
+  guard i >= 0 and i < list.len(tabs) else none
+  tabs = list.swap(tabs, i, list.len(tabs) - 1)
+  list.pop(tabs)
+}
+
+/// Note the updates `tb`'s program has begun since last looked at, as
+/// beginning `now`.
+fn note_updates(mut tb: Tab, now: Int) -> Unit = {
+  let t = tb.t
+  if t.sync_starts != tb.up.syncs then tb.up = { ...tb.up, syncs: t.sync_starts, sync_at: now }
+  if t.hide_starts != tb.up.hides then tb.up = { ...tb.up, hides: t.hide_starts, hide_at: now }
+}
+
+/// How much longer the frame is held for `tb`'s program to finish drawing,
+/// ms; 0 when it isn't. A synchronized update is asked for, a hidden cursor
+/// only suggests one — but a program's first full screen comes while it is
+/// still starting up, its pieces hundreds of ms apart, and until it is whole
+/// the screen before it is the better one to show.
+fn hold_left(tb: Tab, now: Int) -> Int = {
+  let t = tb.t
+  let sync = if t.sync_output then tb.up.sync_at + SYNC_LIMIT - now else 0
+  let hidden = if terminal.drawing_hidden(t) then tb.up.hide_at + (if t.first_screen then FIRST_SCREEN_LIMIT else HIDDEN_LIMIT) - now else 0
+  int.max(0, int.max(sync, hidden))
+}
+
+/// How long the active tab's program may still hold the frame, ms.
+fn sync_wait(tabs: List[Tab], active: Int, now: Int) -> Int = match list.get(tabs, active) {
+  some(tb) => hold_left(tb, now),
+  none => 0,
+}
+
+fn fd_of(tabs: List[Tab], i: Int) -> Int = match list.get(tabs, i) {
+  some(tb) => tb.fd,
+  none => -1,
+}
+
+/// Where a tab opened from tab `i` starts: where the program in front there
+/// is, else where its shell last said it was, else `home`.
+fn cwd_of(tabs: List[Tab], i: Int, home: String) -> String = match list.get(tabs, i) {
+  some(tb) => {
+    let now = pty.cwd(tb.fd)
+    if now != "" then now else if tb.t.cwd != "" then tb.t.cwd else home
+  },
+  none => home,
+}
+
+/// A new tab running `command` in `cwd`, sized for `count` tabs.
+fn open_tab(r: render.Renderer, width: Int, height: Int, count: Int, command: String, cwd: String, scrollback: Int) -> Option[Tab] = {
+  let (cols, rows) = render.grid_size(r, width, height, count)
+  let fd = pty.spawn(command, cwd, cols, rows)
+  if fd < 0 then none
+  else some(Tab { t: terminal.with_scrollback(cols, rows, scrollback), fd: fd, back: 0, shift: 0, sel: none, up: Updates { syncs: 0, sync_at: 0, hides: 0, hide_at: 0 }, name: "", alert: false })
+}
+
+/// Close tab `i` and its program, keeping the other tabs in order.
+fn close_tab(mut tabs: List[Tab], i: Int) -> Unit = {
+  let n = list.len(tabs)
+  if i >= 0 and i < n then {
+    var j = i
+    while j < n - 1 {
+      tabs = list.swap(tabs, j, j + 1)
+      j = j + 1
+    }
+    match list.pop(tabs) {
+      some(tb) => pty.close(tb.fd),
+      none => (),
+    }
+  }
+}
+
+/// Fit every tab to the window: the grid shrinks by the tab bar from two tabs
+/// on.
+fn relayout(mut tabs: List[Tab], r: render.Renderer, width: Int, height: Int) -> Unit =
+  fit(tabs, r, width, height, false)
+
+/// `relayout` while the window is being resized: scrollback is reflowed once
+/// the size holds (`settle_all`).
+fn relayout_live(mut tabs: List[Tab], r: render.Renderer, width: Int, height: Int) -> Unit =
+  fit(tabs, r, width, height, true)
+
+fn fit(mut tabs: List[Tab], r: render.Renderer, width: Int, height: Int, live: Bool) -> Unit = {
+  let (cols, rows) = render.grid_size(r, width, height, list.len(tabs))
+  for i in 0..<list.len(tabs) {
+    match take(tabs, i) {
+      some(tb) => {
+        var cur = tb
+        if cur.t.cols != cols or cur.t.rows != rows then {
+          if live then terminal.resize_live(cur.t, cols, rows) else terminal.resize(cur.t, cols, rows)
+          let _ = pty.resize(cur.fd, cols, rows)
+          // Lines are numbered anew: a view scrolled back or a selection
+          // would point at other lines.
+          scroll_to(cur, 0)
+          cur.sel = none
+        }
+        list.push(tabs, cur)
+        tabs = list.swap(tabs, i, list.len(tabs) - 1)
+      },
+      none => (),
+    }
+  }
+}
+
+/// The tab bar's titles; the tab being renamed shows its draft, with a
+/// caret.
+fn tab_titles(tabs: List[Tab], active: Int, ui: uistate.Ui, home: String) -> List[String] =
+  list.enumerate(tabs) |> list.map(((i, tb)) => if ui.renaming and i == active then ui.draft + "▏"
+    else if tb.alert then "• " + title_of(tb, home)
+    else title_of(tb, home))
+
+/// What a tab is called: the name the user gave it, else the title its
+/// program set, else its directory's name, else the shell's.
+fn title_of(tb: Tab, home: String) -> String = {
+  let t = tb.t
+  // The directory the shell reported, else the one its foreground program
+  // is in (a shell that reports nothing still gets a useful title).
+  let dir = if t.cwd != "" then t.cwd else pty.cwd(tb.fd)
+  if tb.name != "" then tb.name
+  else if t.title != "" then t.title
+  else if dir != "" and dir == home then "~"
+  else if dir != "" then {
+    let parts = string.split(dir, "/") |> list.filter((p) => p != "")
+    list.last(parts) ?? "/"
+  } else "shell"
+}
+
+/// Feed the tab everything its program has written, up to `budget_ms` of
+/// work: (whether there was any, whether it stopped at the budget with more
+/// still coming).
+fn drain(mut tb: Tab, budget_ms: Int) -> (Bool, Bool) = {
+  let until = sys.now_ms() + budget_ms
+  let screen_before = view.screen_line(tb.t)
+  var data = pty.read(tb.fd, 0)
+  var got = false
+  var more = false
+  while bytes.len(data) > 0 {
+    terminal.feed(tb.t, data)
+    got = true
+    note_updates(tb, sys.now_ms())
+    // Wait a moment for more: a writer refills the PTY 1 KB at a time, and
+    // giving up in the gap costs a whole turn of the loop. In the middle of
+    // a screen the frame is held for (see `hold_left`) the rest is surely
+    // coming, and a program that writes only as fast as it is read — a
+    // full-screen redraw comes 1 KB per turn — is kept waiting by every turn
+    // not spent reading.
+    let gap = if hold_left(tb, sys.now_ms()) > 0 then MID_UPDATE_GAP_MS else 1
+    data = if sys.now_ms() < until then pty.read(tb.fd, gap) else {
+      more = true
+      bytes.new(0)
+    }
+  }
+  // Scrolled back, the viewport stays on the lines it shows while new ones
+  // arrive below.
+  if tb.back > 0 or tb.shift > 0 then tb.back = int.min(tb.back + view.screen_line(tb.t) - screen_before, view.max_back(tb.t))
+  // At the top of what can be scrolled back — none at all on the alternate
+  // screen — there is no part of a line above to show.
+  if tb.back >= view.max_back(tb.t) and tb.shift > 0 then {
+    tb.back = view.max_back(tb.t)
+    tb.shift = 0
+  }
+  (got, more)
+}
+
+/// Whether the cursor of the tab in front blinks: a blinking DECSCUSR shape,
+/// the program's or the config's, shown.
+fn cursor_blinks(tabs: List[Tab], active: Int, r: render.Renderer) -> Bool = match list.get(tabs, active) {
+  some(tb) => {
+    let shape = if tb.t.cursor_shape == 0 then r.cursor_default else tb.t.cursor_shape
+    tb.t.cursor_visible and int.band(shape, 1) == 1
+  },
+  none => false,
+}
+
+/// Scroll `tb` to `back` lines into scrollback, on a line's edge.
+fn scroll_to(mut tb: Tab, back: Int) -> Unit = {
+  tb.back = back
+  tb.shift = 0
+}
+
+effect fn copy(s: String) -> Unit = {
+  let _ = sys.clipboard_set(s)
+}
+
+effect fn clipboard() -> String = sys.clipboard_get()
+
+/// Ask whether the program in the tab called `tab` may read the clipboard.
+effect fn clipboard_read_ok(tab: String, ja: Bool) -> Bool =
+  if ja then dialog.confirm("クリップボードの読み取りを許可しますか？", "「${tab}」のプログラムがクリップボードの内容を求めています。", "許可", "拒否")
+  else dialog.confirm("Let the program read the clipboard?", "The program in \"${tab}\" asks for what is on the clipboard.", "Allow", "Deny")
+
+/// Ask before pasting `text`, which has line breaks, where they would run
+/// each line as it arrives.
+effect fn paste_ok(text: String, ja: Bool) -> Bool = {
+  let lines = string.split(string.replace(string.trim_end(text), "\r\n", "\n"), "\n")
+  let n = list.len(lines)
+  let preview = lines |> list.take(3) |> list.map((l) => if string.len(l) > 60 then string.take(l, 60) + "…" else l)
+  let shown = string.join(preview, "\n") + (if n > 3 then "\n…" else "")
+  if ja then dialog.confirm("${int.to_string(n)} 行を貼り付けますか？", "改行を含むため、貼り付けると各行がコマンドとして実行されます。\n\n${shown}", "貼り付ける", "キャンセル")
+  else dialog.confirm("uistate.Paste ${int.to_string(n)} line${if n > 1 then "s" else ""}?", "The text has line breaks: each line will run as a command as it is pasted.\n\n${shown}", "uistate.Paste", "Cancel")
+}
