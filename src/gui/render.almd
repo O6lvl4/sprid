@@ -31,6 +31,8 @@ import self.gui.chrome
 import self.gui.rowpaint
 import self.gui.findbar
 import self.gui.hint
+import self.prompts
+import self.record
 
 /// The renderer (its fields: surface.almd).
 type Renderer = surface.Renderer
@@ -121,7 +123,7 @@ fn draw(mut r: surface.Renderer, t: terminal.Terminal, back: Int, shift: Int, se
   let title_chars = list.fold(f.titles, 0, (acc, title) => acc + list.len(title))
   // Room for the worst case: per cell a background, a glyph and two lines,
   // plus marks, the cursor, the scrollbar and the composition.
-  reserve(r, f.shown * t.cols * 4 + 2 + marks_total + 7 + list.len(compose.cps) * 3 + title_chars + list.len(f.titles) * 3 + 1
+  reserve(r, f.shown * (t.cols * 4 + 1) + 2 + marks_total + 7 + list.len(compose.cps) * 3 + title_chars + list.len(f.titles) * 3 + 1
     + list.len(f.bar) * 3 + findbar.FIND_QUADS + 1 + list.len(shown_hint) + hint.HINT_QUADS)
 
   // Pass 2: the quads.
@@ -174,12 +176,22 @@ fn draw_rows(mut r: surface.Renderer, f: frame.Frame, cols: Int, sel: Option[vie
         let (cf, ct) = if f.current.0 == y then (f.current.1, f.current.2) else (-1, -1)
         let lit = rowpaint.Lit { spans: f.found[y], from: cf, to: ct, link_from: lf, link_to: lt }
         n = n + rowpaint.draw_row(r, row, f.top_line + y, sel, lit, f.row_y + y * r.cell_h, cols, sx, sy)
+        n = n + failed_mark(r, row, f.row_y + y * r.cell_h, cols, sx, sy)
       },
       none => (),
     }
   }
   n
 }
+
+/// A bar in the left margin by a prompt shown after a failed command. How
+/// many quads.
+fn failed_mark(mut r: surface.Renderer, row: record.Row, top: Int, cols: Int, sx: Float, sy: Float) -> Int =
+  if prompts.failed(row.cells, cols) then {
+    let x = r.pad_x / 3
+    ink.rect(r, x, top, x + int.max(2, r.line_w * 2), top + r.cell_h, r.theme.no_match, 1.0, sx, sy)
+    1
+  } else 0
 
 /// The columns of `link` on line `line`, [from, to); (-1, -1) off it.
 fn link_cols(link: Option[links.Link], line: Int, cols: Int) -> (Int, Int) = match link {

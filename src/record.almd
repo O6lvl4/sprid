@@ -10,7 +10,7 @@
 //
 // A run's link (OSC 8) and prompt mark (OSC 133) ride in bits its header
 // leaves free, as in a cell: the link's low 6 in the attributes' top bits;
-// the flags' top 7 — the link's high bits and the mark — in the text
+// the flags' top 7 — the link's high bits and the prompt marks — in the text
 // length's top byte (a run's text is far below 16 MB).
 
 import bytes
@@ -200,16 +200,31 @@ fn text(block: Bytes, start: Int, end: Int) -> String = {
   s
 }
 
-/// Whether the record whose payload is `start`..`end` of `block` holds part
-/// of a prompt (`cell.FLAG_PROMPT`, the top bit of a run's flags byte).
-fn has_prompt(block: Bytes, start: Int, end: Int) -> Bool = {
+/// What of a prompt the record whose payload is `start`..`end` of `block`
+/// holds (`cell.FLAG_PROMPT`, the top bit of a run's flags byte): 0 none, 1
+/// part of one, 2 part of one and then text that isn't — the command typed.
+fn prompt_kind(block: Bytes, start: Int, end: Int) -> Int = {
   var p = start + 3
-  var found = false
-  while not found and p < end {
-    found = int.band(bytes.read_u8(block, p + 13), 0x40) != 0
+  var kind = 0
+  while kind < 2 and p < end {
+    let n = int.band(bytes.read_u32_le(block, p + 10), LEN_MASK)
+    if int.band(bytes.read_u8(block, p + 13), 0x40) != 0 then kind = 1
+    else if kind == 1 and string.trim(bytes.read_string_at(block, p + RUN_HEADER, n)) != "" then kind = 2
+    p = p + RUN_HEADER + n
+  }
+  kind
+}
+
+/// The prompt in the record at `start`..`end` of `block` marked as where a
+/// command that failed was typed (`cell.FLAG_FAILED`, the flags byte's bit
+/// below the prompt's).
+fn mark_failed(mut block: Bytes, start: Int, end: Int) -> Unit = {
+  var p = start + 3
+  while p < end {
+    let top = bytes.read_u8(block, p + 13)
+    if int.band(top, 0x40) != 0 then bytes.set_u8(block, p + 13, int.bor(top, 0x20))
     p = p + RUN_HEADER + int.band(bytes.read_u32_le(block, p + 10), LEN_MASK)
   }
-  found
 }
 
 /// Columns the line of the record at `start` uses.

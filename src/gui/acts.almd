@@ -13,6 +13,8 @@ import self.shell
 import self.sys
 import self.gui.dialog
 import self.gui.shortcuts
+import self.gui.pointer
+import self.prompts
 import self.view
 
 effect fn apply(mut a: session.Session, act: uistate.Act) -> Unit = match act {
@@ -108,16 +110,20 @@ fn focus(mut a: session.Session, on: Bool) -> Unit = {
 
 /// The menu a right click opens, and what was picked from it done.
 effect fn menu(mut a: session.Session) -> Unit = {
-  let has_sel = (list.get(a.tabs, a.active) |> option.flat_map((tb) => tb.sel)) != none
-  let names = if a.ja then ["コピー", "貼り付け", "-", "すべてを選択", "検索", "クリア"]
-    else ["Copy", "Paste", "-", "Select All", "Find", "Clear"]
-  let items = list.enumerate(names) |> list.map(((i, n)) => if i == 0 and not has_sel then "!" + n else n)
+  let front = list.get(a.tabs, a.active)
+  let has_sel = (front |> option.flat_map((tb) => tb.sel)) != none
+  // The output of the command the pointer is on, as the shell marks it.
+  let output = front |> option.flat_map((tb) => prompts.output_at(tb.t, pointer.pointer_line(a.r, tb, a.scale, list.len(a.tabs))))
+  let names = if a.ja then ["コピー", "貼り付け", "-", "すべてを選択", "コマンドの出力を選択", "検索", "クリア"]
+    else ["Copy", "Paste", "-", "Select All", "Select Command Output", "Find", "Clear"]
+  let off = (i: Int) => (i == 0 and not has_sel) or (i == 4 and output == none)
+  let items = list.enumerate(names) |> list.map(((i, n)) => if off(i) then "!" + n else n)
   let picked = dialog.context_menu(list.join(items, "\n"))
   if picked == 1 then paste(a, tabset.clipboard()!)!
-  else if picked >= 0 then menu_pick(a, picked)!
+  else if picked >= 0 then menu_pick(a, picked, output)!
 }
 
-effect fn menu_pick(mut a: session.Session, picked: Int) -> Unit = match tabset.take(a.tabs, a.active) {
+effect fn menu_pick(mut a: session.Session, picked: Int, output: Option[(Int, Int)]) -> Unit = match tabset.take(a.tabs, a.active) {
   some(tb) => {
     var cur = tb
     if picked == 0 then match cur.sel {
@@ -125,8 +131,9 @@ effect fn menu_pick(mut a: session.Session, picked: Int) -> Unit = match tabset.
       none => (),
     }
     else if picked == 3 then shortcuts.select_all(cur)
-    else if picked == 4 then shortcuts.open_find(cur, a.ui)
-    else if picked == 5 then shortcuts.clear(cur, a.ui)
+    else if picked == 4 then shortcuts.select_lines(cur, output)
+    else if picked == 5 then shortcuts.open_find(cur, a.ui)
+    else if picked == 6 then shortcuts.clear(cur, a.ui)
     uistate.touch(a.ui)
     list.push(a.tabs, cur)
     a.tabs = list.swap(a.tabs, a.active, list.len(a.tabs) - 1)

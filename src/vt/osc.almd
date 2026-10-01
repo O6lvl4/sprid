@@ -5,6 +5,7 @@ import base64
 import bytes
 import self.cell
 import self.vt.core
+import self.vt.screen
 
 fn osc_byte(mut t: core.Terminal, b: Int) -> Unit = {
   if b == 0x07 then {
@@ -16,19 +17,28 @@ fn osc_byte(mut t: core.Terminal, b: Int) -> Unit = {
 fn osc_dispatch(mut t: core.Terminal) -> Unit = {
   let s = bytes.to_string_lossy(t.osc)
   let (cmd, arg) = string.split_once(s, ";") ?? (s, "")
-  match cmd {
-    "0" => { t.title = arg },
-    "2" => { t.title = arg },
-    "7" => { t.cwd = file_url_path(arg) },
-    "8" => hyperlink(t, arg),
-    "133" => prompt_mark(t, arg),
-    "9" => message_notice(t, arg),
-    "777" => rxvt_notice(t, arg),
-    "99" => kitty_notice(t, arg),
-    "52" => clipboard(t, arg),
-    _ => (),
-  }
+  if not screen_osc(t, cmd, arg) then outward_osc(t, cmd, arg)
   if bytes.len(t.osc) > core.OSC_KEEP then t.osc = bytes.new(0) else bytes.clear(t.osc)
+}
+
+/// What a program says of what it shows: the title, its directory, links,
+/// prompts. Whether `cmd` was one.
+fn screen_osc(mut t: core.Terminal, cmd: String, arg: String) -> Bool = match cmd {
+  "0" => { t.title = arg; true },
+  "2" => { t.title = arg; true },
+  "7" => { t.cwd = file_url_path(arg); true },
+  "8" => { hyperlink(t, arg); true },
+  "133" => { prompt_mark(t, arg); true },
+  _ => false,
+}
+
+/// What a program asks of the world outside: notifications, the clipboard.
+fn outward_osc(mut t: core.Terminal, cmd: String, arg: String) -> Unit = match cmd {
+  "9" => message_notice(t, arg),
+  "777" => rxvt_notice(t, arg),
+  "99" => kitty_notice(t, arg),
+  "52" => clipboard(t, arg),
+  _ => (),
 }
 
 /// `8;params;URI` starts a link — what is printed after it, up to an
@@ -45,11 +55,18 @@ fn hyperlink(mut t: core.Terminal, arg: String) -> Unit = {
 /// `133;A` starts a shell's prompt (as do `N` and `P`), `133;B` ends it —
 /// the command typed follows — `133;C` starts the command's output and
 /// `133;D;status` ends it. What is printed from a start to the next of the
-/// others is marked as prompt.
+/// others is marked as prompt; a status other than 0 marks the prompt the
+/// command was typed at as failed.
 fn prompt_mark(mut t: core.Terminal, arg: String) -> Unit = {
   let kind = string.take(arg, 1)
   if kind != "" and string.contains("ANP", kind) then t.attrs = int.bor(t.attrs, cell.PROMPT_BIT)
   else if kind != "" and string.contains("BCD", kind) then t.attrs = int.band(t.attrs, int.bnot(cell.PROMPT_BIT))
+  if kind == "B" then t.command_line = screen.cursor_line(t)
+  if kind == "D" then {
+    let status = string.split(arg, ";") |> list.get(1) ?? "0"
+    if t.command_line >= 0 and status != "" and status != "0" then screen.mark_failed(t, t.command_line)
+    t.command_line = -1
+  }
 }
 
 /// The id of link (`name`, `uri`): the one it was given, or the next free

@@ -136,6 +136,9 @@ type Terminal = {
   links: Map[Int, (String, String)],
   link_ids: Map[String, Int],
   link_next: Int,
+  /// The line the command being typed or run is on (OSC 133 B), for its
+  /// prompt to be marked if it fails; -1 when none.
+  command_line: Int,
   sb: scrollback.Scrollback,
   // Parser.
   state: Int,
@@ -222,6 +225,7 @@ fn with_scrollback(cols: Int, rows: Int, limit: Int) -> Terminal = {
     links: [:],
     link_ids: [:],
     link_next: 1,
+    command_line: -1,
     sb: scrollback.new(limit),
     state: GROUND,
     params: bytes.new(MAX_PARAMS * 4),

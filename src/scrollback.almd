@@ -159,7 +159,23 @@ fn block_texts(block: Bytes, len: Int) -> List[String] = {
 
 /// Where line `i` (0 = oldest kept) is stored: its block and the record's
 /// payload range in it.
-fn locate(sb: Scrollback, i: Int) -> Option[(Bytes, Int, Int)] = {
+fn locate(sb: Scrollback, i: Int) -> Option[(Bytes, Int, Int)] =
+  place(sb, i) |> option.map(((b, start, end)) => (if b < list.len(sb.sealed) then sb.sealed[b] else sb.cur, start, end))
+
+/// The prompt on line `i` marked as where a failed command was typed (see
+/// `record.mark_failed`).
+fn mark_failed(mut sb: Scrollback, i: Int) -> Unit = match place(sb, i) {
+  some((b, start, end)) => if b < list.len(sb.sealed) then {
+    var block = sb.sealed[b]
+    record.mark_failed(block, start, end)
+    sb.sealed = list.set(sb.sealed, b, block)
+  } else record.mark_failed(sb.cur, start, end),
+  none => (),
+}
+
+/// `locate` with the block as its index in `sealed`, or past them for the
+/// block being filled.
+fn place(sb: Scrollback, i: Int) -> Option[(Int, Int, Int)] = {
   guard i >= 0 and i < line_count(sb) else none
   var rest = i
   var b = 0
@@ -174,7 +190,7 @@ fn locate(sb: Scrollback, i: Int) -> Option[(Bytes, Int, Int)] = {
     p = p + 4 + bytes.read_u32_le(block, p)
     rest = rest - 1
   }
-  some((block, p + 4, p + 4 + bytes.read_u32_le(block, p)))
+  some((b, p + 4, p + 4 + bytes.read_u32_le(block, p)))
 }
 
 /// Every stored line, oldest first: its block and the record's payload

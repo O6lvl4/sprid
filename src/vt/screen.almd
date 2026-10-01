@@ -39,6 +39,26 @@ fn erase_row(mut t: core.Terminal, y: Int) -> Unit = {
   bytes.set_u8(t.wrapped, p, 0)
 }
 
+/// The line of the cursor's row, numbered as `view` numbers lines.
+fn cursor_line(t: core.Terminal) -> Int = t.sb.evicted_lines + scrollback.line_count(t.sb) + t.y
+
+/// The prompt on `line` marked as where a command that failed was typed —
+/// in scrollback, or on the screen. Nothing on the alternate screen.
+fn mark_failed(mut t: core.Terminal, line: Int) -> Unit = {
+  let rel = line - t.sb.evicted_lines
+  let kept = scrollback.line_count(t.sb)
+  if t.alt or rel < 0 then ()
+  else if rel < kept then scrollback.mark_failed(t.sb, rel)
+  else if rel - kept < t.rows then {
+    let off = row_off(t, rel - kept)
+    for x in 0..<t.cols {
+      let o = off + x * cell.SIZE + cell.OFF_FLAGS
+      let flags = bytes.read_u8(t.grid, o)
+      if int.band(flags, cell.FLAG_PROMPT) != 0 then bytes.set_u8(t.grid, o, int.bor(flags, cell.FLAG_FAILED))
+    }
+  }
+}
+
 fn mark_wrapped(mut t: core.Terminal) -> Unit = {
   let p = phys(t, t.y)
   bytes.set_u8(t.wrapped, p, 1)

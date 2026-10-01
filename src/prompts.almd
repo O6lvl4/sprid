@@ -1,26 +1,47 @@
 // Prompts the shell marks (OSC 133): the lines they start on, and where
 // Cmd+Up and Cmd+Down take the view to show one at its top.
 
+import bytes
 import self.cell
 import self.record
 import self.scrollback
 import self.terminal
 import self.view
 
-/// The lines prompts start on (OSC 133), oldest first: a line with part of
-/// a prompt after one without.
-fn starts(t: terminal.Terminal) -> List[Int] = {
-  let kept = if t.alt then [] else scrollback.records(t.sb) |> list.map(((b, s, e)) => record.has_prompt(b, s, e))
-  let flags = kept + list.map(0..<t.rows, (y) => row_marked(t, y))
+/// Each prompt (OSC 133) as its first and last line — the command is typed
+/// on the last — oldest first. A prompt ends on a line without one after
+/// it, or on the line a command was typed on.
+fn blocks(t: terminal.Terminal) -> List[(Int, Int)] = {
+  let kept = if t.alt then [] else scrollback.records(t.sb) |> list.map(((b, s, e)) => record.prompt_kind(b, s, e))
+  let kinds = kept + list.map(0..<t.rows, (y) => row_kind(t, y))
   let base = view.screen_line(t) - list.len(kept)
-  list.range(0, list.len(flags))
-    |> list.filter((i) => flags[i] and (i == 0 or not flags[i - 1]))
-    |> list.map((i) => base + i)
+  let n = list.len(kinds)
+  var out: List[(Int, Int)] = []
+  var from = -1
+  for i in 0..<n {
+    if kinds[i] > 0 and from < 0 then from = i
+    if kinds[i] > 0 and (kinds[i] == 2 or i + 1 == n or kinds[i + 1] == 0) then {
+      list.push(out, (base + from, base + i))
+      from = -1
+    }
+  }
+  out
 }
 
-fn row_marked(t: terminal.Terminal, y: Int) -> Bool = {
+/// The lines prompts start on, oldest first.
+fn starts(t: terminal.Terminal) -> List[Int] = blocks(t) |> list.map((b) => b.0)
+
+/// What of a prompt row `y` of the screen holds, as `record.prompt_kind`.
+fn row_kind(t: terminal.Terminal, y: Int) -> Int = {
   let off = terminal.row_off(t, y)
-  list.any(0..<t.cols, (x) => cell.is_prompt(t.grid, off + x * cell.SIZE))
+  var kind = 0
+  for x in 0..<t.cols {
+    let o = off + x * cell.SIZE
+    let cp = bytes.read_u32_le(t.grid, o + cell.OFF_CP)
+    if cell.is_prompt(t.grid, o) then { if kind == 0 then kind = 1 }
+    else if kind == 1 and cp > 32 then kind = 2
+  }
+  kind
 }
 
 /// Where the view goes, lines back, to show the prompt before the one at
@@ -33,6 +54,41 @@ fn up(t: terminal.Terminal, back: Int) -> Option[Int] =
 fn down(t: terminal.Terminal, back: Int) -> Option[Int] =
   starts(t) |> list.map((s) => int.max(0, view.screen_line(t) - s)) |> list.filter((b) => b < back) |> list.first
 
+/// The output of the command typed at the prompt on or before line `line`
+/// — from the line after the prompt up to the next prompt, or for the last
+/// up to the cursor's line — as (first line, last line); none when it
+/// printed nothing or there is no prompt.
+fn output_at(t: terminal.Terminal, line: Int) -> Option[(Int, Int)] = {
+  let bs = blocks(t)
+  match list.find_index(list.reverse(bs), (b) => b.0 <= line) {
+    some(k) => output_of(t, bs, list.len(bs) - 1 - k),
+    none => none,
+  }
+}
+
+/// The output of the last command that has finished, or of the one
+/// running: at a prompt waiting for a command, the one before it.
+fn last_output(t: terminal.Terminal) -> Option[(Int, Int)] = {
+  let bs = blocks(t)
+  let n = list.len(bs)
+  let waiting = n > 0 and bs[n - 1].1 >= cursor_line(t)
+  output_of(t, bs, if waiting then n - 2 else n - 1)
+}
+
+fn output_of(t: terminal.Terminal, bs: List[(Int, Int)], i: Int) -> Option[(Int, Int)] =
+  if i < 0 or i >= list.len(bs) then none
+  else {
+    let first = bs[i].1 + 1
+    let last = if i + 1 < list.len(bs) then bs[i + 1].0 - 1 else cursor_line(t)
+    if first <= last then some((first, last)) else none
+  }
+
+fn cursor_line(t: terminal.Terminal) -> Int = view.screen_line(t) + t.y
+
+/// Whether `cells` (a row) shows the prompt a failed command was typed at.
+fn failed(cells: Bytes, cols: Int) -> Bool =
+  list.any(0..<cols, (x) => cell.is_prompt(cells, x * cell.SIZE) and cell.is_failed(cells, x * cell.SIZE))
+
 test "prompts the shell marks, through scrollback; Cmd+Up and Down go between them" {
   var t = terminal.new(20, 4)
   let prompt = "\x1b]133;A\x07$ \x1b[0m\x1b]133;B\x07"
@@ -40,9 +96,35 @@ test "prompts the shell marks, through scrollback; Cmd+Up and Down go between th
   // Lines 0 and 1 have scrolled off; prompts start on 0, 3 and 5.
   assert_eq((view.screen_line(t), starts(t)), (2, [0, 3, 5]))
   // The prompt marked, through the style reset; the command typed not.
-  assert_eq((terminal.cell_attrs(t, 0, 1), row_marked(t, 1), row_marked(t, 2)), (0, true, false))
+  assert_eq((terminal.cell_attrs(t, 0, 1), row_kind(t, 1), row_kind(t, 2)), (0, 2, 0))
   assert_eq(up(t, 0), some(2))
   assert_eq(up(t, 2), none)
   assert_eq(down(t, 2), some(0))
   assert_eq(down(t, 0), none)
+}
+
+test "a command's output, and the prompt of a failed one" {
+  var t = terminal.new(20, 8)
+  let prompt = "\x1b]133;A\x07$ \x1b]133;B\x07"
+  terminal.feed_string(t, prompt + "ls\r\n\x1b]133;C\x07a\r\nb\r\n\x1b]133;D;0\x07" + prompt + "false\r\n\x1b]133;C\x07\x1b]133;D;1\x07" + prompt)
+  // Lines: 0 "$ ls", 1 a, 2 b, 3 "$ false" (failed), 4 "$ " (the cursor).
+  assert_eq(blocks(t), [(0, 0), (3, 3), (4, 4)])
+  assert_eq((output_at(t, 1), output_at(t, 0), output_at(t, 3)), (some((1, 2)), some((1, 2)), none))
+  assert_eq(last_output(t), none)
+  let row = (y: Int) => view.line_at(t, y) |> option.map((r) => failed(r.cells, 20)) ?? false
+  assert_eq((row(0), row(3), row(4)), (false, true, false))
+  // While a command runs, its output so far.
+  terminal.feed_string(t, "seq 2\r\n\x1b]133;C\x071\r\n2\r\n")
+  assert_eq(last_output(t), some((5, 7)))
+}
+
+test "a failed command's prompt is marked after it has scrolled off" {
+  var t = terminal.new(20, 3)
+  let prompt = "\x1b]133;A\x07$ \x1b]133;B\x07"
+  terminal.feed_string(t, prompt + "make\r\n\x1b]133;C\x071\r\n2\r\n3\r\n4\r\n\x1b]133;D;2\x07" + prompt)
+  let failed_at = (n: Int) => view.line_at(t, n) |> option.map((r) => failed(r.cells, 20)) ?? false
+  assert_eq((view.screen_line(t), failed_at(0), failed_at(1), failed_at(5)), (3, true, false, false))
+  // Through a resize, which re-encodes scrollback.
+  terminal.resize(t, 30, 3)
+  assert_eq(failed_at(0), true)
 }

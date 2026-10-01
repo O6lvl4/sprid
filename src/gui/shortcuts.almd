@@ -129,6 +129,10 @@ fn view_key(mut cur: tabset.Tab, mut ui: uistate.Ui, k: Key) -> Bool =
     select_all(cur)
     ui.dirty = true
     true
+  } else if k.command_shift and not k.linux and k.lower == 0x61 then {
+    select_lines(cur, prompts.last_output(cur.t))
+    ui.dirty = true
+    true
   } else if cur.t.alt then false
   else match scroll_target(cur, k) {
     some(back) => {
@@ -139,6 +143,12 @@ fn view_key(mut cur: tabset.Tab, mut ui: uistate.Ui, k: Key) -> Bool =
     },
     none => false,
   }
+
+/// Lines `range` (first, last) selected whole; nothing for none.
+fn select_lines(mut cur: tabset.Tab, range: Option[(Int, Int)]) -> Unit = match range {
+  some((l0, l1)) => { cur.sel = some(view.Selection { anchor_line: l0, anchor_col: 0, head_line: l1, head_col: cur.t.cols - 1, rect: false }) },
+  none => (),
+}
 
 /// Everything, scrollback and screen, down to the cursor's line — below it
 /// the screen is empty — or on the alternate screen all of it.
