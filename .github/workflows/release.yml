@@ -64,9 +64,9 @@ jobs:
       - name: Version
         run: |
           toml=$(sed -n 's/^version = "\(.*\)"/\1/p' almide.toml | head -1)
-          reported=$(sed -n 's/^let VERSION = "\(.*\)"/\1/p' src/terminal.almd)
+          reported=$(sed -n 's/^let VERSION = "\(.*\)"/\1/p' src/vt/core.almd)
           if [ "v$toml" != "$TAG" ] || [ "$reported" != "$toml" ]; then
-            echo "tag $TAG, almide.toml $toml, terminal.almd $reported: run scripts/bump-version.sh" >&2
+            echo "tag $TAG, almide.toml $toml, vt/core.almd $reported: run scripts/bump-version.sh" >&2
             exit 1
           fi
 

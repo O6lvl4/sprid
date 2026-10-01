@@ -1,0 +1,79 @@
+// SGR: colours and attributes.
+
+import self.cell
+import self.vt.core
+
+fn sgr(mut t: core.Terminal) -> Unit = {
+  let n = t.n_params
+  var i = 0
+  while i < n {
+    let p = int.max(core.param_at(t, i), 0)
+    // Parameters that are sub-parameters of this one (introduced by ':').
+    var subs = 0
+    while i + subs + 1 < n and core.colon_at(t, i + subs + 1) {
+      subs = subs + 1
+    }
+    if p == 38 or p == 48 or p == 58 then {
+      let (color, used) = if subs > 0 then extended_color_colon(t, i, subs) else extended_color(t, i)
+      if p == 38 then t.fg = color else if p == 48 then t.bg = color
+      i = i + 1 + (if subs > 0 then subs else used)
+    } else {
+      sgr_one(t, p, if subs > 0 then int.max(core.param_at(t, i + 1), 0) else -1)
+      i = i + 1 + subs
+    }
+  }
+}
+
+/// `38;5;n` / `38;2;r;g;b`: the color and how many parameters follow 38.
+fn extended_color(t: core.Terminal, i: Int) -> (Int, Int) = {
+  let kind = core.arg0(t, i + 1)
+  if kind == 5 then (cell.palette(core.arg0(t, i + 2)), 2)
+  else if kind == 2 then (cell.rgb(core.arg0(t, i + 2), core.arg0(t, i + 3), core.arg0(t, i + 4)), 4)
+  else (cell.COLOR_DEFAULT, 1)
+}
+
+/// `38:5:n` / `38:2:r:g:b` / `38:2:colorspace:r:g:b`.
+fn extended_color_colon(t: core.Terminal, i: Int, subs: Int) -> (Int, Int) = {
+  let kind = core.arg0(t, i + 1)
+  if kind == 5 then (cell.palette(core.arg0(t, i + 2)), subs)
+  else if kind == 2 then {
+    let first = if subs >= 5 then i + 3 else i + 2
+    (cell.rgb(core.arg0(t, first), core.arg0(t, first + 1), core.arg0(t, first + 2)), subs)
+  } else (cell.COLOR_DEFAULT, subs)
+}
+
+/// One SGR parameter; `sub` is its first sub-parameter, or -1.
+fn sgr_one(mut t: core.Terminal, p: Int, sub: Int) -> Unit = {
+  if p == 0 then { t.fg = 0; t.bg = 0; t.attrs = 0 }
+  else if p == 1 then set_attr(t, cell.ATTR_BOLD, true)
+  else if p == 2 then set_attr(t, cell.ATTR_FAINT, true)
+  else if p == 3 then set_attr(t, cell.ATTR_ITALIC, true)
+  else if p == 4 then {
+    set_attr(t, cell.ATTR_UNDERLINE, sub != 0)
+    set_attr(t, cell.ATTR_DOUBLE_UNDERLINE, sub == 2)
+  }
+  else if p == 5 or p == 6 then set_attr(t, cell.ATTR_BLINK, true)
+  else if p == 7 then set_attr(t, cell.ATTR_INVERSE, true)
+  else if p == 8 then set_attr(t, cell.ATTR_HIDDEN, true)
+  else if p == 9 then set_attr(t, cell.ATTR_STRIKE, true)
+  else if p == 21 then set_attr(t, cell.ATTR_DOUBLE_UNDERLINE, true)
+  else if p == 22 then { set_attr(t, cell.ATTR_BOLD, false); set_attr(t, cell.ATTR_FAINT, false) }
+  else if p == 23 then set_attr(t, cell.ATTR_ITALIC, false)
+  else if p == 24 then { set_attr(t, cell.ATTR_UNDERLINE, false); set_attr(t, cell.ATTR_DOUBLE_UNDERLINE, false) }
+  else if p == 25 then set_attr(t, cell.ATTR_BLINK, false)
+  else if p == 27 then set_attr(t, cell.ATTR_INVERSE, false)
+  else if p == 28 then set_attr(t, cell.ATTR_HIDDEN, false)
+  else if p == 29 then set_attr(t, cell.ATTR_STRIKE, false)
+  else if p >= 30 and p <= 37 then t.fg = cell.palette(p - 30)
+  else if p == 39 then t.fg = cell.COLOR_DEFAULT
+  else if p >= 40 and p <= 47 then t.bg = cell.palette(p - 40)
+  else if p == 49 then t.bg = cell.COLOR_DEFAULT
+  else if p == 53 then set_attr(t, cell.ATTR_OVERLINE, true)
+  else if p == 55 then set_attr(t, cell.ATTR_OVERLINE, false)
+  else if p >= 90 and p <= 97 then t.fg = cell.palette(p - 90 + 8)
+  else if p >= 100 and p <= 107 then t.bg = cell.palette(p - 100 + 8)
+}
+
+fn set_attr(mut t: core.Terminal, bit: Int, on: Bool) -> Unit = {
+  t.attrs = if on then int.bor(t.attrs, bit) else int.band(t.attrs, int.bnot(bit))
+}

@@ -1,0 +1,240 @@
+// The grid: addressing its ring of rows, scrolling, and moving the cursor.
+
+import bytes
+import self.cell
+import self.record
+import self.scrollback
+import self.vt.core
+
+fn phys(t: core.Terminal, y: Int) -> Int = (t.top + y) % t.rows
+
+fn row_off(t: core.Terminal, y: Int) -> Int = phys(t, y) * t.cols * cell.SIZE
+
+fn cell_off(t: core.Terminal, x: Int, y: Int) -> Int = row_off(t, y) + x * cell.SIZE
+
+fn cell_index(t: core.Terminal, x: Int, y: Int) -> Int = phys(t, y) * t.cols + x
+
+/// The blank row for the current background, rebuilt only when it changes.
+fn ensure_blank(mut t: core.Terminal) -> Unit = {
+  if t.blank_bg != t.bg then {
+    t.blank = cell.blank_row(t.cols, t.bg)
+    t.blank_bg = t.bg
+  }
+}
+
+/// Blank cells [x0, x1) of row y with the current background.
+fn erase_cells(mut t: core.Terminal, y: Int, x0: Int, x1: Int) -> Unit = {
+  let a = int.max(0, x0)
+  let b = int.min(t.cols, x1)
+  if b > a then {
+    ensure_blank(t)
+    let dst = cell_off(t, a, y)
+    bytes.copy_from(t.grid, t.blank, dst, 0, (b - a) * cell.SIZE)
+  }
+}
+
+fn erase_row(mut t: core.Terminal, y: Int) -> Unit = {
+  erase_cells(t, y, 0, t.cols)
+  let p = phys(t, y)
+  bytes.set_u8(t.wrapped, p, 0)
+}
+
+fn mark_wrapped(mut t: core.Terminal) -> Unit = {
+  let p = phys(t, t.y)
+  bytes.set_u8(t.wrapped, p, 1)
+}
+
+/// Copy row `from` over row `to`, carrying its combining marks along.
+fn copy_row(mut t: core.Terminal, from: Int, to: Int) -> Unit = {
+  let src = row_off(t, from)
+  let dst = row_off(t, to)
+  bytes.copy_within(t.grid, src, src + t.cols * cell.SIZE, dst)
+  let dst_row = phys(t, to)
+  let src_wrapped = bytes.read_u8(t.wrapped, phys(t, from))
+  bytes.set_u8(t.wrapped, dst_row, src_wrapped)
+  for x in 0..<t.cols {
+    if int.band(bytes.read_u8(t.grid, cell_off(t, x, to) + cell.OFF_FLAGS), cell.FLAG_GRAPHEME) != 0 then {
+      let key = cell_index(t, x, to)
+      let marks = map.get_or(t.graphemes, cell_index(t, x, from), "")
+      map.insert(t.graphemes, key, marks)
+    }
+  }
+}
+
+/// Combining marks of row y, keyed by column, for the scrollback record.
+fn row_extras(t: core.Terminal, y: Int) -> Map[Int, String] = {
+  var extras: Map[Int, String] = [:]
+  let base = row_off(t, y)
+  let first = phys(t, y) * t.cols
+  // With no marks on the screen — nearly always — there is nothing to look
+  // for.
+  let cols = if map.len(t.graphemes) == 0 then 0 else t.cols
+  for x in 0..<cols {
+    if int.band(bytes.read_u8(t.grid, base + x * cell.SIZE + cell.OFF_FLAGS), cell.FLAG_GRAPHEME) != 0 then
+      map.insert(extras, x, map.get_or(t.graphemes, first + x, ""))
+  }
+  extras
+}
+
+/// Drop the combining marks `marks` (from `row_extras`) of row `y`, which is
+/// leaving the screen: kept, they would outlive their cells, and a screen
+/// that once had marks would be searched for them on every line that scrolls
+/// off.
+fn forget_marks(mut t: core.Terminal, y: Int, marks: Map[Int, String]) -> Unit = {
+  if map.len(marks) > 0 then {
+    let first = phys(t, y) * t.cols
+    for x in map.keys(marks) {
+      map.delete(t.graphemes, first + x)
+    }
+  }
+}
+
+/// Scroll the lines of the margins up by `n`; lines leaving the top of the
+/// full main screen go to scrollback.
+fn scroll_up(mut t: core.Terminal, n: Int) -> Unit = {
+  let height = t.margin_bottom - t.margin_top + 1
+  let count = int.min(n, height)
+  if t.margin_top == 0 and t.margin_bottom == t.rows - 1 then {
+    for _ in 0..<count {
+      // Only this row's marks: handing over the screen's whole map would
+      // copy it for every line.
+      let marks = row_extras(t, 0)
+      if not t.alt then {
+        let p = phys(t, 0)
+        let wrapped = bytes.read_u8(t.wrapped, p) == 1
+        let off = row_off(t, 0)
+        let cols = t.cols
+        scrollback.push_cells(t.sb, t.grid, off, cols, wrapped, marks, 0)
+      }
+      forget_marks(t, 0, marks)
+      t.top = (t.top + 1) % t.rows
+      erase_row(t, t.rows - 1)
+    }
+  } else {
+    for y in t.margin_top..<(t.margin_bottom - count + 1) {
+      copy_row(t, y + count, y)
+    }
+    for y in (t.margin_bottom - count + 1)...t.margin_bottom {
+      erase_row(t, y)
+    }
+  }
+}
+
+/// Scroll the lines of the margins down by `n`, blank lines entering at the
+/// top margin.
+fn scroll_down(mut t: core.Terminal, n: Int) -> Unit = {
+  let height = t.margin_bottom - t.margin_top + 1
+  let count = int.min(n, height)
+  var y = t.margin_bottom
+  while y >= t.margin_top + count {
+    copy_row(t, y - count, y)
+    y = y - 1
+  }
+  for r in t.margin_top..<(t.margin_top + count) {
+    erase_row(t, r)
+  }
+}
+
+/// Insert (`n` > 0) blank lines at the cursor row, pushing the lines below
+/// it down within the bottom margin.
+fn insert_lines(mut t: core.Terminal, n: Int) -> Unit = {
+  if t.y >= t.margin_top and t.y <= t.margin_bottom then {
+    let saved_top = t.margin_top
+    t.margin_top = t.y
+    scroll_down(t, n)
+    t.margin_top = saved_top
+    t.x = 0
+    t.pending_wrap = false
+  }
+}
+
+fn delete_lines(mut t: core.Terminal, n: Int) -> Unit = {
+  if t.y >= t.margin_top and t.y <= t.margin_bottom then {
+    let saved_top = t.margin_top
+    t.margin_top = t.y
+    // Deleting lines never feeds scrollback, even from the first row.
+    let saved_alt = t.alt
+    t.alt = true
+    scroll_up_region(t, n)
+    t.alt = saved_alt
+    t.margin_top = saved_top
+    t.x = 0
+    t.pending_wrap = false
+  }
+}
+
+/// `scroll_up` limited to copying rows: the ring fast path only applies to
+/// the whole screen, which `delete_lines` from row 0 is too, so it is routed
+/// here to keep the lines out of scrollback.
+fn scroll_up_region(mut t: core.Terminal, n: Int) -> Unit = {
+  let count = int.min(n, t.margin_bottom - t.margin_top + 1)
+  for y in t.margin_top..<(t.margin_bottom - count + 1) {
+    copy_row(t, y + count, y)
+  }
+  for y in (t.margin_bottom - count + 1)...t.margin_bottom {
+    erase_row(t, y)
+  }
+}
+
+fn index(mut t: core.Terminal) -> Unit = {
+  t.pending_wrap = false
+  if t.y == t.margin_bottom then scroll_up(t, 1)
+  else if t.y < t.rows - 1 then t.y = t.y + 1
+}
+
+fn reverse_index(mut t: core.Terminal) -> Unit = {
+  t.pending_wrap = false
+  if t.y == t.margin_top then scroll_down(t, 1)
+  else if t.y > 0 then t.y = t.y - 1
+}
+
+fn move_to(mut t: core.Terminal, x: Int, y: Int) -> Unit = {
+  let (lo, hi) = if t.origin then (t.margin_top, t.margin_bottom) else (0, t.rows - 1)
+  t.x = int.clamp(x, 0, t.cols - 1)
+  t.y = int.clamp(y + (if t.origin then t.margin_top else 0), lo, hi)
+  t.pending_wrap = false
+}
+
+/// Vertical moves stop at the margins when the cursor is inside them.
+fn move_vertical(mut t: core.Terminal, dy: Int) -> Unit = {
+  let lo = if t.y >= t.margin_top then t.margin_top else 0
+  let hi = if t.y <= t.margin_bottom then t.margin_bottom else t.rows - 1
+  t.y = int.clamp(t.y + dy, lo, hi)
+  t.pending_wrap = false
+}
+
+fn tab_forward(mut t: core.Terminal, n: Int) -> Unit = {
+  for _ in 0..<n {
+    var x = t.x + 1
+    while x < t.cols - 1 and bytes.read_u8(t.tabs, x) == 0 {
+      x = x + 1
+    }
+    t.x = int.min(x, t.cols - 1)
+  }
+  t.pending_wrap = false
+}
+
+fn tab_backward(mut t: core.Terminal, n: Int) -> Unit = {
+  for _ in 0..<n {
+    var x = t.x - 1
+    while x > 0 and bytes.read_u8(t.tabs, x) == 0 {
+      x = x - 1
+    }
+    t.x = int.max(x, 0)
+  }
+  t.pending_wrap = false
+}
+
+fn save_cursor(t: core.Terminal) -> core.Saved =
+  core.Saved { x: t.x, y: t.y, fg: t.fg, bg: t.bg, attrs: t.attrs, origin: t.origin, pending_wrap: t.pending_wrap, dec_graphics: t.dec_graphics }
+
+fn restore_cursor(mut t: core.Terminal, s: core.Saved) -> Unit = {
+  t.x = int.min(s.x, t.cols - 1)
+  t.y = int.min(s.y, t.rows - 1)
+  t.fg = s.fg
+  t.bg = s.bg
+  t.attrs = s.attrs
+  t.origin = s.origin
+  t.pending_wrap = s.pending_wrap
+  t.dec_graphics = s.dec_graphics
+}

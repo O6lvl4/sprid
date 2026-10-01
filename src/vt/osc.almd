@@ -1,0 +1,145 @@
+// OSC strings: titles, the working directory, notifications, the clipboard.
+
+import base64
+import bytes
+import self.vt.core
+
+fn osc_byte(mut t: core.Terminal, b: Int) -> Unit = {
+  if b == 0x07 then {
+    osc_dispatch(t)
+    t.state = core.GROUND
+  } else if b >= 0x20 and bytes.len(t.osc) < core.OSC_MAX then bytes.push(t.osc, b)
+}
+
+fn osc_dispatch(mut t: core.Terminal) -> Unit = {
+  let s = bytes.to_string_lossy(t.osc)
+  let (cmd, arg) = string.split_once(s, ";") ?? (s, "")
+  if cmd == "0" or cmd == "2" then t.title = arg
+  else if cmd == "7" then t.cwd = file_url_path(arg)
+  else if cmd == "9" then {
+    // iTerm2's `9;message`. ConEmu's `9;N;...` (progress and the like, N a
+    // number up to 12) shares the number and is not a message.
+    let first = (string.split_once(arg, ";") ?? (arg, "")).0
+    let conemu = match int.parse(first) {
+      ok(n) => n >= 1 and n <= 12,
+      err(_) => false,
+    }
+    if not conemu and arg != "" then notice(t, "", arg)
+  } else if cmd == "777" then {
+    // rxvt's `777;notify;title;body`.
+    match string.split_once(arg, ";") {
+      some(("notify", rest)) => {
+        let (title, body) = string.split_once(rest, ";") ?? (rest, "")
+        notice(t, title, body)
+      },
+      _ => (),
+    }
+  } else if cmd == "99" then kitty_notice(t, arg)
+  else if cmd == "52" then {
+    // `52;targets;base64` sets the clipboard; `52;targets;?` asks for it,
+    // which the window answers only if the user lets it (`clipboard_reply`).
+    let (targets, data) = string.split_once(arg, ";") ?? ("", "")
+    if data == "?" then t.clipboard_asked = if targets == "" then "c" else targets
+    else match base64.decode(data) {
+      ok(b) => { t.clipboard = some(bytes.to_string_lossy(b)) },
+      err(_) => (),
+    }
+  }
+  if bytes.len(t.osc) > core.OSC_KEEP then t.osc = bytes.new(0) else bytes.clear(t.osc)
+}
+
+fn notice(mut t: core.Terminal, title: String, body: String) -> Unit = {
+  // A program printing in a loop can't pile them up.
+  if list.len(t.notices) < 16 then list.push(t.notices, (title, body))
+}
+
+/// kitty's `99;metadata;payload`: the payload is the title or the body
+/// (`p=`), base64 when `e=1`, and the notification is shown at the part that
+/// says it is done (`d=1`, the default); parts of one share an id (`i=`).
+fn kitty_notice(mut t: core.Terminal, arg: String) -> Unit = {
+  let (meta, payload) = string.split_once(arg, ";") ?? (arg, "")
+  var id = ""
+  var done = true
+  var part = "title"
+  var encoded = false
+  for kv in string.split(meta, ":") {
+    match string.split_once(kv, "=") {
+      some(("i", v)) => { id = v },
+      some(("d", v)) => { done = v != "0" },
+      some(("p", v)) => { part = v },
+      some(("e", v)) => { encoded = v == "1" },
+      _ => (),
+    }
+  }
+  let text = if encoded then match base64.decode(payload) {
+    ok(b) => bytes.to_string_lossy(b),
+    err(_) => "",
+  } else payload
+  let (pid, ptitle, pbody) = t.notice_parts
+  let (title, body) = if pid == id then (ptitle, pbody) else ("", "")
+  let next = if part == "title" then (title + text, body)
+    else if part == "body" then (title, body + text)
+    else (title, body)
+  if done then {
+    t.notice_parts = ("", "", "")
+    // A title alone is the notification's text.
+    if next.0 != "" or next.1 != "" then notice(t, next.0, next.1)
+  } else t.notice_parts = (id, next.0, next.1)
+}
+
+/// Take the notifications asked for since last time.
+fn take_notices(mut t: core.Terminal) -> List[(String, String)] = {
+  let n = t.notices
+  let none_yet: List[(String, String)] = []
+  t.notices = none_yet
+  n
+}
+
+/// Take a program's request to read the clipboard: the targets it named,
+/// "" when there is none.
+fn take_clipboard_ask(mut t: core.Terminal) -> String = {
+  let a = t.clipboard_asked
+  t.clipboard_asked = ""
+  a
+}
+
+/// The answer to a clipboard read (OSC 52) for `targets`: `text` as base64.
+fn clipboard_reply(targets: String, text: String) -> String =
+  "\x1b]52;${targets};${base64.encode(bytes.from_string(text))}\x1b\\"
+
+/// Take the text a program put on the clipboard since last time.
+fn take_clipboard(mut t: core.Terminal) -> Option[String] = {
+  let c = t.clipboard
+  t.clipboard = none
+  c
+}
+
+/// The path of a `file://host/path` URL, percent-decoded; "" when it is not
+/// one.
+fn file_url_path(url: String) -> String = {
+  guard string.starts_with(url, "file://") else ""
+  let rest = string.drop(url, 7)
+  let path = match string.index_of(rest, "/") {
+    some(i) => string.drop(rest, i),
+    none => "",
+  }
+  let raw = bytes.from_string(path)
+  var out = bytes.new(0)
+  var i = 0
+  let n = bytes.len(raw)
+  while i < n {
+    let b = bytes.read_u8(raw, i)
+    let hex = if b == 0x25 and i + 2 < n then int.from_hex(bytes.read_string_at(raw, i + 1, 2)) else err("")
+    match hex {
+      ok(v) => {
+        bytes.push(out, v)
+        i = i + 3
+      },
+      err(_) => {
+        bytes.push(out, b)
+        i = i + 1
+      },
+    }
+  }
+  bytes.to_string_lossy(out)
+}

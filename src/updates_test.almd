@@ -1,0 +1,74 @@
+// What a program asks of the window: updates the frame is held for,
+// notifications, the clipboard, titles.
+
+import self.terminal
+
+test "a program that hides the cursor while it draws is mid-update while it is hidden" {
+  var t = terminal.new(10, 3)
+  terminal.feed_string(t, "\x1b[?25lab")
+  // Hidden once, never shown: not known to pair them.
+  assert_eq(terminal.mid_update(t), false)
+  terminal.feed_string(t, "\x1b[?25h")
+  assert_eq(terminal.mid_update(t), false)
+  terminal.feed_string(t, "\x1b[?25lcd")
+  assert_eq(terminal.mid_update(t), true)
+  terminal.feed_string(t, "\x1b[?25h")
+  assert_eq(terminal.mid_update(t), false)
+  terminal.feed_string(t, "\x1b[?2026h")
+  assert_eq(terminal.mid_update(t), true)
+}
+
+test "a full-screen program's first screen is mid-update until it shows the cursor" {
+  var t = terminal.new(10, 3)
+  // As a program starts: the cursor hidden, then the alternate screen.
+  terminal.feed_string(t, "\x1b[?25l\x1b[?1049h\x1b[Htop")
+  assert_eq(terminal.mid_update(t), true)
+  terminal.feed_string(t, "\x1b[3;1Hbottom\x1b[?25h")
+  assert_eq(terminal.mid_update(t), false)
+  // Showing the cursor also made it known to pair them.
+  terminal.feed_string(t, "\x1b[?25l")
+  assert_eq(terminal.mid_update(t), true)
+}
+
+test "the main screen with a hidden cursor is not held" {
+  var t = terminal.new(10, 3)
+  terminal.feed_string(t, "\x1b[?25l\x1b[?1049h\x1b[?1049l")
+  assert_eq(terminal.mid_update(t), false)
+}
+
+test "each update that begins is counted, so its hold is timed from its own start" {
+  var t = terminal.new(10, 3)
+  terminal.feed_string(t, "\x1b[?2026ha\x1b[?2026l\x1b[?2026hb")
+  assert_eq(t.sync_starts, 2)
+  // Hidden while hidden is the same redraw; shown and hidden again a new one.
+  terminal.feed_string(t, "\x1b[?25l\x1b[?25l")
+  assert_eq(t.hide_starts, 1)
+  terminal.feed_string(t, "\x1b[?25h\x1b[?25l")
+  assert_eq(t.hide_starts, 2)
+  // A full-screen program's first screen begins one too.
+  terminal.feed_string(t, "\x1b[?1049h")
+  assert_eq(t.hide_starts, 3)
+}
+
+test "notifications: OSC 9, 777, 99 in parts, not ConEmu's 9;4" {
+  var t = terminal.new(20, 3)
+  terminal.feed_string(t, "\x1b]9;build done\x07\x1b]9;4;1;50\x07\x1b]777;notify;Claude;waiting; really\x1b\\")
+  terminal.feed_string(t, "\x1b]99;i=1:d=0;Hello\x1b\\\x1b]99;i=1:p=body;World\x1b\\\x1b]99;e=1;aGk=\x07")
+  assert_eq(terminal.take_notices(t), [("", "build done"), ("Claude", "waiting; really"), ("Hello", "World"), ("hi", "")])
+  assert_eq(terminal.take_notices(t), [])
+}
+
+test "OSC 52 sets the clipboard; a read is passed on, not answered" {
+  var t = terminal.new(20, 3)
+  terminal.feed_string(t, "\x1b]52;c;5pel5pys6Kqe\x07")
+  assert_eq(terminal.take_clipboard(t), some("日本語"))
+  terminal.feed_string(t, "\x1b]52;c;?\x07")
+  assert_eq((terminal.take_clipboard(t), terminal.take_replies(t), terminal.take_clipboard_ask(t), terminal.take_clipboard_ask(t)), (none, "", "c", ""))
+  assert_eq(terminal.clipboard_reply("c", "日本語"), "\x1b]52;c;5pel5pys6Kqe\x1b\\")
+}
+
+test "a title with semicolons and UTF-8" {
+  var t = terminal.new(20, 3)
+  terminal.feed_string(t, "\x1b]2;a;b ✳ c\x07")
+  assert_eq(t.title, "a;b ✳ c")
+}

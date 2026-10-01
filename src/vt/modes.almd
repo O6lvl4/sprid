@@ -1,0 +1,161 @@
+// Modes (SM / RM, DECSET / DECRST, DECRQM), switching screens, resets.
+
+import self.vt.core
+import self.vt.screen
+import self.vt.glyphs
+
+/// DECRQM's answer for private mode `p`: 1 set, 2 reset, 0 not known —
+/// how a program asks, say, whether synchronized output (2026) is there
+/// before it relies on it.
+fn mode_state(t: core.Terminal, p: Int) -> Int = {
+  let on = (b: Bool) => if b then 1 else 2
+  match p {
+    1 => on(t.app_cursor),
+    6 => on(t.origin),
+    7 => on(t.autowrap),
+    25 => on(t.cursor_visible),
+    47 | 1047 | 1049 => on(t.alt),
+    1000 | 1002 | 1003 => on(t.mouse_mode == p),
+    1004 => on(t.focus_events),
+    1006 => on(t.mouse_sgr),
+    2004 => on(t.bracketed_paste),
+    2026 => on(t.sync_output),
+    _ => 0,
+  }
+}
+
+fn set_private_modes(mut t: core.Terminal, on: Bool) -> Unit = {
+  for i in 0..<t.n_params {
+    let p = core.param_at(t, i)
+    match p {
+      1 => { t.app_cursor = on },
+      6 => {
+        t.origin = on
+        screen.move_to(t, 0, 0)
+      },
+      7 => { t.autowrap = on },
+      25 => {
+        if on and not t.cursor_visible then t.cursor_pairs = true
+        if not on and t.cursor_visible then t.hide_starts = t.hide_starts + 1
+        if on then t.first_screen = false
+        t.cursor_visible = on
+      },
+      47 | 1047 => switch_screen(t, on, false),
+      1049 => switch_screen(t, on, true),
+      1000 | 1002 | 1003 => { t.mouse_mode = if on then p else 0 },
+      1004 => { t.focus_events = on },
+      1006 => { t.mouse_sgr = on },
+      2004 => { t.bracketed_paste = on },
+      2026 => {
+        if on and not t.sync_output then t.sync_starts = t.sync_starts + 1
+        t.sync_output = on
+      },
+      _ => { () },
+    }
+  }
+}
+
+/// Enter (`on`) or leave the alternate screen. The alternate screen has no
+/// scrollback and is cleared on entry; 1049 also saves and restores the
+/// cursor of the main screen.
+fn switch_screen(mut t: core.Terminal, on: Bool, with_cursor: Bool) -> Unit = {
+  if on != t.alt then t.first_screen = on
+  if on and not t.alt then t.hide_starts = t.hide_starts + 1
+  if on != t.alt then {
+    if on and with_cursor then t.saved_main = screen.save_cursor(t)
+    // Each screen keeps its own DECSC slot, as xterm's do.
+    let saved = t.saved
+    t.saved = t.saved_other
+    t.saved_other = saved
+    swap_screens(t)
+    t.alt = on
+    if on then {
+      for y in 0..<t.rows {
+        screen.erase_row(t, y)
+      }
+      map.clear(t.graphemes)
+    } else if with_cursor then screen.restore_cursor(t, t.saved_main)
+  }
+}
+
+/// Put the other screen in front: grids, wrap marks and combining marks.
+fn swap_screens(mut t: core.Terminal) -> Unit = {
+  let grid = t.grid
+  let top = t.top
+  let wrapped = t.wrapped
+  let graphemes = t.graphemes
+  t.grid = t.other_grid
+  t.top = t.other_top
+  t.wrapped = t.other_wrapped
+  t.graphemes = t.other_graphemes
+  t.other_grid = grid
+  t.other_top = top
+  t.other_wrapped = wrapped
+  t.other_graphemes = graphemes
+}
+
+/// Whether the program is part way through drawing a screen: inside a
+/// synchronized update (mode 2026), or with the cursor hidden — by a program
+/// known to hide it while it draws, or by one drawing its first full
+/// screen, which it shows the cursor on when done. A program writes a large
+/// screen in pieces, sometimes tens of ms apart; drawn in between, the
+/// screen shows its top half new and its bottom half old.
+fn mid_update(t: core.Terminal) -> Bool = t.sync_output or drawing_hidden(t)
+
+/// The part of `mid_update` a hidden cursor tells: a program that hides it
+/// to draw has it hidden, or a full-screen program draws its first screen.
+fn drawing_hidden(t: core.Terminal) -> Bool = not t.cursor_visible and (t.cursor_pairs or t.first_screen)
+
+fn soft_reset(mut t: core.Terminal) -> Unit = {
+  // The saved cursor goes back home with the rest, as xterm's DECSTR does.
+  t.saved = core.Saved { x: 0, y: 0, fg: 0, bg: 0, attrs: 0, origin: false, pending_wrap: false, dec_graphics: false }
+  t.cursor_visible = true
+  t.insert = false
+  t.origin = false
+  t.autowrap = true
+  t.app_cursor = false
+  t.app_keypad = false
+  t.margin_top = 0
+  t.margin_bottom = t.rows - 1
+  t.fg = 0
+  t.bg = 0
+  t.attrs = 0
+  t.dec_graphics = false
+  t.pending_wrap = false
+}
+
+fn reset(mut t: core.Terminal) -> Unit = {
+  switch_screen(t, false, false)
+  soft_reset(t)
+  for y in 0..<t.rows {
+    screen.erase_row(t, y)
+  }
+  map.clear(t.graphemes)
+  t.x = 0
+  t.y = 0
+  t.tabs = core.default_tabs(t.cols)
+  t.bracketed_paste = false
+  t.mouse_mode = 0
+  t.kitty_flags = 0
+  let no_flags: List[Int] = []
+  t.kitty_stack = no_flags
+  t.mouse_sgr = false
+  t.focus_events = false
+  t.sync_output = false
+  t.title = ""
+}
+
+/// DECALN: fill the screen with 'E'.
+fn align_test(mut t: core.Terminal) -> Unit = {
+  t.margin_top = 0
+  t.margin_bottom = t.rows - 1
+  let saved_y = t.y
+  for y in 0..<t.rows {
+    t.y = y
+    for x in 0..<t.cols {
+      glyphs.put(t, x, 0x45, 1)
+    }
+  }
+  t.y = saved_y
+  screen.move_to(t, 0, 0)
+}

@@ -54,10 +54,9 @@ fn write(mut out: Bytes, start: Int, grid: Bytes, off: Int, used: Int, wrapped: 
   p
 }
 
-/// Write the run starting at column `x`: cells with the same foreground and
-/// the same background and attributes (a cell's second 8 bytes but width
-/// and flags, in one read). Where the record and the row go on: (byte,
-/// column).
+/// Write the run starting at column `from`: cells with the same foreground
+/// and the same background and attributes. Where the record and the row go
+/// on: (byte, column).
 fn write_run(mut out: Bytes, at: Int, grid: Bytes, off: Int, from: Int, used: Int, graphemes: Map[Int, String], base: Int) -> (Int, Int) = {
   let o = off + from * cell.SIZE
   let fg = bytes.read_u32_le(grid, o + cell.OFF_FG)
@@ -67,9 +66,18 @@ fn write_run(mut out: Bytes, at: Int, grid: Bytes, off: Int, from: Int, used: In
   let text_start = at + 14
   var p = text_start
   var x = from
-  while x < used and same_style(grid, off + x * cell.SIZE, fg, style) {
-    p = write_cell(out, p, grid, off + x * cell.SIZE, graphemes, base + x)
-    x = x + 1
+  var more = true
+  while more and x < used {
+    // A cell's second 8 bytes in one read: background and attributes, then
+    // width and flags in the top two.
+    let c = off + x * cell.SIZE
+    let tail = bytes.read_i64_le(grid, c + cell.OFF_BG)
+    more = int.band(tail, STYLE_MASK) == style and bytes.read_u32_le(grid, c + cell.OFF_FG) == fg
+    if more then {
+      p = write_cell(out, p, bytes.read_u32_le(grid, c + cell.OFF_CP), tail)
+      if int.band(int.bshr(tail, 56), cell.FLAG_GRAPHEME) != 0 then p = write_marks(out, p, map.get_or(graphemes, base + x, ""))
+      x = x + 1
+    }
   }
   // The text length overwrites the 4 bytes past the style that the 8-byte
   // write above spilled into.
@@ -77,24 +85,21 @@ fn write_run(mut out: Bytes, at: Int, grid: Bytes, off: Int, from: Int, used: In
   (p, x)
 }
 
-fn same_style(grid: Bytes, c: Int, fg: Int, style: Int) -> Bool =
-  int.band(bytes.read_i64_le(grid, c + cell.OFF_BG), STYLE_MASK) == style and bytes.read_u32_le(grid, c + cell.OFF_FG) == fg
+/// Write the character `cp` of a cell whose second 8 bytes are `tail`:
+/// nothing for a wide char's second half, a space for a cell never written.
+/// Where it ends.
+fn write_cell(mut out: Bytes, at: Int, cp: Int, tail: Int) -> Int =
+  if int.band(int.bshr(tail, 48), 0xFF) == 0 then at
+  else write_utf8(out, at, if cp == 0 then 32 else cp)
 
-/// Write the text of the cell at byte `c`: nothing for a wide char's second
-/// half, a space for a cell never written, then its marks — `graphemes` at
-/// `key`, up to 32 of them, `MARKS_MAX` bytes. Where it ends.
-fn write_cell(mut out: Bytes, at: Int, grid: Bytes, c: Int, graphemes: Map[Int, String], key: Int) -> Int =
-  if bytes.read_u8(grid, c + cell.OFF_WIDTH) == 0 then at
-  else {
-    let cp = bytes.read_u32_le(grid, c + cell.OFF_CP)
-    let p = write_utf8(out, at, if cp == 0 then 32 else cp)
-    if has_marks(grid, c) then {
-      let m = bytes.from_string(string.take(map.get_or(graphemes, key, ""), 32))
-      let n = int.min(bytes.len(m), MARKS_MAX)
-      bytes.copy_from(out, m, p, 0, n)
-      p + n
-    } else p
-  }
+/// Write a cell's combining `marks`, up to 32 of them, `MARKS_MAX` bytes.
+/// Where they end.
+fn write_marks(mut out: Bytes, at: Int, marks: String) -> Int = {
+  let m = bytes.from_string(string.take(marks, 32))
+  let n = int.min(bytes.len(m), MARKS_MAX)
+  bytes.copy_from(out, m, at, 0, n)
+  at + n
+}
 
 /// Write `cp` as UTF-8 at `p`; the position after it.
 fn write_utf8(mut out: Bytes, p: Int, cp: Int) -> Int =

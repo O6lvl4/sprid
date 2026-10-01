@@ -1,0 +1,167 @@
+// Printing: characters into cells — wide ones, combining marks, DEC
+// line drawing — and the run of plain ASCII that most output is.
+
+import bytes
+import self.cell
+import self.width
+import self.vt.core
+import self.vt.screen
+import self.vt.erase
+
+/// DEC Special Graphics (ESC ( 0): line drawing in place of 0x60..0x7E.
+fn dec_graphic(cp: Int) -> Int = match cp {
+  0x60 => 0x25C6, 0x61 => 0x2592, 0x66 => 0x00B0, 0x67 => 0x00B1,
+  0x6A => 0x2518, 0x6B => 0x2510, 0x6C => 0x250C, 0x6D => 0x2514,
+  0x6E => 0x253C, 0x6F => 0x23BA, 0x70 => 0x23BB, 0x71 => 0x2500,
+  0x72 => 0x23BC, 0x73 => 0x23BD, 0x74 => 0x251C, 0x75 => 0x2524,
+  0x76 => 0x2534, 0x77 => 0x252C, 0x78 => 0x2502, 0x79 => 0x2264,
+  0x7A => 0x2265, 0x7B => 0x03C0, 0x7C => 0x2260, 0x7D => 0x00A3,
+  0x7E => 0x00B7, _ => cp,
+}
+
+fn print(mut t: core.Terminal, raw: Int) -> Unit = {
+  let cp = if t.dec_graphics and raw >= 0x60 and raw <= 0x7E then dec_graphic(raw) else raw
+  let w = width.of(cp)
+  if w == 0 then attach(t, cp)
+  else {
+    if t.pending_wrap and t.autowrap then {
+      screen.mark_wrapped(t)
+      t.x = 0
+      screen.index(t)
+    }
+    t.pending_wrap = false
+    if w == 2 and t.x == t.cols - 1 then {
+      // A wide char does not fit in the last column: wrap first.
+      if t.autowrap then {
+        screen.erase_cells(t, t.y, t.x, t.cols)
+        screen.mark_wrapped(t)
+        t.x = 0
+        screen.index(t)
+      } else t.x = t.cols - 2
+    }
+    if t.insert then shift_right(t, t.x, w)
+    put(t, t.x, cp, w)
+    t.last_x = t.x
+    t.last_y = t.y
+    t.last_cp = cp
+    if t.x + w >= t.cols then {
+      t.x = t.cols - 1
+      t.pending_wrap = true
+    } else t.x = t.x + w
+  }
+}
+
+/// Write `cp` of width `w` at column x of the cursor row, first splitting any
+/// wide char it overwrites half of.
+fn put(mut t: core.Terminal, x: Int, cp: Int, w: Int) -> Unit = {
+  erase.clear_wide_at(t, x)
+  if w == 2 then erase.clear_wide_at(t, x + 1)
+  let o = screen.cell_off(t, x, t.y)
+  write_cell(t, o, cp, w)
+  if w == 2 then write_cell(t, o + cell.SIZE, 0, 0)
+}
+
+/// Write a whole cell at byte `o` with the pen's colours and attributes, no
+/// flags. Three stores instead of six: fg and bg are adjacent (bytes 4..12)
+/// and so are attrs, width and flags (12..16).
+fn write_cell(mut t: core.Terminal, o: Int, cp: Int, w: Int) -> Unit = {
+  let colors = int.bor(t.fg, int.bshl(t.bg, 32))
+  let tail = int.bor(t.attrs, int.bshl(w, 16))
+  bytes.set_u32_le(t.grid, o + cell.OFF_CP, cp)
+  bytes.set_i64_le(t.grid, o + cell.OFF_FG, colors)
+  bytes.set_u32_le(t.grid, o + cell.OFF_ATTRS, tail)
+}
+
+/// A zero-width codepoint joins the cell printed last.
+fn attach(mut t: core.Terminal, cp: Int) -> Unit = {
+  if t.last_x >= 0 and t.last_y == t.y then {
+    let o = screen.cell_off(t, t.last_x, t.last_y)
+    let i = screen.cell_index(t, t.last_x, t.last_y)
+    let flags = bytes.read_u8(t.grid, o + cell.OFF_FLAGS)
+    let prev = if int.band(flags, cell.FLAG_GRAPHEME) != 0 then map.get_or(t.graphemes, i, "") else ""
+    // Bound what one cell can collect; past this the marks are dropped.
+    if string.len(prev) < 32 then {
+      map.insert(t.graphemes, i, prev + string.from_codepoint(cp))
+      bytes.set_u8(t.grid, o + cell.OFF_FLAGS, int.bor(flags, cell.FLAG_GRAPHEME))
+    }
+  }
+}
+
+fn shift_right(mut t: core.Terminal, x: Int, n: Int) -> Unit = {
+  erase.clear_wide_at(t, x)
+  erase.move_marks(t, x, t.cols, n)
+  let row = screen.row_off(t, t.y)
+  let keep = t.cols - x - n
+  if keep > 0 then bytes.copy_within(t.grid, row + x * cell.SIZE, row + (x + keep) * cell.SIZE, row + (x + n) * cell.SIZE)
+  screen.erase_cells(t, t.y, x, x + n)
+}
+
+fn delete_chars(mut t: core.Terminal, n: Int) -> Unit = {
+  let count = int.min(n, t.cols - t.x)
+  erase.clear_wide_at(t, t.x)
+  erase.clear_wide_at(t, t.x + count - 1)
+  erase.forget_cells(t, t.y, t.x, t.x + count)
+  erase.move_marks(t, t.x + count, t.cols, 0 - count)
+  let row = screen.row_off(t, t.y)
+  let keep = t.cols - t.x - count
+  if keep > 0 then bytes.copy_within(t.grid, row + (t.x + count) * cell.SIZE, row + t.cols * cell.SIZE, row + t.x * cell.SIZE)
+  screen.erase_cells(t, t.y, t.cols - count, t.cols)
+  t.pending_wrap = false
+}
+
+/// After `print_ascii`: the printable ASCII bytes that follow at `i`, while
+/// they fit on the cursor's row, written with the cell offset carried along
+/// instead of recomputed. Returns where it stopped.
+fn print_ascii_run(mut t: core.Terminal, data: Bytes, i: Int, n: Int) -> Int = {
+  if t.pending_wrap then i
+  else {
+    var j = i
+    var x = t.x
+    var o = screen.cell_off(t, x, t.y)
+    let colors = int.bor(t.fg, int.bshl(t.bg, 32))
+    let tail = int.bor(t.attrs, int.bshl(1, 16))
+    var go = true
+    // The row's last column is left to `print_ascii`, which owns the
+    // pending-wrap state.
+    while go and j < n and x < t.cols - 1 {
+      let b = bytes.read_u8(data, j)
+      // Stop at anything else, and at a wide char's half (`put` splits it).
+      if b >= 0x20 and b < 0x7F and bytes.read_u8(t.grid, o + cell.OFF_WIDTH) == 1 then {
+        bytes.set_u32_le(t.grid, o + cell.OFF_CP, b)
+        bytes.set_i64_le(t.grid, o + cell.OFF_FG, colors)
+        bytes.set_u32_le(t.grid, o + cell.OFF_ATTRS, tail)
+        o = o + cell.SIZE
+        x = x + 1
+        j = j + 1
+      } else go = false
+    }
+    if j > i then {
+      t.x = x
+      t.last_x = x - 1
+      t.last_cp = bytes.read_u8(data, j - 1)
+    }
+    j
+  }
+}
+
+/// `print` of a printable ASCII byte with the character set and insert mode
+/// off: one cell wide, never combining.
+fn print_ascii(mut t: core.Terminal, b: Int) -> Unit = {
+  if t.pending_wrap then {
+    if t.autowrap then {
+      screen.mark_wrapped(t)
+      t.x = 0
+      screen.index(t)
+    }
+    t.pending_wrap = false
+  }
+  let o = screen.cell_off(t, t.x, t.y)
+  // Only a wide char's half needs more than overwriting the cell.
+  if bytes.read_u8(t.grid, o + cell.OFF_WIDTH) != 1 then put(t, t.x, b, 1)
+  else write_cell(t, o, b, 1)
+  t.last_x = t.x
+  t.last_y = t.y
+  t.last_cp = b
+  if t.x + 1 >= t.cols then t.pending_wrap = true
+  else t.x = t.x + 1
+}

@@ -1,0 +1,89 @@
+// Erasing: the screen and lines, spans of cells, and the combining marks
+// that go with them.
+
+import bytes
+import self.scrollback
+import self.vt.core
+import self.vt.screen
+
+fn erase_display(mut t: core.Terminal, mode: Int) -> Unit = {
+  if mode == 0 then {
+    erase_span(t, t.x, t.cols)
+    bytes.set_u8(t.wrapped, screen.phys(t, t.y), 0)
+    for y in (t.y + 1)..<t.rows {
+      screen.erase_row(t, y)
+    }
+  } else if mode == 1 then {
+    for y in 0..<t.y {
+      screen.erase_row(t, y)
+    }
+    erase_span(t, 0, t.x + 1)
+  } else if mode == 2 then {
+    for y in 0..<t.rows {
+      screen.erase_row(t, y)
+    }
+  } else if mode == 3 then scrollback.clear(t.sb)
+  t.pending_wrap = false
+}
+
+fn erase_line(mut t: core.Terminal, mode: Int) -> Unit = {
+  if mode == 0 then erase_span(t, t.x, t.cols)
+  else if mode == 1 then erase_span(t, 0, t.x + 1)
+  else if mode == 2 then erase_span(t, 0, t.cols)
+  // Erased to its end, the line no longer runs on into the next: copied or
+  // reflowed, the two stay separate lines.
+  if mode == 0 or mode == 2 then bytes.set_u8(t.wrapped, screen.phys(t, t.y), 0)
+  t.pending_wrap = false
+}
+
+/// Erase columns [x0, x1) of the cursor's row and the combining marks on
+/// them; a wide character cut by either edge goes whole.
+fn erase_span(mut t: core.Terminal, x0: Int, x1: Int) -> Unit = {
+  let a = int.max(0, x0)
+  let b = int.min(t.cols, x1)
+  if b > a then {
+    clear_wide_at(t, a)
+    clear_wide_at(t, b - 1)
+    screen.erase_cells(t, t.y, a, b)
+    forget_cells(t, t.y, a, b)
+  }
+}
+
+/// Move the combining marks of columns [x0, x1) of the cursor's row by `by`
+/// columns, as their cells move; those moved off the row are dropped.
+fn move_marks(mut t: core.Terminal, x0: Int, x1: Int, by: Int) -> Unit = {
+  if map.len(t.graphemes) > 0 and by != 0 then {
+    var moved: List[(Int, String)] = []
+    for x in x0..<x1 {
+      let i = screen.cell_index(t, x, t.y)
+      match map.get(t.graphemes, i) {
+        some(m) => {
+          list.push(moved, (x + by, m))
+          map.delete(t.graphemes, i)
+        },
+        none => (),
+      }
+    }
+    for e in moved {
+      if e.0 >= 0 and e.0 < t.cols then map.insert(t.graphemes, screen.cell_index(t, e.0, t.y), e.1)
+    }
+  }
+}
+
+/// Drop the combining marks of columns [x0, x1) of row `y`.
+fn forget_cells(mut t: core.Terminal, y: Int, x0: Int, x1: Int) -> Unit = {
+  if map.len(t.graphemes) > 0 then {
+    for x in x0..<x1 {
+      map.delete(t.graphemes, screen.cell_index(t, x, y))
+    }
+  }
+}
+
+/// If column x holds half of a wide char, blank the other half.
+fn clear_wide_at(mut t: core.Terminal, x: Int) -> Unit = {
+  if x >= 0 and x < t.cols then {
+    let w = bytes.read_u8(t.grid, screen.cell_off(t, x, t.y) + cell.OFF_WIDTH)
+    if w == 0 and x > 0 then screen.erase_cells(t, t.y, x - 1, x)
+    else if w == 2 and x + 1 < t.cols then screen.erase_cells(t, t.y, x + 1, x + 2)
+  }
+}

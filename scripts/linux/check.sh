@@ -21,7 +21,7 @@ mkdir -p /src
 (cd /host && tar --exclude=./target --exclude=./.almide --exclude=./dist --exclude=./out --exclude=./sprid -cf - .) | tar -xf - -C /src
 cd /src
 almide build --release src/main.almd -o /out/sprid
-for f in src/terminal_test.almd src/terminal.almd src/view.almd; do
+for f in src/terminal_test.almd src/resize_test.almd src/updates_test.almd src/view.almd; do
   echo "$f: $(almide test "$f" 2>&1 | grep -E 'passed|failed' | tail -1)"
 done
 Xvfb :99 -screen 0 1920x1200x24 >/dev/null 2>&1 &

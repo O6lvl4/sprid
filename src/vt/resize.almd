@@ -1,0 +1,104 @@
+// Resizing the screen: cut or padded on the alternate screen, reflowed on
+// the main one (see reflow.almd), live while the window is dragged.
+
+import self.cell
+import self.vt.core
+import self.vt.screen
+import self.vt.modes
+import self.vt.reflow
+
+/// Change the screen to `cols` x `rows`.
+///
+/// A change of width on the main screen reflows it: the lines a program
+/// wrapped — screen and scrollback — are joined and wrapped again at the new
+/// width, and the cursor stays at its place in its line. The alternate screen
+/// is cut or padded instead: the program on it redraws it for the new size.
+/// When only the height changes, the lines above the cursor that no longer
+/// fit move to scrollback, so the cursor's line stays on screen.
+fn resize(mut t: core.Terminal, cols: Int, rows: Int) -> Unit = resize_with(t, cols, rows, false)
+
+/// `resize`, or `resize_live` when `live`. With the alternate screen in
+/// front, the main screen behind it is resized as it would be in front —
+/// reflowed, scrollback with it, its cursor the one saved on leaving it —
+/// rather than cut, which would lose what a resize under vim cut off.
+fn resize_with(mut t: core.Terminal, cols: Int, rows: Int, live: Bool) -> Unit = {
+  if t.alt and cols > 0 and rows > 0 and (cols != t.cols or rows != t.rows) then {
+    let alt_cursor = screen.save_cursor(t)
+    modes.swap_screens(t)
+    t.alt = false
+    screen.restore_cursor(t, t.saved_main)
+    resize_front(t, cols, rows, live)
+    t.saved_main = screen.save_cursor(t)
+    modes.swap_screens(t)
+    t.alt = true
+    screen.restore_cursor(t, alt_cursor)
+  } else resize_front(t, cols, rows, live)
+}
+
+/// Resize the screen in front (the other one is cut or padded with it).
+fn resize_front(mut t: core.Terminal, cols: Int, rows: Int, live: Bool) -> Unit = {
+  if cols > 0 and rows > 0 and cols != t.cols and not t.alt then {
+    if live then {
+      reflow.reflow(t, cols, rows, false)
+      t.reflow_pending = true
+    } else reflow.reflow(t, cols, rows, true)
+  }
+  else if cols > 0 and rows > 0 and (cols != t.cols or rows != t.rows) then {
+    // A change of height keeps the tab stops a program set.
+    let keep_tabs = cols == t.cols
+    t.margin_top = 0
+    t.margin_bottom = t.rows - 1
+    while t.y >= rows {
+      screen.scroll_up(t, 1)
+      t.y = t.y - 1
+    }
+    let active = reflow.copy_screen(t.grid, t.top, t.wrapped, t.graphemes, t.cols, t.rows, cols, rows)
+    let other = reflow.copy_screen(t.other_grid, t.other_top, t.other_wrapped, t.other_graphemes, t.cols, t.rows, cols, rows)
+    t.grid = active.grid
+    t.wrapped = active.wrapped
+    t.graphemes = active.graphemes
+    t.top = 0
+    t.other_grid = other.grid
+    t.other_wrapped = other.wrapped
+    t.other_graphemes = other.graphemes
+    t.other_top = 0
+    t.cols = cols
+    t.rows = rows
+    t.margin_top = 0
+    t.margin_bottom = rows - 1
+    if not keep_tabs then t.tabs = core.default_tabs(cols)
+    t.blank = cell.blank_row(cols, t.bg)
+    t.blank_bg = t.bg
+    t.x = int.min(t.x, cols - 1)
+    t.y = int.min(t.y, rows - 1)
+    t.pending_wrap = false
+    t.last_x = -1
+    t.last_y = -1
+  }
+}
+
+/// `resize` while the size is still changing — a window being dragged: only
+/// the screen is reflowed, which is quick; scrollback keeps its lines at the
+/// widths they had until `settle`. Joining lines needs only the marks of
+/// where they wrapped, so wrapping through the sizes in between loses
+/// nothing.
+fn resize_live(mut t: core.Terminal, cols: Int, rows: Int) -> Unit = resize_with(t, cols, rows, true)
+
+/// Reflow scrollback too, after `resize_live` — behind the alternate screen
+/// when that is in front.
+fn settle(mut t: core.Terminal) -> Unit = {
+  if t.reflow_pending then {
+    if t.alt then {
+      let alt_cursor = screen.save_cursor(t)
+      modes.swap_screens(t)
+      t.alt = false
+      screen.restore_cursor(t, t.saved_main)
+      reflow.reflow(t, t.cols, t.rows, true)
+      t.saved_main = screen.save_cursor(t)
+      modes.swap_screens(t)
+      t.alt = true
+      screen.restore_cursor(t, alt_cursor)
+    } else reflow.reflow(t, t.cols, t.rows, true)
+  }
+  t.reflow_pending = false
+}

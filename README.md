@@ -143,8 +143,8 @@ sprid bench [MB]         stream styled, emoji-heavy output, report memory
 sprid capture <png>      draw one screen of $SPRID_CAPTURE_CMD and save it
 ```
 
-The source in brief: `src/terminal.almd` parses and keeps the screen,
-`src/scrollback.almd` the bounded scrollback, `src/gui/` the window (fonts,
+The source in brief: `src/terminal.almd` and `src/vt/` parse and keep the
+screen, `src/scrollback.almd` and `src/record.almd` the bounded scrollback, `src/gui/` the window (fonts,
 rendering, input), `native/` the OS boundary (PTY, clipboard, dialogs).
 
 ## License

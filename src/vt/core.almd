@@ -1,0 +1,275 @@
+// The terminal's state: the record every part of it works on, its
+// parser's states and parameters, and the replies it collects.
+
+import bytes
+import self.cell
+import self.scrollback
+
+// Parser states.
+let GROUND = 0
+
+let ESCAPE = 1
+
+let ESCAPE_INTERMEDIATE = 2
+
+let CSI_ENTRY = 3
+
+let CSI_PARAM = 4
+
+let CSI_INTERMEDIATE = 5
+
+let CSI_IGNORE = 6
+
+let OSC_STRING = 7
+
+/// DCS, SOS, PM and APC: consumed and ignored up to their terminator.
+let IGNORED_STRING = 8
+
+/// Longest OSC string kept — room for OSC 52 to set the clipboard to a
+/// large selection; the rest is dropped so a runaway sequence can't grow
+/// memory past it. A buffer grown past `OSC_KEEP` is let go once used.
+let OSC_MAX = 4194304
+
+let OSC_KEEP = 4096
+
+let MAX_PARAMS = 32
+
+/// What XTVERSION reports: almide.toml's version (scripts/bump-version.sh
+/// sets both; the release build checks they agree with the tag).
+let VERSION = "0.5.0"
+
+/// Kitty keyboard flags sprid implements: 1, disambiguate escape codes —
+/// what lets a program tell Shift+Enter from Enter.
+let KITTY_SUPPORTED = 1
+
+/// Default scrollback budget: 10 MB.
+let DEFAULT_SCROLLBACK = 10000000
+
+type Saved = { x: Int, y: Int, fg: Int, bg: Int, attrs: Int, origin: Bool, pending_wrap: Bool, dec_graphics: Bool }
+
+type Terminal = {
+  cols: Int,
+  rows: Int,
+  // Active screen, and the other one (main or alternate).
+  grid: Bytes,
+  top: Int,
+  wrapped: Bytes,
+  graphemes: Map[Int, String],
+  other_grid: Bytes,
+  other_top: Int,
+  other_wrapped: Bytes,
+  other_graphemes: Map[Int, String],
+  alt: Bool,
+  // Cursor and pen.
+  x: Int,
+  y: Int,
+  pending_wrap: Bool,
+  fg: Int,
+  bg: Int,
+  attrs: Int,
+  saved: Saved,
+  // DECSC's slot of the screen not in front.
+  saved_other: Saved,
+  saved_main: Saved,
+  last_x: Int,
+  last_y: Int,
+  last_cp: Int,
+  // Margins and modes.
+  margin_top: Int,
+  margin_bottom: Int,
+  autowrap: Bool,
+  origin: Bool,
+  insert: Bool,
+  cursor_visible: Bool,
+  // The program has hidden the cursor and shown it again: it hides it
+  // while it redraws (full-screen programs do, a line editor does), so
+  // hidden it is mid-update (see `mid_update`).
+  cursor_pairs: Bool,
+  // The alternate screen was entered and the cursor hasn't been shown
+  // since: a full-screen program drawing its first screen.
+  first_screen: Bool,
+  // How many synchronized updates have opened, and how many redraws with the
+  // cursor hidden have begun (the cursor hidden, or the alternate screen
+  // entered): the window holds the frame for each one only so long, timed
+  // from when it began.
+  sync_starts: Int,
+  hide_starts: Int,
+  cursor_shape: Int,
+  app_cursor: Bool,
+  app_keypad: Bool,
+  bracketed_paste: Bool,
+  focus_events: Bool,
+  mouse_mode: Int,
+  // Kitty keyboard protocol: the flags in force and those pushed under them.
+  // Of the flags only 1 (disambiguate escape codes) is supported.
+  kitty_flags: Int,
+  kitty_stack: List[Int],
+  mouse_sgr: Bool,
+  sync_output: Bool,
+  // Scrollback still holds lines at an earlier width (see `resize_live`).
+  reflow_pending: Bool,
+  dec_graphics: Bool,
+  tabs: Bytes,
+  blank: Bytes,
+  blank_bg: Int,
+  // Outside world.
+  title: String,
+  /// The program's working directory, as the shell reports it (OSC 7).
+  cwd: String,
+  replies: String,
+  bells: Int,
+  /// Desktop notifications asked for (OSC 9, 777, 99), as (title, body),
+  /// for the window to take.
+  notices: List[(String, String)],
+  /// A kitty notification (OSC 99) still arriving in parts: (id, title, body).
+  notice_parts: (String, String, String),
+  /// Text to put on the clipboard (OSC 52), for the window to take.
+  clipboard: Option[String],
+  /// A program asked to read the clipboard (OSC 52 with `?`): the targets
+  /// it named, for the window to answer or not; "" when none asked.
+  clipboard_asked: String,
+  sb: scrollback.Scrollback,
+  // Parser.
+  state: Int,
+  // CSI parameters so far: `n_params` of them, as i32 in `params` (-1 for an
+  // empty one) and a byte each in `colons` (1: introduced by ':', a
+  // sub-parameter). Fixed buffers, so a sequence allocates nothing.
+  params: Bytes,
+  colons: Bytes,
+  n_params: Int,
+  param: Int,
+  colon: Bool,
+  private: Int,
+  intermediate: Int,
+  osc: Bytes,
+  utf8_need: Int,
+  // The least code point the sequence being read may encode: less is an
+  // overlong form.
+  utf8_min: Int,
+  utf8_cp: Int,
+}
+
+fn new(cols: Int, rows: Int) -> Terminal = with_scrollback(cols, rows, DEFAULT_SCROLLBACK)
+
+fn with_scrollback(cols: Int, rows: Int, limit: Int) -> Terminal = {
+  let home = Saved { x: 0, y: 0, fg: 0, bg: 0, attrs: 0, origin: false, pending_wrap: false, dec_graphics: false }
+  let blank = cell.blank_row(cols, cell.COLOR_DEFAULT)
+  Terminal {
+    cols: cols,
+    rows: rows,
+    grid: bytes.repeat(blank, rows),
+    top: 0,
+    wrapped: bytes.new(rows),
+    graphemes: [:],
+    other_grid: bytes.repeat(blank, rows),
+    other_top: 0,
+    other_wrapped: bytes.new(rows),
+    other_graphemes: [:],
+    alt: false,
+    x: 0,
+    y: 0,
+    pending_wrap: false,
+    fg: 0,
+    bg: 0,
+    attrs: 0,
+    saved: home,
+    saved_other: home,
+    saved_main: home,
+    last_x: -1,
+    last_y: -1,
+    last_cp: 32,
+    margin_top: 0,
+    margin_bottom: rows - 1,
+    autowrap: true,
+    origin: false,
+    insert: false,
+    cursor_visible: true,
+    cursor_pairs: false,
+    first_screen: false,
+    sync_starts: 0,
+    hide_starts: 0,
+    cursor_shape: 0,
+    app_cursor: false,
+    app_keypad: false,
+    bracketed_paste: false,
+    focus_events: false,
+    mouse_mode: 0,
+    kitty_flags: 0,
+    kitty_stack: [],
+    mouse_sgr: false,
+    sync_output: false,
+    reflow_pending: false,
+    dec_graphics: false,
+    tabs: default_tabs(cols),
+    blank: blank,
+    blank_bg: 0,
+    title: "",
+    cwd: "",
+    replies: "",
+    bells: 0,
+    notices: [],
+    notice_parts: ("", "", ""),
+    clipboard: none,
+    clipboard_asked: "",
+    sb: scrollback.new(limit),
+    state: GROUND,
+    params: bytes.new(MAX_PARAMS * 4),
+    colons: bytes.new(MAX_PARAMS),
+    n_params: 0,
+    param: -1,
+    colon: false,
+    private: 0,
+    intermediate: 0,
+    osc: bytes.new(0),
+    utf8_need: 0,
+    utf8_min: 0,
+    utf8_cp: 0,
+  }
+}
+
+fn default_tabs(cols: Int) -> Bytes = {
+  var tabs = bytes.new(cols)
+  for x in 0..<cols {
+    if x > 0 and x % 8 == 0 then bytes.set_u8(tabs, x, 1)
+  }
+  tabs
+}
+
+/// End the parameter being read. `colons[i]` says parameter i was introduced
+/// by ':' — a sub-parameter of the one before it.
+fn push_param(mut t: Terminal) -> Unit = {
+  if t.n_params < MAX_PARAMS then {
+    let at = t.n_params
+    let value = t.param
+    let colon = if t.colon then 1 else 0
+    bytes.set_i32_le(t.params, at * 4, value)
+    bytes.set_u8(t.colons, at, colon)
+    t.n_params = at + 1
+  }
+  t.param = -1
+  t.colon = false
+}
+
+/// Parameter i, or `default` when missing or 0.
+fn arg(t: Terminal, i: Int, default: Int) -> Int = {
+  let v = param_at(t, i)
+  if v <= 0 then default else v
+}
+
+/// Parameter i, or 0 when missing.
+fn arg0(t: Terminal, i: Int) -> Int = int.max(param_at(t, i), 0)
+
+/// Parameter i as read (-1 when empty or missing).
+fn param_at(t: Terminal, i: Int) -> Int = if i >= 0 and i < t.n_params then bytes.read_i32_le(t.params, i * 4) else -1
+
+/// Whether parameter i was introduced by ':'.
+fn colon_at(t: Terminal, i: Int) -> Bool = i < t.n_params and bytes.read_u8(t.colons, i) == 1
+
+fn reply(mut t: Terminal, s: String) -> Unit = { t.replies = t.replies + s }
+
+/// Take the pending replies.
+fn take_replies(mut t: Terminal) -> String = {
+  let r = t.replies
+  t.replies = ""
+  r
+}
