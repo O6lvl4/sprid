@@ -473,7 +473,8 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
               latency_n = latency_n + 1
               input_at = -1
             }
-            ui.dirty = false
+            // A glyph the frame couldn't make in time is made by the next.
+            ui.dirty = r.missed
           }
           list.push(tabs, cur)
           tabs = list.swap(tabs, active, list.len(tabs) - 1)

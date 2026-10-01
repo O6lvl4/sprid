@@ -82,6 +82,16 @@ type Renderer = {
   vtx: Int,
   capacity: Int,
   count: Int,
+  // Pushing a frame's quads: a glyph or emoji not in the atlas yet can't be
+  // made now — uploading it goes through the same staging buffer and would
+  // wipe the quads pushed so far — so it is left out, and `missed` asks for
+  // another frame, which makes it first.
+  pushing: Bool,
+  missed: Bool,
+  // What was left out, made first thing next frame: (code point, bold), and
+  // emoji.
+  wanted: List[(Int, Bool)],
+  wanted_emoji: List[Int],
 }
 
 /// The 256-colour palette: the 16 of the theme, the 6x6x6 cube, 24 greys.
@@ -126,6 +136,10 @@ fn new(device: Int, faces: fonts.Faces, size_px: Int, pad_x: Int, pad_y: Int, ce
     vtx: 0,
     capacity: 0,
     count: 0,
+    pushing: false,
+    missed: false,
+    wanted: [],
+    wanted_emoji: [],
   }
   with_size(r, size_px, pad_x, pad_y, cell_height)
 }
@@ -203,7 +217,11 @@ fn glyph(mut r: Renderer, cp: Int, bold: Bool) -> Int = {
   let k = cp * 2 + (if bold then 1 else 0)
   match map.get(r.glyphs, k) {
     some(slot) => slot,
-    none => {
+    none => if r.pushing then {
+      r.missed = true
+      list.push(r.wanted, (cp, bold))
+      -1
+    } else {
       let (fi, gid) = face_for(r, cp, bold)
       let slot = if gid == 0 then -1 else {
         let before = list.len(r.layer.rects)
@@ -226,7 +244,11 @@ fn glyph(mut r: Renderer, cp: Int, bold: Bool) -> Int = {
 fn emoji_slot(mut r: Renderer, cp: Int) -> Int =
   match map.get(r.emojis, cp) {
     some(slot) => slot,
-    none => {
+    none => if r.pushing then {
+      r.missed = true
+      list.push(r.wanted_emoji, cp)
+      -1
+    } else {
       let slot = if cell_width.of(cp) != 2 or sfnt.glyph_id(r.layer.fonts[0], cp) != 0 then -1 else {
         let img = emoji.bitmap(cp, r.cell_w * 2, r.cell_h)
         if bytes.len(img) <= 8 then -1 else {
@@ -497,6 +519,21 @@ fn draw(mut r: Renderer, t: terminal.Terminal, back: Int, shift: Int, sel: Optio
   for cp in bar {
     let _ = glyph(r, cp, false)
   }
+  // What the last frame had to leave out.
+  for w in r.wanted {
+    let _ = glyph(r, w.0, w.1)
+  }
+  for cp in r.wanted_emoji {
+    let _ = emoji_slot(r, cp)
+  }
+  let none_wanted: List[(Int, Bool)] = []
+  let no_emoji: List[Int] = []
+  r.wanted = none_wanted
+  r.wanted_emoji = no_emoji
+  // What a title cut short ends with.
+  if list.len(titles) > 1 then {
+    let _ = glyph(r, 0x2026, false)
+  }
   var title_chars = 0
   for title in titles {
     for cp in title {
@@ -522,6 +559,8 @@ fn draw(mut r: Renderer, t: terminal.Terminal, back: Int, shift: Int, sel: Optio
   let sx = 2.0 / int.to_float(width)
   let sy = 2.0 / int.to_float(height)
   var n = 0
+  r.missed = false
+  r.pushing = true
   gpu.begin_data()
   for y in 0..<shown {
     match lines[y] {
@@ -605,6 +644,7 @@ fn draw(mut r: Renderer, t: terminal.Terminal, back: Int, shift: Int, sel: Optio
     none => (),
   }
 
+  r.pushing = false
   if n > 0 then gpu.flush_to_buffer(r.device, r.vtx)
   r.count = n * 6
 
