@@ -47,8 +47,11 @@ before closing a busy tab are macOS only for now.
 ## What it does
 
 - **Text**: UDEV Gothic 35NFLG when installed (else SF Mono, Menlo, DejaVu
-  Sans Mono; `SPRID_FONT=<path>` to choose), Japanese and symbol fallbacks,
-  colour emoji, 256 and direct colour. Theme: Tokyo Night Storm.
+  Sans Mono; any installed family by name in the config), Japanese and
+  symbol fallbacks, colour emoji, 256 and direct colour.
+- **Themes**: eight built in, your own as files, a light and a dark one that
+  follow the system appearance. The cursor blinks if you like, and is a
+  hollow box while the window is in the background.
 - **Japanese input**: compositions shown in place at the cursor, the
   candidates beside it.
 - **Interactive CLIs**: kitty keyboard protocol (Shift+Enter is a new line),
@@ -79,8 +82,39 @@ before closing a busy tab are macOS only for now.
 | Line start / end, word | Cmd+← / →, Option+← / → | (the shell's own keys) |
 | Scroll | Cmd+Home / End / PageUp / PageDown / ↑ / ↓ | Ctrl+Shift+Home / End / PageUp / PageDown / ↑ / ↓ |
 
-Not yet: split panes, a config file, notifications, clickable links, emoji
-sequences (ZWJ, skin tones, flags).
+Not yet: split panes, notifications, clickable links, emoji sequences (ZWJ,
+skin tones, flags).
+
+## Config
+
+`~/.config/sprid/config` (or `$XDG_CONFIG_HOME/sprid/config`), one
+`key = value` per line, `#` for comments. Saving it applies it at once.
+
+```
+font-family = Menlo
+font-size = 15
+theme = light:Almide Light,dark:Tokyo Night Storm
+cursor-style = bar              # block, underline, bar
+cursor-style-blink = true
+macos-option-as-alt = left      # true, false, left, right
+```
+
+| Key | Default |
+|---|---|
+| `font-family`, `font-size` | (see Text above), `14.5` |
+| `adjust-cell-height` | `0%` — taller or shorter lines |
+| `window-padding-x`, `window-padding-y` | `12`, `8` |
+| `theme` | `Tokyo Night Storm` |
+| `background`, `foreground`, `cursor-color`, `selection-background` | the theme's — `#rrggbb` |
+| `palette` | the theme's — `palette = 1=#ff5555`, once per colour 0–15 |
+| `scrollback-limit` | `10000000` bytes of text (`KB`, `MB`, `GB` also read) |
+| `cursor-style`, `cursor-style-blink` | `block`, `false` |
+| `macos-option-as-alt` | `false` |
+
+Themes built in: Tokyo Night Storm, Almide Light, Almide Dark, Catppuccin
+Mocha, Catppuccin Latte, Dracula, Solarized Dark, Solarized Light. Any other
+name is read from `~/.config/sprid/themes/<name>`, a file of the colour keys
+above.
 
 ## Build
 

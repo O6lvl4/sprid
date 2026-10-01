@@ -35,6 +35,24 @@ a synchronized update (mode 2026), or with the cursor hidden by a program
 that hides it while it draws, the frame waits for the rest, and the PTY is
 read through to it rather than 1 KB per turn of the loop.
 
+## Config and themes
+
+The config is parsed into key/value entries (`src/config.almd`), read into
+settings with defaults and a note on stderr for each value that can't be
+used (`src/settings.almd`). A theme (`src/theme.almd`) is the 16 colours,
+background, foreground, cursor and selection; the window's own colours —
+tab bar, rules, find marks — are worked out from them, so a theme file of
+those few keys dresses the whole window. The config's colour keys apply
+over whichever theme is chosen.
+
+The file is watched with kqueue (macOS) or inotify (Linux) on the file and
+its directory, so a save by rename — what most editors do — is seen too;
+the watch fd sits beside the PTYs in the loop's wait, costing nothing
+while idle. A font family is found by reading the `name` table of every
+font file in the usual font directories (`src/gui/fontname.almd`), the
+typographic family and style first, so the names match what font menus
+show.
+
 ## What moved memory and start
 
 - **No GPU transfer commands.** On Metal, the first blit of a process makes
