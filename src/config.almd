@@ -63,6 +63,66 @@ let KEYS = ["font-family", "font-size", "adjust-cell-height", "theme", "backgrou
   "clipboard-write", "clipboard-read", "clipboard-paste-protection", "bell-features",
   "copy-on-select", "shell-integration", "window-save-state"]
 
+/// A new config file: every key at its default, commented out — take the
+/// `#` off a line to change it. Uncommented as it is, it changes nothing.
+let TEMPLATE = [
+  "# sprid's settings, one `key = value` per line; saving applies them.",
+  "# Every key is below at its default, commented out: take the `#` off a",
+  "# line to change it. More: https://github.com/O6lvl4/sprid#config",
+  "",
+  "# A font by family name; empty for sprid's choice.",
+  "# font-family =",
+  "# font-size = 14.5",
+  "# Taller or shorter lines, as a percentage.",
+  "# adjust-cell-height = 0%",
+  "# window-padding-x = 12",
+  "# window-padding-y = 8",
+  "",
+  "# A theme, or one per system appearance: light:Almide Light,dark:Tokyo Night Storm.",
+  "# Built in: Tokyo Night Storm, Almide Light, Almide Dark, Catppuccin Mocha,",
+  "# Catppuccin Latte, Dracula, Solarized Dark, Solarized Light; any other name",
+  "# is read from ~/.config/sprid/themes/<name>.",
+  "# theme = Tokyo Night Storm",
+  "# Colours over the theme's, #rrggbb; empty for the theme's own.",
+  "# background =",
+  "# foreground =",
+  "# cursor-color =",
+  "# selection-background =",
+  "# One of the 16 colours, N=#rrggbb, once per colour: palette = 1=#ff5555.",
+  "# palette =",
+  "",
+  "# block, underline or bar.",
+  "# cursor-style = bar",
+  "# cursor-style-blink = false",
+  "",
+  "# Bytes of text kept to scroll back to; KB, MB and GB are read too.",
+  "# scrollback-limit = 10000000",
+  "",
+  "# Which Option keys type as Alt: true, false, left, right.",
+  "# macos-option-as-alt = false",
+  "",
+  "# Programs setting the clipboard: allow or deny.",
+  "# clipboard-write = allow",
+  "# Programs reading it: ask, allow or deny.",
+  "# clipboard-read = ask",
+  "# Ask before pasting line breaks.",
+  "# clipboard-paste-protection = true",
+  "# A selection becomes the PRIMARY selection (true), the clipboard too",
+  "# (clipboard), or neither (false).",
+  "# copy-on-select = true",
+  "",
+  "# What a bell does: flash, attention, title, system (the alert sound);",
+  "# no-flash and the like turn one off.",
+  "# bell-features = flash,attention,title",
+  "",
+  "# detect, or none to start the shell as it is.",
+  "# shell-integration = detect",
+  "# Whether tabs come back when sprid opens again: default (as the system",
+  "# says), always, never.",
+  "# window-save-state = default",
+  "",
+] |> list.join("\n")
+
 /// The keys in `c` sprid doesn't know.
 fn unknown(c: Config) -> List[String] =
   c.entries |> list.map((e) => e.0) |> list.filter((k) => not list.contains(KEYS, k)) |> list.unique
@@ -140,4 +200,12 @@ test "values" {
   assert_eq(theme_pair("light:Almide Light,dark:Tokyo Night Storm"), ("Almide Light", "Tokyo Night Storm"))
   assert_eq(theme_pair("Dracula"), ("Dracula", "Dracula"))
   assert_eq(theme_pair("dark:Dracula"), ("Dracula", "Dracula"))
+}
+
+test "the template lists every key, and as it is sets nothing" {
+  for key in KEYS {
+    assert(string.contains(TEMPLATE, "\n# ${key} ="))
+  }
+  let c = parse(TEMPLATE)
+  assert_eq((list.len(c.entries), c.problems), (0, empty().problems))
 }

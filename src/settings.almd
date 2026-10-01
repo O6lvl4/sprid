@@ -224,3 +224,13 @@ test "shell integration is on unless turned off" {
   assert_eq((defaults().shell_integration, from(config.parse("shell-integration = none")).shell_integration), (true, false))
   assert_eq(from(config.parse("shell-integration = zsh")).problems, ["shell-integration: can't use \"zsh\""])
 }
+
+test "the config template, every line taken out of its comment, is the defaults" {
+  let lines = string.lines(config.TEMPLATE) |> list.map((l) =>
+    if list.any(config.KEYS, (k) => string.starts_with(l, "# ${k} =")) then string.drop(l, 2) else l)
+  let s = from(config.parse(list.join(lines, "\n")))
+  assert_eq(s.problems, defaults().problems)
+  // `bar` is the steady bar sprid shows by default, said outright.
+  assert_eq(s.cursor_shape, 6)
+  assert_eq({ ...s, file: config.empty(), cursor_shape: 0 }, defaults())
+}

@@ -125,6 +125,8 @@ Not yet: emoji sequences (ZWJ, skin tones, flags).
 
 `~/.config/sprid/config` (or `$XDG_CONFIG_HOME/sprid/config`), one
 `key = value` per line, `#` for comments. Saving it applies it at once.
+Opening Settings makes it when there is none, with every key below at its
+default, commented out.
 
 ```
 font-family = Menlo

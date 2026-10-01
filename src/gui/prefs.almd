@@ -18,13 +18,22 @@ effect fn config_dir() -> String = match env.get("XDG_CONFIG_HOME") {
 
 effect fn config_path() -> String = config_dir()! + "/config"
 
-/// The config file opened in the text editor — made first, with a pointer
-/// to what it can say, when there is none. Saving it applies it.
+/// What a new config file once held: a pointer to the keys, and nothing
+/// the user wrote.
+let OLD_TEMPLATE = "# sprid's settings, one `key = value` per line; saving applies them.\n# The keys: https://github.com/O6lvl4/sprid#config\n"
+
+/// The config file opened in the text editor — made first, every key in it
+/// commented out, when there is none (or only what a new one once held).
+/// Saving it applies it.
 effect fn edit_config() -> Unit = {
   let path = config_path()!
-  if not fs.exists(path) then {
+  let held = match fs.read_text_if_exists(path) {
+    ok(found) => found,
+    err(_) => some(""),
+  }
+  if held == none or held == some(OLD_TEMPLATE) then {
     let _ = fs.mkdir_p(config_dir()!)
-    let _ = fs.write(path, "# sprid's settings, one `key = value` per line; saving applies them.\n# The keys: https://github.com/O6lvl4/sprid#config\n")
+    let _ = fs.write(path, config.TEMPLATE)
   }
   let _ = sys.open_text(path)
 }
