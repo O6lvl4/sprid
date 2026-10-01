@@ -74,7 +74,7 @@ fn glyph_id(f: &Font, cp: u32) -> u32 {
             let g = at + 16 + mid * 12;
             let (start, end) = (u32_at(d, g).unwrap_or(0), u32_at(d, g + 4).unwrap_or(0));
             if cp < start { hi = mid } else if cp > end { lo = mid + 1 } else {
-                gid = u32_at(d, g + 8).map(|s| s + cp - start);
+                gid = u32_at(d, g + 8).and_then(|s| s.checked_add(cp - start));
                 break;
             }
         }
@@ -116,7 +116,7 @@ fn png_of(f: &Font, gid: u32, px: u32) -> Option<(&[u8], u16)> {
         let o = at + 4 + gid as usize * 4;
         let (start, end) = (u32_at(d, o)? as usize, u32_at(d, o + 4)? as usize);
         if end > start + 8 && d.get(at + start + 4..at + start + 8) == Some(b"png ") {
-            return Some((&d[at + start + 8..at + end], ppem));
+            return d.get(at + start + 8..at + end).map(|png| (png, ppem));
         }
     }
     None

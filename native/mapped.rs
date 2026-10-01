@@ -38,9 +38,12 @@ fn slot_of(ptr: *mut u8) -> Option<usize> {
 
 /// Unmap the mapping in slot `i` and free the slot.
 unsafe fn unmap(i: usize) {
-    let (start, len) = (STARTS[i].load(Ordering::Acquire), LENS[i].load(Ordering::Acquire));
+    // The slot is freed before the pages: once unmapped, the address may come
+    // back from another thread's allocation, and must not still look like
+    // this mapping to `slot_of`.
+    let len = LENS[i].load(Ordering::Acquire);
+    let start = STARTS[i].swap(0, Ordering::AcqRel);
     unsafe { libc::munmap(start as *mut libc::c_void, len) };
-    STARTS[i].store(0, Ordering::Release);
 }
 
 unsafe impl GlobalAlloc for Mapped {

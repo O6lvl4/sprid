@@ -18,8 +18,18 @@ fn wait(fds: List[Int], timeout_ms: Int) -> Unit = _
 @extern(rust, "crate::pty", "eof")
 fn eof(fd: Int) -> Bool = _
 
+/// Send `data` to the program on `fd`: what it doesn't take now waits for
+/// `flush`. `false` once the PTY is gone.
 @extern(rust, "crate::pty", "write")
 fn write(fd: Int, data: String) -> Bool = _
+
+/// Write what still waits for `fd`, as much as the program takes.
+@extern(rust, "crate::pty", "flush")
+fn flush(fd: Int) -> Bool = _
+
+/// Whether input for `fd` still waits to be written.
+@extern(rust, "crate::pty", "pending")
+fn pending(fd: Int) -> Bool = _
 
 @extern(rust, "crate::pty", "resize")
 fn resize(fd: Int, cols: Int, rows: Int) -> Bool = _

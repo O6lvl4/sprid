@@ -177,3 +177,11 @@ pub fn open_window(cwd: &str) -> bool {
     use std::process::Stdio;
     cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().is_ok()
 }
+
+/// Ignore SIGPIPE, as a GUI program should: a clipboard tool that exits
+/// before taking all it was given must not take the terminal down with it.
+/// Programs started on a PTY get the default back (`pty::spawn`), and
+/// std's `Command` restores it for the ones it starts.
+pub fn ignore_sigpipe() {
+    unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) };
+}

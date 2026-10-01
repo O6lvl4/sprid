@@ -56,6 +56,8 @@ let SETTLE_MS = 300
 let SYNC_LIMIT = 150
 /// Longest the screen waits while a program has hidden the cursor to draw, ms.
 let HIDDEN_LIMIT = 100
+/// How soon input a program hasn't taken is offered again, ms.
+let WRITE_RETRY_MS = 5
 /// Longest a read waits for the rest of a screen a program is drawing, ms.
 let MID_UPDATE_GAP_MS = 10
 /// Longest the screen waits for a full-screen program's first screen, ms.
@@ -150,6 +152,7 @@ type Act = | Stay | NewTab | CloseTab | NextTab | PrevTab | GoTo(Int) | NewWindo
 effect fn run(opts: Options) -> Unit = {
   // Before anything starts a program: the shell, the clipboard's tools.
   sys.ensure_utf8_locale()
+  sys.ignore_sigpipe()
   run_fonts(opts)!
 }
 
@@ -259,7 +262,9 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
     let settle_wait = if resized_at < 0 then -1 else int.max(0, resized_at + SETTLE_MS - now)
     let drawn_wait = if ui.dirty then int.max(frame_wait, sync_wait(tabs, active, now)) else idle
     let auto_wait = if auto_next < 0 then -1 else int.max(0, auto_next - now)
-    let timeout = sooner(sooner(drawn_wait, settle_wait), auto_wait)
+    // Input a program hasn't taken yet (a big paste) is offered again soon.
+    let write_wait = if list.any(tabs, (tb) => pty.pending(tb.fd)) then WRITE_RETRY_MS else -1
+    let timeout = sooner(sooner(sooner(drawn_wait, settle_wait), auto_wait), write_wait)
     // With no time to wait, just take the window's events: arming the fd
     // watcher on every turn of a streaming loop costs more than it saves.
     alive = if timeout == 0 then window.pump() else window.wait_fds(list.map(tabs, (tb) => tb.fd), timeout)
@@ -395,6 +400,12 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
         none => (),
       }
       auto_next = if sys.now_ms() >= float.to_int(auto[2]) then -1 else auto_next + float.to_int(auto[3])
+    }
+
+    for tb in tabs {
+      if pty.pending(tb.fd) then {
+        let _ = pty.flush(tb.fd)
+      }
     }
 
     // Every tab's output, the active tab's with the longer budget.

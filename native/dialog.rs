@@ -27,6 +27,8 @@ mod mac {
         fn objc_getClass(name: *const c_char) -> Id;
         fn sel_registerName(name: *const c_char) -> Id;
         fn objc_msgSend();
+        fn objc_autoreleasePoolPush() -> *mut c_void;
+        fn objc_autoreleasePoolPop(pool: *mut c_void);
     }
     #[link(name = "AppKit", kind = "framework")]
     extern "C" {}
@@ -64,6 +66,17 @@ mod mac {
     const WARNING: isize = 0;
 
     pub unsafe fn confirm(message: &str, detail: &str, ok: &str, cancel: &str) -> bool {
+        unsafe {
+            // The strings below are autoreleased; this is called between
+            // event pumps, outside any pool that would release them.
+            let pool = objc_autoreleasePoolPush();
+            let answer = ask(message, detail, ok, cancel);
+            objc_autoreleasePoolPop(pool);
+            answer
+        }
+    }
+
+    unsafe fn ask(message: &str, detail: &str, ok: &str, cancel: &str) -> bool {
         unsafe {
             let alert = send(send(objc_getClass(c"NSAlert".as_ptr()), "alloc"), "init");
             send_int(alert, "setAlertStyle:", WARNING);

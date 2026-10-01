@@ -33,3 +33,7 @@ fn clipboard_get() -> String = _
 /// Start another sprid, a new window, in `cwd` (see native/sys.rs).
 @extern(rust, "crate::sys", "open_window")
 fn open_window(cwd: String) -> Bool = _
+
+/// Ignore SIGPIPE (see native/sys.rs).
+@extern(rust, "crate::sys", "ignore_sigpipe")
+fn ignore_sigpipe() -> Unit = _
