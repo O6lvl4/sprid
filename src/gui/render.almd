@@ -61,6 +61,8 @@ type Renderer = {
   cursor_default: Int,
   focused: Bool,
   blink_off: Bool,
+  // The visual bell: the screen lit for a moment.
+  flash: Bool,
   palette: List[Int],
   // (code point * 2 + bold) -> glyph cache slot, -1 for no glyph.
   glyphs: Map[Int, Int],
@@ -125,6 +127,7 @@ fn new(device: Int, faces: fonts.Faces, size_px: Int, pad_x: Int, pad_y: Int, ce
     cursor_default: 0,
     focused: true,
     blink_off: false,
+    flash: false,
     palette: palette256(theme.default().ansi),
     glyphs: [:],
     emojis: [:],
@@ -541,7 +544,7 @@ fn draw(mut r: Renderer, t: terminal.Terminal, back: Int, shift: Int, sel: Optio
   // Room for the worst case: per cell a background, a glyph and two lines,
   // plus marks, the cursor, the scrollbar and the composition.
   let quads = shown * t.cols * 4 + 2 + marks_total + 7 + list.len(preedit) * 3 + title_chars + list.len(titles) * 3 + 1
-    + list.len(bar) * 3 + FIND_QUADS
+    + list.len(bar) * 3 + FIND_QUADS + 1
   if quads * 6 > r.capacity then {
     // Grow by half again, so a count creeping up doesn't replace the buffer
     // every frame, and free the old one: its GPU memory isn't reclaimed
@@ -641,6 +644,11 @@ fn draw(mut r: Renderer, t: terminal.Terminal, back: Int, shift: Int, sel: Optio
     let (y0, y1) = thumb(r, t, back, shift, list.len(tabs), height)
     let w = scrollbar_width(r)
     rect(r, width - w - r.pad_x / 4, y0, width - r.pad_x / 4, y1, r.theme.fg, if back > 0 or shift > 0 then 0.4 else 0.2, sx, sy)
+    n = n + 1
+  }
+
+  if r.flash then {
+    rect(r, 0, grid_top(r, list.len(tabs)) - r.pad_y, width, height, r.theme.fg, 0.12, sx, sy)
     n = n + 1
   }
 

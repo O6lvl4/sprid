@@ -35,6 +35,8 @@ import self.view
 
 /// How often a blinking cursor turns on or off, ms.
 let BLINK_MS = 530
+/// How long the visual bell lights the screen, ms.
+let FLASH_MS = 120
 /// Cmd+Minus and Cmd+Plus go no further than these, points.
 let MIN_FONT_SIZE = 6.0
 let MAX_FONT_SIZE = 72.0
@@ -281,6 +283,8 @@ effect fn run_with(opts: Options, faces: fonts.Faces, s: settings.Settings) -> U
   let config_fd = if capture == none then sys.watch(config_path()!) else -1
   // A blinking cursor: when it next turns on or off, -1 when it doesn't blink.
   var blink_at = -1
+  // When the visual bell's light goes out; -1 when it is not lit.
+  var flash_until = -1
 
   let (cols, rows) = render.grid_size(r, width, height, 1)
   if (cols, rows) != expected then { let _ = pty.resize(first_fd, cols, rows) } else ()
@@ -356,7 +360,13 @@ effect fn run_with(opts: Options, faces: fonts.Faces, s: settings.Settings) -> U
       r.blink_off = false
     }
     let blink_wait = if blink_at < 0 then -1 else int.max(0, blink_at - now)
-    let timeout = sooner(sooner(sooner(sooner(drawn_wait, settle_wait), auto_wait), write_wait), blink_wait)
+    if flash_until >= 0 and now >= flash_until then {
+      r.flash = false
+      flash_until = -1
+      ui.dirty = true
+    }
+    let flash_wait = if flash_until < 0 then -1 else int.max(0, flash_until - now)
+    let timeout = sooner(sooner(sooner(sooner(sooner(drawn_wait, settle_wait), auto_wait), write_wait), blink_wait), flash_wait)
     // With no time to wait, just take the window's events: arming the fd
     // watcher on every turn of a streaming loop costs more than it saves.
     alive = if timeout == 0 then window.pump() else window.wait_fds(list.map(tabs, (tb) => tb.fd) + (if config_fd >= 0 then [config_fd] else []), timeout)
@@ -587,21 +597,31 @@ effect fn run_with(opts: Options, faces: fonts.Faces, s: settings.Settings) -> U
               some(text) => if st.clipboard_write then { let _ = sys.clipboard_set(text) },
               none => (),
             }
+            let asked = terminal.take_clipboard_ask(cur.t)
+            if asked != "" and (st.clipboard_read == "allow" or (st.clipboard_read == "ask" and clipboard_read_ok(title_of(cur, home), ja)!)) then {
+              let _ = pty.write(cur.fd, terminal.clipboard_reply(asked, clipboard()!))
+            }
             let notices = terminal.take_notices(cur.t)
-            if cur.t.bells != bells_before or list.len(notices) > 0 then {
-              // Marked where it isn't being looked at; the Dock asked to
-              // show it when the window is in the background, and the
-              // notifications shown there.
-              if i != active or not r.focused then {
-                if not cur.alert then ui.dirty = true
-                cur.alert = true
-              }
-              if not r.focused then {
-                window.request_attention()
-                for (title, body) in notices {
-                  dialog.notify(if title != "" then title else title_of(cur, home), body)
-                }
-              }
+            let bell = cur.t.bells != bells_before
+            let looked_at = i == active and r.focused
+            // A bell: the screen lit where it is being looked at, a sound if
+            // asked for.
+            if bell and looked_at and st.bell_flash then {
+              r.flash = true
+              flash_until = sys.now_ms() + FLASH_MS
+              ui.dirty = true
+            }
+            if bell and st.bell_system then dialog.beep()
+            // Marked where it isn't being looked at; the Dock asked to show
+            // it when the window is in the background, and notifications
+            // shown there.
+            if (bell and st.bell_title or list.len(notices) > 0) and not looked_at and not cur.alert then {
+              cur.alert = true
+              ui.dirty = true
+            }
+            if not r.focused and (bell and st.bell_attention or list.len(notices) > 0) then window.request_attention()
+            if not r.focused then for (title, body) in notices {
+              dialog.notify(if title != "" then title else title_of(cur, home), body)
             }
           }
           // A tab in the back retitled itself: the tab bar shows it.
@@ -1566,6 +1586,11 @@ effect fn copy(s: String) -> Unit = {
 }
 
 effect fn clipboard() -> String = sys.clipboard_get()
+
+/// Ask whether the program in the tab called `tab` may read the clipboard.
+effect fn clipboard_read_ok(tab: String, ja: Bool) -> Bool =
+  if ja then dialog.confirm("クリップボードの読み取りを許可しますか？", "「${tab}」のプログラムがクリップボードの内容を求めています。", "許可", "拒否")
+  else dialog.confirm("Let the program read the clipboard?", "The program in \"${tab}\" asks for what is on the clipboard.", "Allow", "Deny")
 
 /// Ask before pasting `text`, which has line breaks, where they would run
 /// each line as it arrives.

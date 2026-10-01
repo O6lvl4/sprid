@@ -9,3 +9,7 @@ fn confirm(message: String, detail: String, yes: String, no: String) -> Bool = _
 /// elsewhere); never waits.
 @extern(rust, "crate::dialog", "notify")
 fn notify(title: String, body: String) -> Unit = _
+
+/// The system's alert sound (macOS; nothing elsewhere).
+@extern(rust, "crate::dialog", "beep")
+fn beep() -> Unit = _

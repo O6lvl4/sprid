@@ -38,6 +38,14 @@ pub fn notify(title: &str, body: &str) {
     }
 }
 
+/// The system's alert sound. Nothing elsewhere than macOS.
+pub fn beep() {
+    #[cfg(target_os = "macos")]
+    unsafe {
+        mac::NSBeep()
+    }
+}
+
 #[cfg(target_os = "macos")]
 mod mac {
     use std::ffi::{c_char, c_void, CString};
@@ -53,7 +61,9 @@ mod mac {
         fn objc_autoreleasePoolPop(pool: *mut c_void);
     }
     #[link(name = "AppKit", kind = "framework")]
-    extern "C" {}
+    extern "C" {
+        pub fn NSBeep();
+    }
 
     unsafe fn sel(name: &str) -> Id {
         let c = CString::new(name).unwrap();

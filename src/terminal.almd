@@ -133,6 +133,9 @@ type Terminal = {
   notice_parts: (String, String, String),
   /// Text to put on the clipboard (OSC 52), for the window to take.
   clipboard: Option[String],
+  /// A program asked to read the clipboard (OSC 52 with `?`): the targets
+  /// it named, for the window to answer or not; "" when none asked.
+  clipboard_asked: String,
   sb: scrollback.Scrollback,
   // Parser.
   state: Int,
@@ -215,6 +218,7 @@ fn with_scrollback(cols: Int, rows: Int, limit: Int) -> Terminal = {
     notices: [],
     notice_parts: ("", "", ""),
     clipboard: none,
+    clipboard_asked: "",
     sb: scrollback.new(limit),
     state: GROUND,
     params: bytes.new(MAX_PARAMS * 4),
@@ -1265,10 +1269,11 @@ fn osc_dispatch(mut t: Terminal) -> Unit = {
     }
   } else if cmd == "99" then kitty_notice(t, arg)
   else if cmd == "52" then {
-    // `52;targets;base64`: only setting is honoured — a program reading the
-    // clipboard (`?`) could take what was copied elsewhere.
-    let data = (string.split_once(arg, ";") ?? ("", "")).1
-    if data != "?" then match base64.decode(data) {
+    // `52;targets;base64` sets the clipboard; `52;targets;?` asks for it,
+    // which the window answers only if the user lets it (`clipboard_reply`).
+    let (targets, data) = string.split_once(arg, ";") ?? ("", "")
+    if data == "?" then t.clipboard_asked = if targets == "" then "c" else targets
+    else match base64.decode(data) {
       ok(b) => { t.clipboard = some(bytes.to_string_lossy(b)) },
       err(_) => (),
     }
@@ -1322,6 +1327,18 @@ fn take_notices(mut t: Terminal) -> List[(String, String)] = {
   t.notices = none_yet
   n
 }
+
+/// Take a program's request to read the clipboard: the targets it named,
+/// "" when there is none.
+fn take_clipboard_ask(mut t: Terminal) -> String = {
+  let a = t.clipboard_asked
+  t.clipboard_asked = ""
+  a
+}
+
+/// The answer to a clipboard read (OSC 52) for `targets`: `text` as base64.
+fn clipboard_reply(targets: String, text: String) -> String =
+  "\x1b]52;${targets};${base64.encode(bytes.from_string(text))}\x1b\\"
 
 /// Take the text a program put on the clipboard since last time.
 fn take_clipboard(mut t: Terminal) -> Option[String] = {
@@ -1765,12 +1782,13 @@ test "notifications: OSC 9, 777, 99 in parts, not ConEmu's 9;4" {
   assert_eq(take_notices(t), [])
 }
 
-test "OSC 52 sets the clipboard, never reads it" {
+test "OSC 52 sets the clipboard; a read is passed on, not answered" {
   var t = new(20, 3)
   feed_string(t, "\x1b]52;c;5pel5pys6Kqe\x07")
   assert_eq(take_clipboard(t), some("日本語"))
   feed_string(t, "\x1b]52;c;?\x07")
-  assert_eq((take_clipboard(t), take_replies(t)), (none, ""))
+  assert_eq((take_clipboard(t), take_replies(t), take_clipboard_ask(t), take_clipboard_ask(t)), (none, "", "c", ""))
+  assert_eq(clipboard_reply("c", "日本語"), "\x1b]52;c;5pel5pys6Kqe\x1b\\")
 }
 
 test "a title with semicolons and UTF-8" {

@@ -22,8 +22,17 @@ type Settings = {
   cursor_shape: Int,
   // Which Option keys type as Alt: 0 neither, 1 both, 2 left, 3 right.
   option_as_alt: Int,
-  // Programs may set the clipboard (OSC 52).
+  // Programs may set the clipboard (OSC 52); reading it is asked first
+  // ("ask"), always let ("allow") or never ("deny").
   clipboard_write: Bool,
+  clipboard_read: String,
+  // What a bell does: the screen lit for a moment, the Dock icon bounced
+  // while the window is in the background, the tab marked, the system's
+  // alert sound.
+  bell_flash: Bool,
+  bell_attention: Bool,
+  bell_title: Bool,
+  bell_system: Bool,
   // Ask before pasting line breaks where they would run each line.
   paste_protection: Bool,
   // The file as parsed, for the colours it sets over the theme.
@@ -41,7 +50,8 @@ fn defaults() -> Settings = {
   Settings {
     font_family: "", font_size: DEFAULT_FONT_SIZE, cell_height: DEFAULT_CELL_HEIGHT, pad_x: 12.0, pad_y: 8.0,
     theme_light: DEFAULT_THEME, theme_dark: DEFAULT_THEME, scrollback: DEFAULT_SCROLLBACK,
-    cursor_shape: 0, option_as_alt: 0, clipboard_write: true, paste_protection: true, file: config.empty(), problems: problems,
+    cursor_shape: 0, option_as_alt: 0, clipboard_write: true, clipboard_read: "ask",
+    bell_flash: true, bell_attention: true, bell_title: true, bell_system: false, paste_protection: true, file: config.empty(), problems: problems,
   }
 }
 
@@ -123,6 +133,26 @@ fn from(c: config.Config) -> Settings = {
       else list.push(problems, bad("clipboard-write", v)),
     none => (),
   }
+  match config.get(c, "clipboard-read") {
+    some(v) => if v == "ask" or v == "allow" or v == "deny" then { s.clipboard_read = v }
+      else list.push(problems, bad("clipboard-read", v)),
+    none => (),
+  }
+  // `bell-features = flash,no-attention,system`: each one named is on,
+  // each with `no-` off, the rest as they were.
+  match config.get(c, "bell-features") {
+    some(v) => for item in string.split(v, ",") {
+      let name = string.trim(item)
+      let on = not string.starts_with(name, "no-")
+      let feature = if on then name else string.drop(name, 3)
+      if feature == "flash" then { s.bell_flash = on }
+      else if feature == "attention" then { s.bell_attention = on }
+      else if feature == "title" then { s.bell_title = on }
+      else if feature == "system" then { s.bell_system = on }
+      else if name != "" then list.push(problems, bad("bell-features", name))
+    },
+    none => (),
+  }
   match config.get(c, "clipboard-paste-protection") {
     some(v) => match config.flag(v) {
       some(b) => { s.paste_protection = b },
@@ -166,6 +196,9 @@ test "values from the file, problems for the rest" {
   assert_eq(s.problems, ["unknown key: font-size2", "window-padding-x: can't use \"x\""])
   let c = from(config.parse("clipboard-write = deny\nclipboard-paste-protection = false"))
   assert_eq((c.clipboard_write, c.paste_protection, s.clipboard_write, s.paste_protection), (false, false, true, true))
+  let b = from(config.parse("bell-features = no-flash, system,bogus\nclipboard-read = allow"))
+  assert_eq((b.bell_flash, b.bell_attention, b.bell_title, b.bell_system, b.clipboard_read), (false, true, true, true, "allow"))
+  assert_eq(b.problems, ["bell-features: can't use \"bogus\""])
 }
 
 test "the theme for each appearance, with the file's colours over it" {

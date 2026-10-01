@@ -64,9 +64,10 @@ before closing a busy tab or pasting line breaks, are macOS only for now.
   case.
 - **Notifications**: a program's notifications (OSC 9, 777, 99) appear in
   Notification Center (notify-send on Linux) while the window is in the
-  background; a bell or
+  background; a bell lights the screen for a moment, and a bell or
   notification marks the tab it came from until you look, and bounces the
-  Dock icon. Programs may set the clipboard (OSC 52) but never read it.
+  Dock icon. Programs may set the clipboard (OSC 52); reading it is asked
+  first.
   Pasting line breaks into a shell that would run each line asks first.
 - **Tabs**: open in the current directory, switch by click or keys, rename by
   double-click; the window takes the title of the tab in front. Closing a tab, the window or the app asks first while a
@@ -117,6 +118,8 @@ macos-option-as-alt = left      # true, false, left, right
 | `cursor-style`, `cursor-style-blink` | `block`, `false` |
 | `macos-option-as-alt` | `false` |
 | `clipboard-write` | `allow` — or `deny` programs setting the clipboard |
+| `clipboard-read` | `ask` — or `allow`, `deny` |
+| `bell-features` | `flash,attention,title` — add `system` for the alert sound, `no-flash` etc. to turn one off |
 | `clipboard-paste-protection` | `true` — ask before pasting line breaks |
 
 Themes built in: Tokyo Night Storm, Almide Light, Almide Dark, Catppuccin
