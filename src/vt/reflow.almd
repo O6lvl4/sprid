@@ -100,78 +100,91 @@ fn reflow(mut t: core.Terminal, cols: Int, rows: Int, all: Bool) -> Unit = {
     sb: fresh, to_screen: false, rows: no_rows, rows_wrapped: no_flags, rows_marks: no_row_marks,
     cursor_row: 0, cursor_x: 0,
   }
-  // Scrollback, record by record; a line still open at its end continues
-  // on the screen. A whole line that fits the new width — most lines — moves
-  // over as it is.
-  let old_lines = if all then scrollback.records(t.sb) else []
-  for (block, start, end) in old_lines {
+  if all then rewrap_scrollback(w, t.sb)
+  w.to_screen = true
+  rewrap_screen(w, t)
+  place(t, w, cols, rows)
+}
+
+/// Scrollback, record by record; a line still open at its end continues
+/// on the screen. A whole line that fits the new width — most lines — moves
+/// over as it is.
+fn rewrap_scrollback(mut w: Rewrap, sb: scrollback.Scrollback) -> Unit = {
+  for (block, start, end) in scrollback.records(sb) {
     let used = record.used(block, start)
-    let whole = w.len == 0 and bytes.read_u8(block, start + 2) == 0 and used <= cols
+    let whole = w.len == 0 and bytes.read_u8(block, start + 2) == 0 and used <= w.cols
     if whole then scrollback.push(w.sb, bytes.slice(block, start - 4, end))
     else {
       let row = record.decode(block, start, end, used)
-      var cells = row.cells
-      // Spaces decode as empty cells; inside the line they are spaces, which
-      // must stay, or wrapping again would drop them from the ends of rows.
-      for x in 0..<used {
-        let o = x * cell.SIZE
-        if bytes.read_u32_le(cells, o + cell.OFF_CP) == 0 and bytes.read_u8(cells, o + cell.OFF_WIDTH) == 1 then
-          bytes.set_u32_le(cells, o + cell.OFF_CP, 32)
-      }
-      gather(w, cells, 0, used, row.extras)
+      gather(w, spaced(row.cells, used), 0, used, row.extras)
       if not row.wrapped then flush_line(w)
     }
   }
-  // The screen, down to the cursor or the last row with anything on it.
-  w.to_screen = true
+}
+
+/// `cells` with the empty ones up to `used` as spaces: spaces decode as
+/// empty cells, and inside a line they must stay, or wrapping again would
+/// drop them from the ends of rows.
+fn spaced(cells: Bytes, used: Int) -> Bytes = {
+  var out = cells
+  for x in 0..<used {
+    let o = x * cell.SIZE
+    if bytes.read_u32_le(out, o + cell.OFF_CP) == 0 and bytes.read_u8(out, o + cell.OFF_WIDTH) == 1 then
+      bytes.set_u32_le(out, o + cell.OFF_CP, 32)
+  }
+  out
+}
+
+/// The screen, down to the cursor or the last row with anything on it.
+fn rewrap_screen(mut w: Rewrap, t: core.Terminal) -> Unit = {
+  let last = last_row(t)
+  for y in 0...last {
+    let off = screen.row_off(t, y)
+    let used = record.used_cols_at(t.grid, off, t.cols)
+    if y == t.y then gather_cursor_row(w, t, off, used)
+    else gather(w, t.grid, off, used, screen.row_extras(t, y))
+    if bytes.read_u8(t.wrapped, screen.phys(t, y)) != 1 or y == last then flush_line(w)
+  }
+}
+
+/// The last row with anything on it, or wrapped, or the cursor's.
+fn last_row(t: core.Terminal) -> Int = {
   var last = t.y
   for y in 0..<t.rows {
     if record.used_cols_at(t.grid, screen.row_off(t, y), t.cols) > 0 or bytes.read_u8(t.wrapped, screen.phys(t, y)) == 1 then last = int.max(last, y)
   }
-  for y in 0...last {
-    let off = screen.row_off(t, y)
-    let used = record.used_cols_at(t.grid, off, t.cols)
-    let wrapped = bytes.read_u8(t.wrapped, screen.phys(t, y)) == 1
-    var n = used
-    if y == t.y then {
-      // Where the next character goes: past the last column when a wrap is
-      // pending.
-      let at = t.x + (if t.pending_wrap then 1 else 0)
-      w.cursor = w.len + at
-      n = int.max(used, int.min(at + 1, t.cols))
-      if at >= t.cols then {
-        gather(w, t.grid, off, n, screen.row_extras(t, y))
-        gather(w, cell.blank_row(1, cell.COLOR_DEFAULT), 0, 1, no_marks)
-        n = -1
-      }
-    }
-    if n >= 0 then gather(w, t.grid, off, n, screen.row_extras(t, y))
-    if not wrapped or y == last then flush_line(w)
+  last
+}
+
+/// The cursor's row, marking where the next character goes: past the last
+/// column when a wrap is pending.
+fn gather_cursor_row(mut w: Rewrap, t: core.Terminal, off: Int, used: Int) -> Unit = {
+  let at = t.x + (if t.pending_wrap then 1 else 0)
+  w.cursor = w.len + at
+  let n = int.max(used, int.min(at + 1, t.cols))
+  gather(w, t.grid, off, n, screen.row_extras(t, t.y))
+  if at >= t.cols then {
+    let no_marks: Map[Int, String] = [:]
+    gather(w, cell.blank_row(1, cell.COLOR_DEFAULT), 0, 1, no_marks)
   }
-  // The rows before the screen's first go to scrollback; the screen ends at
-  // the last row, unless that would push the cursor's off the top.
+}
+
+/// The rewrapped rows into `t`: those before the screen's first to
+/// scrollback, the screen ending at the last row unless that would push the
+/// cursor's off the top; the other screen cut or padded to the new size.
+fn place(mut t: core.Terminal, w: Rewrap, cols: Int, rows: Int) -> Unit = {
+  var sb = w.sb
   let total = list.len(w.rows)
   let first = int.min(int.max(0, total - rows), w.cursor_row)
   for i in 0..<first {
-    scrollback.push_cells(w.sb, w.rows[i], 0, cols, w.rows_wrapped[i], w.rows_marks[i], 0)
+    scrollback.push_cells(sb, w.rows[i], 0, cols, w.rows_wrapped[i], w.rows_marks[i], 0)
   }
-  var grid = bytes.repeat(cell.blank_row(cols, cell.COLOR_DEFAULT), rows)
-  var wrapped_rows = bytes.new(rows)
-  var graphemes: Map[Int, String] = [:]
-  for i in first..<int.min(total, first + rows) {
-    let y = i - first
-    bytes.copy_from(grid, w.rows[i], y * cols * cell.SIZE, 0, cols * cell.SIZE)
-    bytes.set_u8(wrapped_rows, y, if w.rows_wrapped[i] then 1 else 0)
-    let marks = w.rows_marks[i]
-    for x in map.keys(marks) {
-      map.insert(graphemes, y * cols + x, map.get_or(marks, x, ""))
-    }
-  }
+  let front = rows_to_screen(w, first, cols, rows)
   let other = copy_screen(t.other_grid, t.other_top, t.other_wrapped, t.other_graphemes, t.cols, t.rows, cols, rows)
-  t.sb = w.sb
-  t.grid = grid
-  t.wrapped = wrapped_rows
-  t.graphemes = graphemes
+  t.sb = sb
+  t.grid = front.grid
+  t.wrapped = front.wrapped
+  t.graphemes = front.graphemes
   t.top = 0
   t.other_grid = other.grid
   t.other_wrapped = other.wrapped
@@ -189,6 +202,23 @@ fn reflow(mut t: core.Terminal, cols: Int, rows: Int, all: Bool) -> Unit = {
   t.pending_wrap = false
   t.last_x = -1
   t.last_y = -1
+}
+
+/// Rows `first` on of `w` as a `cols` x `rows` screen.
+fn rows_to_screen(w: Rewrap, first: Int, cols: Int, rows: Int) -> Screen = {
+  var grid = bytes.repeat(cell.blank_row(cols, cell.COLOR_DEFAULT), rows)
+  var wrapped_rows = bytes.new(rows)
+  var graphemes: Map[Int, String] = [:]
+  for i in first..<int.min(list.len(w.rows), first + rows) {
+    let y = i - first
+    bytes.copy_from(grid, w.rows[i], y * cols * cell.SIZE, 0, cols * cell.SIZE)
+    bytes.set_u8(wrapped_rows, y, if w.rows_wrapped[i] then 1 else 0)
+    let marks = w.rows_marks[i]
+    for x in map.keys(marks) {
+      map.insert(graphemes, y * cols + x, map.get_or(marks, x, ""))
+    }
+  }
+  Screen { grid: grid, wrapped: wrapped_rows, graphemes: graphemes }
 }
 
 /// The rows of a `cols` x `rows` ring grid starting at `top`, copied into a
