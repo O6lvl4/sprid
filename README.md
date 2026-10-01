@@ -62,6 +62,13 @@ before closing a busy tab or pasting line breaks, are macOS only for now.
   scrollbar; the view stays put while output arrives below.
 - **Find** (Cmd+F): across scrollback and screen, every match marked, smart
   case.
+- **Links**: Cmd+click (Ctrl+click on Linux) opens the URL or file path under
+  the pointer, or a link a program made (OSC 8, as `ls --hyperlink` does);
+  with Cmd held, a link is underlined and, for a program's, where it goes is
+  shown first.
+- **Selection**: double-click a word, triple-click a line, Option+drag a
+  rectangle. A right click offers copy, paste, select all, find and clear.
+  On Linux a selection is the PRIMARY selection, which a middle click pastes.
 - **Notifications**: a program's notifications (OSC 9, 777, 99) appear in
   Notification Center (notify-send on Linux) while the window is in the
   background; a bell lights the screen for a moment, and a bell or
@@ -89,8 +96,7 @@ before closing a busy tab or pasting line breaks, are macOS only for now.
 | Line start / end, word | Cmd+← / →, Option+← / → | (the shell's own keys) |
 | Scroll | Cmd+Home / End / PageUp / PageDown / ↑ / ↓ | Ctrl+Shift+Home / End / PageUp / PageDown / ↑ / ↓ |
 
-Not yet: split panes, clickable links, emoji sequences (ZWJ,
-skin tones, flags).
+Not yet: split panes, emoji sequences (ZWJ, skin tones, flags).
 
 ## Config
 
@@ -121,6 +127,7 @@ macos-option-as-alt = left      # true, false, left, right
 | `clipboard-read` | `ask` — or `allow`, `deny` |
 | `bell-features` | `flash,attention,title` — add `system` for the alert sound, `no-flash` etc. to turn one off |
 | `clipboard-paste-protection` | `true` — ask before pasting line breaks |
+| `copy-on-select` | `true` — a selection becomes the PRIMARY selection (Linux); `clipboard` copies it too; `false` |
 
 Themes built in: Tokyo Night Storm, Almide Light, Almide Dark, Catppuccin
 Mocha, Catppuccin Latte, Dracula, Solarized Dark, Solarized Light. Any other
