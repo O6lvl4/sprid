@@ -41,8 +41,8 @@ xattr -dr com.apple.quarantine /Applications/Sprid.app
 **Linux** (glibc 2.35+: Ubuntu 22.04, Debian 12 and newer; Wayland or X11):
 download `sprid-<version>-linux-<arch>.tar.gz`, unpack it and run
 `./install.sh`. The clipboard uses wl-copy / wl-paste, or xclip / xsel;
-symbols such as ⏺ want `fonts-noto-core`. Colour emoji and the question
-before closing a busy tab are macOS only for now.
+symbols such as ⏺ want `fonts-noto-core`. Colour emoji, and the questions
+before closing a busy tab or pasting line breaks, are macOS only for now.
 
 ## What it does
 
@@ -62,8 +62,14 @@ before closing a busy tab are macOS only for now.
   scrollbar; the view stays put while output arrives below.
 - **Find** (Cmd+F): across scrollback and screen, every match marked, smart
   case.
+- **Notifications**: a program's notifications (OSC 9, 777, 99) appear in
+  Notification Center (notify-send on Linux) while the window is in the
+  background; a bell or
+  notification marks the tab it came from until you look, and bounces the
+  Dock icon. Programs may set the clipboard (OSC 52) but never read it.
+  Pasting line breaks into a shell that would run each line asks first.
 - **Tabs**: open in the current directory, switch by click or keys, rename by
-  double-click. Closing a tab, the window or the app asks first while a
+  double-click; the window takes the title of the tab in front. Closing a tab, the window or the app asks first while a
   program is running.
 - **Resize**: lines are rewrapped at the new width, scrollback included.
 
@@ -82,7 +88,7 @@ before closing a busy tab are macOS only for now.
 | Line start / end, word | Cmd+← / →, Option+← / → | (the shell's own keys) |
 | Scroll | Cmd+Home / End / PageUp / PageDown / ↑ / ↓ | Ctrl+Shift+Home / End / PageUp / PageDown / ↑ / ↓ |
 
-Not yet: split panes, notifications, clickable links, emoji sequences (ZWJ,
+Not yet: split panes, clickable links, emoji sequences (ZWJ,
 skin tones, flags).
 
 ## Config
@@ -110,6 +116,8 @@ macos-option-as-alt = left      # true, false, left, right
 | `scrollback-limit` | `10000000` bytes of text (`KB`, `MB`, `GB` also read) |
 | `cursor-style`, `cursor-style-blink` | `block`, `false` |
 | `macos-option-as-alt` | `false` |
+| `clipboard-write` | `allow` — or `deny` programs setting the clipboard |
+| `clipboard-paste-protection` | `true` — ask before pasting line breaks |
 
 Themes built in: Tokyo Night Storm, Almide Light, Almide Dark, Catppuccin
 Mocha, Catppuccin Latte, Dracula, Solarized Dark, Solarized Light. Any other
