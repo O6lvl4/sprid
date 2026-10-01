@@ -133,26 +133,31 @@ fn fold_name(s: String) -> String = string.replace(string.replace(string.to_lowe
 /// same format — sets: background, foreground, cursor-color,
 /// selection-background and palette (`N=#rrggbb`).
 fn apply(base: Theme, c: config.Config) -> Theme = {
-  var t = base
-  let before = (t.bg, t.fg, t.ansi)
-  match config.get(c, "background") |> option.flat_map((v) => config.color(v)) { some(v) => { t.bg = v }, none => () }
-  match config.get(c, "foreground") |> option.flat_map((v) => config.color(v)) { some(v) => { t.fg = v }, none => () }
-  match config.get(c, "cursor-color") |> option.flat_map((v) => config.color(v)) { some(v) => { t.cursor = v }, none => () }
-  match config.get(c, "selection-background") |> option.flat_map((v) => config.color(v)) { some(v) => { t.selection = v }, none => () }
-  var ansi = t.ansi
-  for entry in config.all(c, "palette") {
-    match string.split_once(entry, "=") {
-      some((i, v)) => match (int.parse(string.trim(i)), config.color(string.trim(v))) {
-        (ok(n), some(rgb)) => if n >= 0 and n < 16 then { ansi = list.set(ansi, n, rgb) },
-        _ => (),
-      },
-      none => (),
-    }
+  let ansi = list.fold(config.all(c, "palette"), base.ansi, (acc, entry) => palette_entry(acc, entry))
+  let t = {
+    ...base,
+    bg: color_of(c, "background", base.bg),
+    fg: color_of(c, "foreground", base.fg),
+    cursor: color_of(c, "cursor-color", base.cursor),
+    selection: color_of(c, "selection-background", base.selection),
+    ansi: ansi,
   }
-  t.ansi = ansi
   // The window's colours follow the theme's own only when those changed: a
   // theme's hand-picked ones stay otherwise.
-  if (t.bg, t.fg, t.ansi) != before then finish(t) else t
+  if (t.bg, t.fg, t.ansi) != (base.bg, base.fg, base.ansi) then finish(t) else t
+}
+
+/// The colour `key` sets in `c`, else `fallback`.
+fn color_of(c: config.Config, key: String, fallback: Int) -> Int =
+  config.get(c, key) |> option.flat_map((v) => config.color(v)) ?? fallback
+
+/// `ansi` with `N=#rrggbb` applied, when N is one of the 16.
+fn palette_entry(ansi: List[Int], entry: String) -> List[Int] = match string.split_once(entry, "=") {
+  some((i, v)) => match (int.parse(string.trim(i)), config.color(string.trim(v))) {
+    (ok(n), some(rgb)) => if n >= 0 and n < 16 then list.set(ansi, n, rgb) else ansi,
+    _ => ansi,
+  },
+  none => ansi,
 }
 
 test "built-in themes by name" {

@@ -57,111 +57,102 @@ fn defaults() -> Settings = {
 
 /// The settings `c` makes, from the defaults.
 fn from(c: config.Config) -> Settings = {
-  var s = { ...defaults(), file: c }
-  var problems = c.problems
-  for k in config.unknown(c) {
-    list.push(problems, "unknown key: ${k}")
+  let d = defaults()
+  let (light, dark) = config.get(c, "theme") |> option.map((v) => config.theme_pair(v)) ?? (d.theme_light, d.theme_dark)
+  let blink = read(c, "cursor-style-blink", config.flag) ?? false
+  let bells = string.split(config.get(c, "bell-features") ?? "", ",") |> list.map((b) => string.trim(b))
+  Settings {
+    font_family: config.get(c, "font-family") ?? d.font_family,
+    font_size: read(c, "font-size", size_of) ?? d.font_size,
+    cell_height: read(c, "adjust-cell-height", percent) |> option.map((p) => DEFAULT_CELL_HEIGHT * (1.0 + p / 100.0)) ?? d.cell_height,
+    pad_x: read(c, "window-padding-x", padding_of) ?? d.pad_x,
+    pad_y: read(c, "window-padding-y", padding_of) ?? d.pad_y,
+    theme_light: light,
+    theme_dark: dark,
+    scrollback: read(c, "scrollback-limit", config.bytes_of) ?? d.scrollback,
+    cursor_shape: read(c, "cursor-style", shape_of) |> option.map((shape) => if blink then shape - 1 else shape) ?? (if blink then 1 else 0),
+    option_as_alt: read(c, "macos-option-as-alt", option_as_alt_of) ?? d.option_as_alt,
+    clipboard_write: read(c, "clipboard-write", (v) => one_of(v, ["allow", "deny"])) |> option.map((v) => v == "allow") ?? d.clipboard_write,
+    clipboard_read: read(c, "clipboard-read", (v) => one_of(v, ["ask", "allow", "deny"])) ?? d.clipboard_read,
+    bell_flash: bell(bells, "flash", d.bell_flash),
+    bell_attention: bell(bells, "attention", d.bell_attention),
+    bell_title: bell(bells, "title", d.bell_title),
+    bell_system: bell(bells, "system", d.bell_system),
+    paste_protection: read(c, "clipboard-paste-protection", config.flag) ?? d.paste_protection,
+    file: c,
+    problems: problems_in(c, bells),
   }
-  let bad = (key: String, v: String) => "${key}: can't use \"${v}\""
-  match config.get(c, "font-family") { some(v) => { s.font_family = v }, none => () }
-  match config.get(c, "font-size") {
-    some(v) => match float.parse(v) {
-      ok(f) => if f >= 4.0 and f <= 200.0 then { s.font_size = f } else list.push(problems, bad("font-size", v)),
-      err(_) => list.push(problems, bad("font-size", v)),
-    },
-    none => (),
-  }
-  match config.get(c, "adjust-cell-height") {
-    some(v) => match percent(v) {
-      some(p) => { s.cell_height = DEFAULT_CELL_HEIGHT * (1.0 + p / 100.0) },
-      none => list.push(problems, bad("adjust-cell-height", v)),
-    },
-    none => (),
-  }
-  match config.get(c, "window-padding-x") {
-    some(v) => match float.parse(v) { ok(f) => { s.pad_x = float.max(0.0, f) }, err(_) => list.push(problems, bad("window-padding-x", v)) },
-    none => (),
-  }
-  match config.get(c, "window-padding-y") {
-    some(v) => match float.parse(v) { ok(f) => { s.pad_y = float.max(0.0, f) }, err(_) => list.push(problems, bad("window-padding-y", v)) },
-    none => (),
-  }
-  match config.get(c, "theme") {
-    some(v) => {
-      let (light, dark) = config.theme_pair(v)
-      s.theme_light = light
-      s.theme_dark = dark
-    },
-    none => (),
-  }
-  match config.get(c, "scrollback-limit") {
-    some(v) => match config.bytes_of(v) { some(n) => { s.scrollback = n }, none => list.push(problems, bad("scrollback-limit", v)) },
-    none => (),
-  }
-  let blink = match config.get(c, "cursor-style-blink") {
-    some(v) => match config.flag(v) {
-      some(b) => b,
-      none => {
-        list.push(problems, bad("cursor-style-blink", v))
-        false
-      },
-    },
-    none => false,
-  }
-  match config.get(c, "cursor-style") {
-    some(v) => {
-      let shape = if v == "block" then 2 else if v == "underline" then 4 else if v == "bar" then 6 else 0
-      if shape == 0 then list.push(problems, bad("cursor-style", v))
-      else { s.cursor_shape = if blink then shape - 1 else shape }
-    },
-    none => if blink then { s.cursor_shape = 1 },
-  }
-  match config.get(c, "macos-option-as-alt") {
-    some(v) => {
-      let mode = if v == "left" then 2 else if v == "right" then 3 else match config.flag(v) {
-        some(true) => 1,
-        some(false) => 0,
-        none => -1,
-      }
-      if mode < 0 then list.push(problems, bad("macos-option-as-alt", v)) else { s.option_as_alt = mode }
-    },
-    none => (),
-  }
-  match config.get(c, "clipboard-write") {
-    some(v) => if v == "allow" then { s.clipboard_write = true }
-      else if v == "deny" then { s.clipboard_write = false }
-      else list.push(problems, bad("clipboard-write", v)),
-    none => (),
-  }
-  match config.get(c, "clipboard-read") {
-    some(v) => if v == "ask" or v == "allow" or v == "deny" then { s.clipboard_read = v }
-      else list.push(problems, bad("clipboard-read", v)),
-    none => (),
-  }
-  // `bell-features = flash,no-attention,system`: each one named is on,
-  // each with `no-` off, the rest as they were.
-  match config.get(c, "bell-features") {
-    some(v) => for item in string.split(v, ",") {
-      let name = string.trim(item)
-      let on = not string.starts_with(name, "no-")
-      let feature = if on then name else string.drop(name, 3)
-      if feature == "flash" then { s.bell_flash = on }
-      else if feature == "attention" then { s.bell_attention = on }
-      else if feature == "title" then { s.bell_title = on }
-      else if feature == "system" then { s.bell_system = on }
-      else if name != "" then list.push(problems, bad("bell-features", name))
-    },
-    none => (),
-  }
-  match config.get(c, "clipboard-paste-protection") {
-    some(v) => match config.flag(v) {
-      some(b) => { s.paste_protection = b },
-      none => list.push(problems, bad("clipboard-paste-protection", v)),
-    },
-    none => (),
-  }
-  { ...s, problems: problems }
 }
+
+/// The value `key` sets in `c`, when there is one `parse` makes sense of.
+fn read[T](c: config.Config, key: String, parse: (String) -> Option[T]) -> Option[T] =
+  config.get(c, key) |> option.flat_map(parse)
+
+/// What sprid makes of each key's value, to say which don't parse.
+fn checks() -> List[(String, (String) -> Bool)] = [
+  ("font-size", (v) => size_of(v) != none),
+  ("adjust-cell-height", (v) => percent(v) != none),
+  ("window-padding-x", (v) => padding_of(v) != none),
+  ("window-padding-y", (v) => padding_of(v) != none),
+  ("scrollback-limit", (v) => config.bytes_of(v) != none),
+  ("cursor-style-blink", (v) => config.flag(v) != none),
+  ("cursor-style", (v) => shape_of(v) != none),
+  ("macos-option-as-alt", (v) => option_as_alt_of(v) != none),
+  ("clipboard-write", (v) => one_of(v, ["allow", "deny"]) != none),
+  ("clipboard-read", (v) => one_of(v, ["ask", "allow", "deny"]) != none),
+  ("clipboard-paste-protection", (v) => config.flag(v) != none),
+]
+
+/// What is wrong with `c`: the parser's complaints, keys sprid doesn't
+/// know, values it can't use, bell features it doesn't have.
+fn problems_in(c: config.Config, bells: List[String]) -> List[String] = {
+  let unknown = config.unknown(c) |> list.map((k) => "unknown key: ${k}")
+  let bad_values = checks() |> list.filter_map(((key, valid)) => match config.get(c, key) {
+    some(v) => if valid(v) then none else some(bad(key, v)),
+    none => none,
+  })
+  let bad_bells = bells |> list.filter((b) => b != "" and not list.contains(BELL_FEATURES, feature_of(b))) |> list.map((b) => bad("bell-features", b))
+  c.problems + unknown + bad_values + bad_bells
+}
+
+fn bad(key: String, v: String) -> String = "${key}: can't use \"${v}\""
+
+let BELL_FEATURES = ["flash", "attention", "title", "system"]
+
+/// `flash` or `no-flash` as `flash`.
+fn feature_of(item: String) -> String = if string.starts_with(item, "no-") then string.drop(item, 3) else item
+
+/// Whether `feature` is on after `items` (`name` on, `no-name` off, the
+/// last one said winning), else `fallback`.
+fn bell(items: List[String], feature: String, fallback: Bool) -> Bool =
+  list.fold(items, fallback, (on, item) => if item == feature then true else if item == "no-" + feature then false else on)
+
+fn size_of(v: String) -> Option[Float] = match float.parse(v) {
+  ok(f) => if f >= 4.0 and f <= 200.0 then some(f) else none,
+  err(_) => none,
+}
+
+fn padding_of(v: String) -> Option[Float] = match float.parse(v) {
+  ok(f) => some(float.max(0.0, f)),
+  err(_) => none,
+}
+
+/// DECSCUSR's steady shape for a cursor-style.
+fn shape_of(v: String) -> Option[Int] = match v {
+  "block" => some(2),
+  "underline" => some(4),
+  "bar" => some(6),
+  _ => none,
+}
+
+/// 0 neither, 1 both, 2 left, 3 right.
+fn option_as_alt_of(v: String) -> Option[Int] = match v {
+  "left" => some(2),
+  "right" => some(3),
+  _ => config.flag(v) |> option.map((on) => if on then 1 else 0),
+}
+
+fn one_of(v: String, allowed: List[String]) -> Option[String] = if list.contains(allowed, v) then some(v) else none
 
 /// `15%` or `15` as 15.0.
 fn percent(v: String) -> Option[Float] = {

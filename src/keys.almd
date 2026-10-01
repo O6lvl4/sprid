@@ -42,14 +42,23 @@ fn encode(kind: Int, code: Int, mods: Int, app_cursor: Bool) -> String =
 /// Enter), and text typed with Ctrl or Alt (Ctrl+I is not Tab).
 fn encode_with(kind: Int, code: Int, mods: Int, app_cursor: Bool, flags: Int) -> String =
   if int.band(mods, MOD_SUPER) != 0 then ""
-  else if int.band(flags, 1) != 0 and kind == TEXT and int.band(mods, MOD_CTRL + MOD_ALT) != 0 then
-    csi_u(if code >= 0x41 and code <= 0x5A then code + 32 else code, mods)
-  else if int.band(flags, 1) != 0 and kind == KEY and code == KEY_ESCAPE then csi_u(27, mods)
-  else if int.band(flags, 1) != 0 and kind == KEY and mods != 0 and (code == KEY_ENTER or code == KEY_TAB or code == KEY_BACKSPACE) then
-    csi_u(if code == KEY_BACKSPACE then 127 else code, mods)
-  else if kind == TEXT then text(code, mods)
-  else if kind == KEY then key(code, mods, app_cursor)
-  else ""
+  else match (if int.band(flags, 1) != 0 then disambiguated(kind, code, mods) else none) {
+    some(out) => out,
+    none => if kind == TEXT then text(code, mods) else if kind == KEY then key(code, mods, app_cursor) else "",
+  }
+
+/// The kitty protocol's encoding of an input xterm's would confuse with
+/// another, or none for one xterm's encodes well.
+fn disambiguated(kind: Int, code: Int, mods: Int) -> Option[String] =
+  if kind == TEXT then (if int.band(mods, MOD_CTRL + MOD_ALT) != 0 then some(csi_u(lower(code), mods)) else none)
+  else if kind != KEY then none
+  else if code == KEY_ESCAPE then some(csi_u(27, mods))
+  else if mods != 0 and list.contains([KEY_ENTER, KEY_TAB, KEY_BACKSPACE], code) then
+    some(csi_u(if code == KEY_BACKSPACE then 127 else code, mods))
+  else none
+
+/// An ASCII capital as its small letter; anything else as it is.
+fn lower(cp: Int) -> Int = if cp >= 0x41 and cp <= 0x5A then cp + 32 else cp
 
 /// `CSI code u`, or `CSI code ; mods u` with modifiers held.
 fn csi_u(code: Int, mods: Int) -> String = {
@@ -64,19 +73,24 @@ fn text(cp: Int, mods: Int) -> String = {
   if int.band(mods, MOD_ALT) != 0 then "\x1b" + base else base
 }
 
-/// Ctrl+`cp`: letters and @[\]^_ map to 0x00..0x1F, and the rest as xterm
-/// maps them — Ctrl+Space and Ctrl+2 to NUL, Ctrl+3..7 to ESC, FS, GS, RS,
-/// US, Ctrl+8 and Ctrl+? to DEL, Ctrl+/ and Ctrl+- to US (the window gives
-/// the key without Shift, so Ctrl+_ arrives as Ctrl+- and Ctrl+^ as Ctrl+6);
-/// anything else is itself.
-fn control(cp: Int) -> String =
-  if cp >= 0x61 and cp <= 0x7A then string.from_codepoint(cp - 0x60)
-  else if cp >= 0x40 and cp <= 0x5F then string.from_codepoint(cp - 0x40)
-  else if cp == 0x20 or cp == 0x32 then string.from_codepoint(0)
-  else if cp >= 0x33 and cp <= 0x37 then string.from_codepoint(cp - 0x33 + 0x1B)
-  else if cp == 0x2F or cp == 0x2D then string.from_codepoint(0x1F)
-  else if cp == 0x38 or cp == 0x3F then string.from_codepoint(0x7F)
-  else string.from_codepoint(cp)
+/// Ctrl with the keys that aren't letters or @[\]^_, as xterm maps them —
+/// Ctrl+Space and Ctrl+2 to NUL, Ctrl+3..7 to ESC, FS, GS, RS, US, Ctrl+8
+/// and Ctrl+? to DEL, Ctrl+/ and Ctrl+- to US (the window gives the key
+/// without Shift, so Ctrl+_ arrives as Ctrl+- and Ctrl+^ as Ctrl+6).
+let CONTROL_KEYS = [(0x20, 0x00), (0x32, 0x00), (0x33, 0x1B), (0x34, 0x1C), (0x35, 0x1D), (0x36, 0x1E), (0x37, 0x1F),
+  (0x2F, 0x1F), (0x2D, 0x1F), (0x38, 0x7F), (0x3F, 0x7F)]
+
+/// Ctrl+`cp`: letters and @[\]^_ map to 0x00..0x1F, the keys in
+/// `CONTROL_KEYS` as listed there; anything else is itself.
+fn control(cp: Int) -> String = {
+  let letter = (cp >= 0x40 and cp <= 0x5F) or (cp >= 0x61 and cp <= 0x7A)
+  let mapped = if letter then some(int.band(cp, 0x1F)) else lookup(CONTROL_KEYS, cp)
+  string.from_codepoint(mapped ?? cp)
+}
+
+/// The value paired with `k` in `pairs`.
+fn lookup[V](pairs: List[(Int, V)], k: Int) -> Option[V] =
+  list.find(pairs, (p) => p.0 == k) |> option.map((p) => p.1)
 
 /// xterm's modifier parameter: 1 + Shift 1 + Alt 2 + Ctrl 4.
 fn modifier_param(mods: Int) -> Int =
@@ -99,38 +113,44 @@ fn tilde_key(n: Int, mods: Int) -> String = {
   if m > 1 then "\x1b[${int.to_string(n)};${int.to_string(m)}~" else "\x1b[${int.to_string(n)}~"
 }
 
-fn key(code: Int, mods: Int, app_cursor: Bool) -> String = {
+/// The keys sent as cursor keys, and their finals.
+let CURSOR_KEYS = [(KEY_UP, "A"), (KEY_DOWN, "B"), (KEY_RIGHT, "C"), (KEY_LEFT, "D"), (KEY_HOME, "H"), (KEY_END, "F")]
+
+/// The keys sent as tilde keys, and their numbers: Insert, Delete, Page Up /
+/// Down, F5..F12.
+let TILDE_KEYS = [(KEY_INSERT, 2), (KEY_DELETE, 3), (KEY_PAGE_UP, 5), (KEY_PAGE_DOWN, 6),
+  (KEY_F1 + 4, 15), (KEY_F1 + 5, 17), (KEY_F1 + 6, 18), (KEY_F1 + 7, 19),
+  (KEY_F1 + 8, 20), (KEY_F1 + 9, 21), (KEY_F1 + 10, 23), (KEY_F1 + 11, 24)]
+
+fn key(code: Int, mods: Int, app_cursor: Bool) -> String =
+  match lookup(CURSOR_KEYS, code) {
+    some(final) => cursor_key(final, mods, app_cursor),
+    none => match lookup(TILDE_KEYS, code) {
+      some(n) => tilde_key(n, mods),
+      none => if code >= KEY_F1 and code < KEY_F1 + 4 then f1_to_f4(code, mods) else other_key(code, mods),
+    },
+  }
+
+/// F1..F4: SS3 P..S, or CSI 1;m P..S when modified.
+fn f1_to_f4(code: Int, mods: Int) -> String = {
+  let final = string.from_codepoint(0x50 + code - KEY_F1)
+  let m = modifier_param(mods)
+  if m > 1 then "\x1b[1;${int.to_string(m)}${final}" else "\x1bO${final}"
+}
+
+/// Enter, Backspace, Tab and Escape; Alt sends ESC before them.
+fn other_key(code: Int, mods: Int) -> String = {
   let alt = if int.band(mods, MOD_ALT) != 0 then "\x1b" else ""
   if code == KEY_ENTER then alt + "\r"
   else if code == KEY_BACKSPACE then alt + (if int.band(mods, MOD_CTRL) != 0 then "\x08" else "\x7f")
   else if code == KEY_TAB then (if int.band(mods, MOD_SHIFT) != 0 then "\x1b[Z" else alt + "\t")
   else if code == KEY_ESCAPE then alt + "\x1b"
-  else if code == KEY_UP then cursor_key("A", mods, app_cursor)
-  else if code == KEY_DOWN then cursor_key("B", mods, app_cursor)
-  else if code == KEY_RIGHT then cursor_key("C", mods, app_cursor)
-  else if code == KEY_LEFT then cursor_key("D", mods, app_cursor)
-  else if code == KEY_HOME then cursor_key("H", mods, app_cursor)
-  else if code == KEY_END then cursor_key("F", mods, app_cursor)
-  else if code == KEY_INSERT then tilde_key(2, mods)
-  else if code == KEY_DELETE then tilde_key(3, mods)
-  else if code == KEY_PAGE_UP then tilde_key(5, mods)
-  else if code == KEY_PAGE_DOWN then tilde_key(6, mods)
-  else if code >= KEY_F1 and code < KEY_F1 + 4 then {
-    // F1..F4 are SS3 P..S, or CSI 1;m P..S when modified.
-    let final = string.from_codepoint(0x50 + code - KEY_F1)
-    let m = modifier_param(mods)
-    if m > 1 then "\x1b[1;${int.to_string(m)}${final}" else "\x1bO${final}"
-  }
-  else if code >= KEY_F1 + 4 and code < KEY_F1 + 12 then
-    tilde_key(list.get([15, 17, 18, 19, 20, 21, 23, 24], code - KEY_F1 - 4) ?? 15, mods)
   else ""
 }
 
-/// The Mac's text-editing keys, as the shell's line editor knows them — what
-/// macOS terminals commonly send: Cmd+Left / Right to the start and
-/// end of the line (Ctrl+A, Ctrl+E), Cmd+Backspace deletes to its start
-/// (Ctrl+U), Option+Left / Right move by word (ESC b, ESC f). "" for any
-/// other input.
+/// The keys that read as Cmd on Linux when held with Ctrl+Shift.
+let LINUX_SHORTCUT_KEYS = [KEY_ENTER, KEY_HOME, KEY_END, KEY_PAGE_UP, KEY_PAGE_DOWN, KEY_UP, KEY_DOWN]
+
 /// The modifiers a shortcut reads. On a Mac a terminal's own keys — copy,
 /// paste, tabs, find, font size, scrolling — are Cmd's; on Linux, where the
 /// desktop keeps Super, they are Ctrl+Shift's. So there Ctrl+Shift with a
@@ -139,19 +159,23 @@ fn key(code: Int, mods: Int, app_cursor: Bool) -> String = {
 /// Backspace stays the program's (an editor selects by word with them).
 fn shortcut_mods(linux: Bool, kind: Int, code: Int, mods: Int) -> Int =
   if not linux or mods != MOD_CTRL + MOD_SHIFT then mods
-  else if kind == TEXT then MOD_SUPER
-  else if kind == KEY and (code == KEY_ENTER or code == KEY_HOME or code == KEY_END or code == KEY_PAGE_UP
-      or code == KEY_PAGE_DOWN or code == KEY_UP or code == KEY_DOWN) then MOD_SUPER
+  else if kind == TEXT or (kind == KEY and list.contains(LINUX_SHORTCUT_KEYS, code)) then MOD_SUPER
   else mods
 
+/// The Mac's text-editing keys and what they send: (modifiers, key, bytes).
+let MAC_EDIT_KEYS = [
+  (MOD_SUPER, KEY_LEFT, "\x01"), (MOD_SUPER, KEY_RIGHT, "\x05"), (MOD_SUPER, KEY_BACKSPACE, "\x15"),
+  (MOD_ALT, KEY_LEFT, "\x1bb"), (MOD_ALT, KEY_RIGHT, "\x1bf"),
+]
+
+/// The Mac's text-editing keys, as the shell's line editor knows them — what
+/// macOS terminals commonly send: Cmd+Left / Right to the start and
+/// end of the line (Ctrl+A, Ctrl+E), Cmd+Backspace deletes to its start
+/// (Ctrl+U), Option+Left / Right move by word (ESC b, ESC f). "" for any
+/// other input.
 fn mac_edit(kind: Int, code: Int, mods: Int) -> String =
   if kind != KEY then ""
-  else if mods == MOD_SUPER and code == KEY_LEFT then "\x01"
-  else if mods == MOD_SUPER and code == KEY_RIGHT then "\x05"
-  else if mods == MOD_SUPER and code == KEY_BACKSPACE then "\x15"
-  else if mods == MOD_ALT and code == KEY_LEFT then "\x1bb"
-  else if mods == MOD_ALT and code == KEY_RIGHT then "\x1bf"
-  else ""
+  else list.find(MAC_EDIT_KEYS, (e) => e.0 == mods and e.1 == code) |> option.map((e) => e.2) ?? ""
 
 /// `path` as the shell reads one word: the characters it would take
 /// otherwise — spaces, quotes, globs, `$` and the like — escaped with a
