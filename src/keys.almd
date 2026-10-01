@@ -64,14 +64,18 @@ fn text(cp: Int, mods: Int) -> String = {
   if int.band(mods, MOD_ALT) != 0 then "\x1b" + base else base
 }
 
-/// Ctrl+`cp`: letters and @[\]^_ map to 0x00..0x1F, Ctrl+Space and Ctrl+2 to
-/// NUL, Ctrl+/ to 0x1F, Ctrl+? to DEL; anything else is itself.
+/// Ctrl+`cp`: letters and @[\]^_ map to 0x00..0x1F, and the rest as xterm
+/// maps them — Ctrl+Space and Ctrl+2 to NUL, Ctrl+3..7 to ESC, FS, GS, RS,
+/// US, Ctrl+8 and Ctrl+? to DEL, Ctrl+/ and Ctrl+- to US (the window gives
+/// the key without Shift, so Ctrl+_ arrives as Ctrl+- and Ctrl+^ as Ctrl+6);
+/// anything else is itself.
 fn control(cp: Int) -> String =
   if cp >= 0x61 and cp <= 0x7A then string.from_codepoint(cp - 0x60)
   else if cp >= 0x40 and cp <= 0x5F then string.from_codepoint(cp - 0x40)
   else if cp == 0x20 or cp == 0x32 then string.from_codepoint(0)
-  else if cp == 0x2F then string.from_codepoint(0x1F)
-  else if cp == 0x3F then string.from_codepoint(0x7F)
+  else if cp >= 0x33 and cp <= 0x37 then string.from_codepoint(cp - 0x33 + 0x1B)
+  else if cp == 0x2F or cp == 0x2D then string.from_codepoint(0x1F)
+  else if cp == 0x38 or cp == 0x3F then string.from_codepoint(0x7F)
   else string.from_codepoint(cp)
 
 /// xterm's modifier parameter: 1 + Shift 1 + Alt 2 + Ctrl 4.
@@ -247,4 +251,11 @@ test "dropped paths are escaped for the shell" {
   assert_eq(shell_escape("/Users/me/Desktop/shot 1.png"), "/Users/me/Desktop/shot\\ 1.png")
   assert_eq(shell_escape("/tmp/a(b)'c\"d$e"), "/tmp/a\\(b\\)\\'c\\\"d\\$e")
   assert_eq(shell_escape("/tmp/日本語.png"), "/tmp/日本語.png")
+}
+
+test "ctrl with digits and symbols, as xterm" {
+  assert_eq(encode(TEXT, 0x33, MOD_CTRL, false), "\x1b")
+  assert_eq(encode(TEXT, 0x36, MOD_CTRL + MOD_SHIFT, false), string.from_codepoint(0x1E))
+  assert_eq(encode(TEXT, 0x2D, MOD_CTRL + MOD_SHIFT, false), string.from_codepoint(0x1F))
+  assert_eq(encode(TEXT, 0x38, MOD_CTRL, false), "\x7f")
 }

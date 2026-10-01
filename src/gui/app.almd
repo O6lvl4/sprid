@@ -244,6 +244,8 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
   // When the window last changed size, while scrollback waits to be
   // reflowed; -1 when it doesn't.
   var resized_at = -1
+  // The PTY of the tab in front, to tell when another comes to the front.
+  var front = first_fd
   // Debug: SPRID_AUTOSCROLL="dy,start ms,end ms,every ms" turns the wheel by
   // itself, for measuring scrolling without a hand on the trackpad.
   let auto = list.map(string.split(env.get("SPRID_AUTOSCROLL") ?? "", ","), (x) => float.parse(x) ?? 0.0)
@@ -288,6 +290,16 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
       settle_all(tabs)
       resized_at = -1
       ui.dirty = true
+      // Lines are numbered anew: the search is run again.
+      match take(tabs, active) {
+        some(tb) => {
+          var cur = tb
+          refresh_find(cur, ui)
+          list.push(tabs, cur)
+          tabs = list.swap(tabs, active, list.len(tabs) - 1)
+        },
+        none => (),
+      }
     }
 
     // Input goes to the active tab; what it asks of the tabs is done after
@@ -310,12 +322,6 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
           tabs = list.swap(tabs, active, list.len(tabs) - 1)
         },
         none => (),
-      }
-      // Find follows the tab it was opened in: another tab closes it.
-      if switches_tab(act) then {
-        ui.finding = false
-        ui.find = search.empty()
-        ui.field = field.of("")
       }
       match act {
         NewTab => {
@@ -368,6 +374,12 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
         },
         Stay => (),
       }
+      // What belongs to the tab in front — find, a rename, a drag — ends
+      // when another tab comes to the front, before its next input.
+      if fd_of(tabs, active) != front then {
+        leave_tab(ui)
+        front = fd_of(tabs, active)
+      }
       kind = if list.len(tabs) == 0 then window.NONE else window.next_event()
     }
     if list.len(tabs) == 0 then alive = false
@@ -391,7 +403,10 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
       match take(tabs, i) {
         some(tb) => {
           var cur = tb
+          let title_before = (cur.t.title, cur.t.cwd)
           let (got, more) = drain(cur, if i == active then STREAM_DRAIN_MS else DRAIN_MS)
+          // A tab in the back retitled itself: the tab bar shows it.
+          if got and i != active and (cur.t.title, cur.t.cwd) != title_before then ui.dirty = true
           if got and trace then eprintln("out ${int.to_string(sys.now_ms())} tab ${int.to_string(i)} cursor ${int.to_string(cur.t.x)},${int.to_string(cur.t.y)}")
           if i == active then {
             if got then ui.dirty = true
@@ -420,6 +435,10 @@ effect fn run_with(opts: Options, faces: fonts.Faces) -> Unit = {
     }
     pty.reap()
     if list.len(tabs) == 0 then alive = false
+    if fd_of(tabs, active) != front then {
+      leave_tab(ui)
+      front = fd_of(tabs, active)
+    }
 
     let clock = sys.now_ms()
     if alive and ui.dirty and clock - last_frame >= (if streaming then STREAM_FRAME_MS else FRAME_MS) then {
@@ -733,6 +752,12 @@ fn drain(mut tb: Tab, budget_ms: Int) -> (Bool, Bool) = {
   // Scrolled back, the viewport stays on the lines it shows while new ones
   // arrive below.
   if tb.back > 0 or tb.shift > 0 then tb.back = int.min(tb.back + view.screen_line(tb.t) - screen_before, view.max_back(tb.t))
+  // At the top of what can be scrolled back — none at all on the alternate
+  // screen — there is no part of a line above to show.
+  if tb.back >= view.max_back(tb.t) and tb.shift > 0 then {
+    tb.back = view.max_back(tb.t)
+    tb.shift = 0
+  }
   (got, more)
 }
 
@@ -814,7 +839,7 @@ effect fn handle(mut cur: Tab, mut ui: Ui, kind: Int, r: render.Renderer, scale:
                                       head_line: screen + (if cur.t.alt then cur.t.rows - 1 else cur.t.y), head_col: cur.t.cols - 1 })
       ui.dirty = true
       Stay
-    } else if command_key and (code == window.KEY_HOME or code == window.KEY_END or code == window.KEY_PAGE_UP
+    } else if command_key and not t.alt and (code == window.KEY_HOME or code == window.KEY_END or code == window.KEY_PAGE_UP
         or code == window.KEY_PAGE_DOWN or code == window.KEY_UP or code == window.KEY_DOWN) then {
       // Scrolling: Cmd+Home / End to the top and the bottom, Cmd+PageUp /
       // PageDown by pages, Cmd+Up / Down by lines.
@@ -855,6 +880,7 @@ effect fn handle(mut cur: Tab, mut ui: Ui, kind: Int, r: render.Renderer, scale:
       scrollback.clear(cur.t.sb)
       scroll_to(cur, 0)
       cur.sel = none
+      refresh_find(cur, ui)
       if pty.busy(cur.fd) == "" then {
         let _ = pty.write(cur.fd, "\x0c")
       }
@@ -867,7 +893,9 @@ effect fn handle(mut cur: Tab, mut ui: Ui, kind: Int, r: render.Renderer, scale:
         none => (),
       }
       Stay
-    } else if page then {
+    } else if page and not t.alt then {
+      // On the alternate screen there is no scrollback: the keys are the
+      // program's.
       let step = if code == window.KEY_PAGE_UP then t.rows - 1 else 1 - t.rows
       terminal.settle(cur.t)
       scroll_to(cur, int.clamp(cur.back + step, 0, view.max_back(cur.t)))
@@ -1017,7 +1045,7 @@ effect fn handle(mut cur: Tab, mut ui: Ui, kind: Int, r: render.Renderer, scale:
       ui.dirty = true
     } else ()
     Stay
-  } else if kind == window.MOUSE_UP then {
+  } else if kind == window.MOUSE_UP and window.event_code() == 0 then {
     ui.dragging = false
     Stay
   } else if kind == window.DROP then {
@@ -1188,14 +1216,31 @@ fn scroll_to(mut tb: Tab, back: Int) -> Unit = {
   tb.shift = 0
 }
 
-/// Whether an act makes another tab the active one, or changes which there are.
-fn switches_tab(act: Act) -> Bool = match act {
-  NewTab => true,
-  CloseTab => true,
-  NextTab => true,
-  PrevTab => true,
-  GoTo(_) => true,
-  _ => false,
+/// The search run again over `cur` as it is now — after a reflow numbered
+/// its lines anew, or scrollback was cleared — its current match the
+/// nearest at or above the bottom of the view, which stays where it is.
+fn refresh_find(mut cur: Tab, mut ui: Ui) -> Unit = {
+  if ui.find.query != "" then {
+    let from = { ...search.empty(), line: view.top_line(cur.t, cur.back) + cur.t.rows - 1 }
+    ui.find = search.with_query(cur.t, from, ui.find.query)
+    ui.dirty = true
+  }
+}
+
+/// End what belonged to the tab that was in front: its find bar and
+/// search, a rename, a drag or a press reported to its program.
+fn leave_tab(mut ui: Ui) -> Unit = {
+  ui.finding = false
+  ui.find_focus = false
+  ui.find = search.empty()
+  ui.field = field.of("")
+  ui.renaming = false
+  ui.draft = ""
+  ui.dragging = false
+  ui.app_button = -1
+  ui.scroll_drag = false
+  ui.field_drag = false
+  ui.dirty = true
 }
 
 /// Longest gap between the presses of a double click, ms (macOS's default).
