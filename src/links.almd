@@ -1,0 +1,185 @@
+// Links in the text: a URL or a file path under the pointer, found in the
+// line as the program wrote it — across the rows it wrapped onto — for
+// Cmd+click to open.
+
+import bytes
+import self.cell
+import self.terminal
+import self.view
+
+/// What was found: a URL (with a scheme) or a path (as written: relative,
+/// `~/…`, absolute; a `:line` or `:line:col` after it dropped), and where it
+/// lies — from (line, col) to (line, col), inclusive.
+type Link = { target: String, url: Bool, from_line: Int, from_col: Int, to_line: Int, to_col: Int }
+
+/// A character of a logical line and the cell it is in.
+type Spot = { cp: Int, line: Int, col: Int }
+
+/// The link at (`line`, `col`) of `t`, if one is there.
+fn link_at(t: terminal.Terminal, line: Int, col: Int) -> Option[Link] = {
+  let (l0, _, l1, _) = view.line_span(t, line)
+  let spots = spots_of(t, l0, l1)
+  match list.find_index(spots, (s) => s.line == line and s.col == col) {
+    some(i) => token_at(spots, i) |> option.flat_map(((a, b)) => classify(spots, a, b, i)),
+    none => none,
+  }
+}
+
+/// The characters of lines `l0`..`l1`, a wide one once, at its first cell.
+fn spots_of(t: terminal.Terminal, l0: Int, l1: Int) -> List[Spot] = {
+  var out: List[Spot] = []
+  for n in l0...l1 {
+    match view.line_at(t, n) {
+      some(row) => {
+        for x in 0..<t.cols {
+          let o = x * cell.SIZE
+          if bytes.read_u8(row.cells, o + cell.OFF_WIDTH) != 0 then
+            list.push(out, Spot { cp: bytes.read_u32_le(row.cells, o + cell.OFF_CP), line: n, col: x })
+        }
+      },
+      none => (),
+    }
+  }
+  out
+}
+
+/// The run of characters a link may be made of around spot `i`: (first,
+/// last), or none on a blank.
+fn token_at(spots: List[Spot], i: Int) -> Option[(Int, Int)] =
+  if not in_link(spots[i].cp) then none
+  else {
+    var a = i
+    while a > 0 and in_link(spots[a - 1].cp) {
+      a = a - 1
+    }
+    var b = i
+    while b + 1 < list.len(spots) and in_link(spots[b + 1].cp) {
+      b = b + 1
+    }
+    some((a, b))
+  }
+
+/// Whether `cp` can be part of a link: anything but blanks, quotes,
+/// brackets that commonly enclose one, and the box drawing around it.
+fn in_link(cp: Int) -> Bool =
+  cp > 32 and cp != 0x7F and not string.contains("\"'`<>{}|^", string.from_codepoint(cp))
+    and not (cp >= 0x2500 and cp <= 0x257F) and cp != 0x3000
+
+/// What spots `a`..`b` name around spot `i`: a URL — which may hold
+/// brackets — else a path, which starts after the last opening bracket
+/// before `i` (`Update(src/app.almd)`); trimmed of what usually follows a
+/// link in prose: a full stop, a comma, a colon, an unmatched closing
+/// bracket.
+fn classify(spots: List[Spot], a: Int, b: Int, i: Int) -> Option[Link] =
+  match named(spots, skip_open(spots, a, b), b) {
+    some(l) => if l.url then some(l) else named(spots, after_open(spots, a, i), b) |> option.filter((p) => not p.url),
+    none => named(spots, after_open(spots, a, i), b),
+  }
+
+/// Past the last opening bracket in `a`..`i`, or `a`.
+fn after_open(spots: List[Spot], a: Int, i: Int) -> Int = {
+  var start = a
+  for k in a..<i {
+    if string.contains("([", string.from_codepoint(spots[k].cp)) then start = k + 1
+  }
+  start
+}
+
+/// The link spots `a1`..`b` make, if any.
+fn named(spots: List[Spot], a1: Int, b: Int) -> Option[Link] = {
+  let b1 = trim_end(spots, a1, b)
+  if b1 < a1 then none
+  else {
+    let text = text_of(spots, a1, b1)
+    let (s, e) = (spots[a1], spots[b1])
+    let target = if is_url(text) then some(text) else path_of(text)
+    target |> option.map((x) => Link { target: x, url: is_url(text), from_line: s.line, from_col: s.col, to_line: e.line, to_col: e.col })
+  }
+}
+
+fn text_of(spots: List[Spot], a: Int, b: Int) -> String =
+  list.slice(spots, a, b + 1) |> list.map((s) => string.from_codepoint(s.cp)) |> list.join("")
+
+/// Past an opening bracket the link starts after.
+fn skip_open(spots: List[Spot], a: Int, b: Int) -> Int = {
+  var i = a
+  while i < b and string.contains("([", string.from_codepoint(spots[i].cp)) {
+    i = i + 1
+  }
+  i
+}
+
+/// The last spot of the link: trailing punctuation dropped, and a closing
+/// bracket the link didn't open.
+fn trim_end(spots: List[Spot], a: Int, b: Int) -> Int = {
+  var e = b
+  var going = true
+  while going and e >= a {
+    let ch = string.from_codepoint(spots[e].cp)
+    let opens = if ch == ")" then "(" else if ch == "]" then "[" else ""
+    let unmatched = opens != "" and count(spots, a, e, opens) < count(spots, a, e, ch)
+    if string.contains(".,;:!?", ch) or unmatched then e = e - 1 else going = false
+  }
+  e
+}
+
+fn count(spots: List[Spot], a: Int, b: Int, ch: String) -> Int =
+  list.slice(spots, a, b + 1) |> list.filter((s) => string.from_codepoint(s.cp) == ch) |> list.len
+
+/// The schemes taken as URLs.
+let SCHEMES = ["https://", "http://", "file://", "ftp://", "mailto:", "ssh://", "git://"]
+
+fn is_url(s: String) -> Bool = list.any(SCHEMES, (p) => string.starts_with(s, p) and string.len(s) > string.len(p))
+
+/// The path in `s` if it looks like one — it has a `/`, or starts with `~`
+/// or `.` — without a `:line` or `:line:col` after it.
+fn path_of(s: String) -> Option[String] = {
+  let p = strip_position(s)
+  if p == "" or string.contains(p, "://") then none
+  else if string.contains(p, "/") or string.starts_with(p, "~") then some(p)
+  else none
+}
+
+/// `s` without a trailing `:digits` or `:digits:digits`.
+fn strip_position(s: String) -> String = {
+  let parts = string.split(s, ":")
+  let numeric = (x: String) => x != "" and int.parse(x) != err("")
+  let n = list.len(parts)
+  if n >= 3 and numeric(parts[n - 1]) and numeric(parts[n - 2]) then list.take(parts, n - 2) |> list.join(":")
+  else if n >= 2 and numeric(parts[n - 1]) then list.take(parts, n - 1) |> list.join(":")
+  else s
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────
+
+fn term(cols: Int, input: String) -> terminal.Terminal = {
+  var t = terminal.new(cols, 4)
+  terminal.feed_string(t, input)
+  t
+}
+
+fn target_at(t: terminal.Terminal, row: Int, col: Int) -> String =
+  match link_at(t, view.screen_line(t) + row, col) {
+    some(l) => (if l.url then "url " else "path ") + l.target,
+    none => "-",
+  }
+
+test "a URL under the pointer, trailing punctuation dropped" {
+  let t = term(60, "see https://example.com/a_(b)?q=1. or (https://x.io/y)")
+  assert_eq(target_at(t, 0, 8), "url https://example.com/a_(b)?q=1")
+  assert_eq(target_at(t, 0, 40), "url https://x.io/y")
+  assert_eq(target_at(t, 0, 1), "-")
+}
+
+test "a path with its position dropped" {
+  let t = term(60, "Update(src/gui/app.almd:12:3) and ~/notes.md, ok")
+  assert_eq(target_at(t, 0, 10), "path src/gui/app.almd")
+  assert_eq(target_at(t, 0, 36), "path ~/notes.md")
+  assert_eq(target_at(t, 0, 46), "-")
+}
+
+test "a URL wrapped onto the next row is found whole" {
+  let t = term(20, "go to https://example.com/very/long/path now")
+  assert_eq(target_at(t, 1, 3), "url https://example.com/very/long/path")
+  assert_eq(target_at(t, 0, 10), "url https://example.com/very/long/path")
+}

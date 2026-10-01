@@ -15,6 +15,7 @@ import self.field
 import self.pty
 import self.sys
 import self.view
+import self.links
 
 /// Draw the tab in front if it changed and a frame is due.
 fn draw_due(mut a: session.Session) -> Unit = {
@@ -57,7 +58,7 @@ fn retitle(mut a: session.Session) -> Unit = {
 fn draw(mut a: session.Session, cur: tabset.Tab, titles: List[String], clock: Int) -> Unit = {
   let t0 = sys.now_ms()
   render.draw(a.r, cur.t, cur.back, cur.shift, cur.sel, uistate.compose_of(a.ui), a.width, a.height, titles, a.active,
-    uistate.bar_of(a.ui))
+    uistate.bar_of(a.ui), a.ui.link)
   if a.stats.trace then eprintln("frame ${int.to_string(sys.now_ms())} cursor ${int.to_string(cur.t.x)},${int.to_string(cur.t.y)} shown ${if cur.t.cursor_visible then "yes" else "no"}"
     + " preedit ${int.to_string(list.len(a.ui.preedit))} line ${view.text_of(cur.t, view.screen_line(cur.t) + cur.t.y)}")
   session.count_frame(a.stats, sys.now_ms() - t0)
@@ -107,7 +108,7 @@ effect fn capture_due(mut a: session.Session, path: String) -> Unit = {
         var cur = tb
         stage(a.ui, cur, a.r.cell_h)!
         render.draw(a.r, cur.t, cur.back, cur.shift, cur.sel, uistate.compose_of(a.ui), a.width, a.height, titles, a.active,
-          uistate.bar_of(a.ui))
+          uistate.bar_of(a.ui), a.ui.link)
         list.push(a.tabs, cur)
       },
       none => (),
@@ -117,8 +118,8 @@ effect fn capture_due(mut a: session.Session, path: String) -> Unit = {
   }
 }
 
-/// The view, a composition and the find bar as SPRID_CAPTURE_BACK, _SHIFT,
-/// _PREEDIT, _FIND (stepped up _FIND_UP times, _FIND_STATE "selected" or
+/// The view, a composition, a link and the find bar as SPRID_CAPTURE_BACK,
+/// _SHIFT, _PREEDIT, _LINK, _FIND (stepped up _FIND_UP times, _FIND_STATE "selected" or
 /// "blurred") ask.
 effect fn stage(mut ui: uistate.Ui, mut cur: tabset.Tab, cell_h: Int) -> Unit = {
   cur.back = int.clamp(int.parse(env.get("SPRID_CAPTURE_BACK") ?? "0") ?? 0, 0, view.max_back(cur.t))
@@ -132,6 +133,14 @@ effect fn stage(mut ui: uistate.Ui, mut cur: tabset.Tab, cell_h: Int) -> Unit = 
   }
   match env.get("SPRID_CAPTURE_FIND") {
     some(q) => stage_find(ui, cur, q)!,
+    none => (),
+  }
+  // The link at "row,col" of the screen, as Cmd over it shows it.
+  match env.get("SPRID_CAPTURE_LINK") {
+    some(at) => {
+      let n = list.map(string.split(at, ","), (x) => int.parse(x) ?? 0)
+      if list.len(n) == 2 then ui.link = links.link_at(cur.t, view.screen_line(cur.t) + n[0], n[1])
+    },
     none => (),
   }
 }

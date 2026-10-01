@@ -1,5 +1,6 @@
 // The window's input state, and what an input asks of the tabs.
 
+import self.links
 import self.gui.composition
 import self.gui.findbar
 import self.gui.render
@@ -41,6 +42,10 @@ type Ui = {
   app_button: Int,
   report_col: Int,
   report_row: Int,
+  // The link under the pointer while Cmd is held (Ctrl on Linux), drawn
+  // underlined; the pointer's shape now (snaidhm's POINTER_*).
+  link: Option[links.Link],
+  pointer: Int,
   // $HOME, which titles show as "~".
   home: String,
   // Find (Cmd+F): whether its bar is open, and the search. The search
@@ -92,6 +97,7 @@ fn leave_tab(mut ui: Ui) -> Unit = {
   ui.app_button = -1
   ui.scroll_drag = false
   ui.field_drag = false
+  ui.link = none
   ui.dirty = true
 }
 

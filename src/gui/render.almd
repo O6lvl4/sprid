@@ -22,6 +22,7 @@ import self.search
 import self.terminal
 import self.view
 import self.gui.surface
+import self.links
 import self.gui.frame
 import self.gui.ink
 import self.gui.composition
@@ -108,7 +109,7 @@ fn compose_caret(c: composition.Compose, x: Int, cols: Int) -> Int = composition
 /// — while the bar has the focus, with the composition in it.
 fn draw(mut r: surface.Renderer, t: terminal.Terminal, back: Int, shift: Int, sel: Option[view.Selection],
         compose: composition.Compose, width: Int, height: Int, tabs: List[String], active: Int,
-        find: Option[findbar.Bar]) -> Unit = {
+        find: Option[findbar.Bar], link: Option[links.Link]) -> Unit = {
   let f = frame.frame_of(r, t, back, shift, compose.cps, tabs, find)
   // Pass 1: every glyph on screen into the atlas.
   r.layer = text.solid(r.device, r.layer)
@@ -126,7 +127,7 @@ fn draw(mut r: surface.Renderer, t: terminal.Terminal, back: Int, shift: Int, se
   r.missed = false
   r.pushing = true
   gpu.begin_data()
-  var n = draw_rows(r, f, t.cols, sel, sx, sy)
+  var n = draw_rows(r, f, t.cols, sel, link, sx, sy)
   if f.extra == 1 then {
     ink.rect(r, 0, 0, width, f.gy, r.theme.bg, 1.0, sx, sy)
     ink.rect(r, 0, f.gy + t.rows * r.cell_h, width, height, r.theme.bg, 1.0, sx, sy)
@@ -160,18 +161,27 @@ fn reserve(mut r: surface.Renderer, quads: Int) -> Unit =
   }
 
 /// The rows in view, find matches lit; the quads drawn.
-fn draw_rows(mut r: surface.Renderer, f: frame.Frame, cols: Int, sel: Option[view.Selection], sx: Float, sy: Float) -> Int = {
+fn draw_rows(mut r: surface.Renderer, f: frame.Frame, cols: Int, sel: Option[view.Selection], link: Option[links.Link], sx: Float, sy: Float) -> Int = {
   var n = 0
   for y in 0..<f.shown {
     match f.lines[y] {
       some(row) => {
-        let lit = if f.current.0 == y then rowpaint.Lit { spans: f.found[y], from: f.current.1, to: f.current.2 } else rowpaint.Lit { spans: f.found[y], from: -1, to: -1 }
+        let (lf, lt) = link_cols(link, f.top_line + y, cols)
+        let (cf, ct) = if f.current.0 == y then (f.current.1, f.current.2) else (-1, -1)
+        let lit = rowpaint.Lit { spans: f.found[y], from: cf, to: ct, link_from: lf, link_to: lt }
         n = n + rowpaint.draw_row(r, row, f.top_line + y, sel, lit, f.row_y + y * r.cell_h, cols, sx, sy)
       },
       none => (),
     }
   }
   n
+}
+
+/// The columns of `link` on line `line`, [from, to); (-1, -1) off it.
+fn link_cols(link: Option[links.Link], line: Int, cols: Int) -> (Int, Int) = match link {
+  some(l) => if line < l.from_line or line > l.to_line then (-1, -1)
+    else (if line == l.from_line then l.from_col else 0, if line == l.to_line then l.to_col + 1 else cols),
+  none => (-1, -1),
 }
 
 /// The scrollbar while there is scrollback (faint at the bottom, plainer

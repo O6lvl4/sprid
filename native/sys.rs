@@ -178,6 +178,22 @@ pub fn open_window(cwd: &str) -> bool {
     cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().is_ok()
 }
 
+/// Open `target` — a URL, or a file's path — as the desktop does: `open`
+/// on macOS, `xdg-open` elsewhere. Never waits; false when that couldn't
+/// be started.
+pub fn open_target(target: &str) -> bool {
+    let tool = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+    use std::process::Stdio;
+    match std::process::Command::new(tool).arg(target).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
+        Ok(mut child) => {
+            // Reaped on a thread of its own, so it never lingers as a zombie.
+            std::thread::spawn(move || child.wait());
+            true
+        }
+        Err(_) => false,
+    }
+}
+
 /// Ignore SIGPIPE, as a GUI program should: a clipboard tool that exits
 /// before taking all it was given must not take the terminal down with it.
 /// Programs started on a PTY get the default back (`pty::spawn`), and

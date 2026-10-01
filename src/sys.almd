@@ -36,6 +36,10 @@ fn clipboard_get() -> String = _
 @extern(rust, "crate::sys", "open_window")
 fn open_window(cwd: String) -> Bool = _
 
+/// Open a URL or a file as the desktop does (see native/sys.rs).
+@extern(rust, "crate::sys", "open_target")
+fn open_target(target: String) -> Bool = _
+
 /// Ignore SIGPIPE (see native/sys.rs).
 @extern(rust, "crate::sys", "ignore_sigpipe")
 fn ignore_sigpipe() -> Unit = _

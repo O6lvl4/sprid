@@ -2,6 +2,8 @@
 // and the grid — or, when the program asked for the mouse, reported to it.
 
 import env
+import fs
+import self.links
 import snaidhm.native.window as window
 import self.gui.render
 import self.field
@@ -29,12 +31,66 @@ fn on_bar(ui: uistate.Ui, p: Place) -> Bool = render.on_bar(p.r, uistate.bar(ui)
 
 /// A mouse input `kind` on tab `cur`; what it asks of the tabs.
 effect fn mouse(mut cur: tabset.Tab, mut ui: uistate.Ui, kind: Int, p: Place) -> uistate.Act =
-  if off_grid(cur, ui, kind, p) then uistate.Stay
+  if kind == window.MOUSE_DOWN and window.event_code() == 0 and link_click() and open_link(cur, p)! then uistate.Stay
+  else if off_grid(cur, ui, kind, p) then uistate.Stay
   else if kind == window.MOUSE_DOWN and window.event_code() == 0 then press(cur, ui, p)!
   else {
     if kind == window.MOUSE_MOVE and ui.dragging then drag_select(cur, ui, p)
     else if kind == window.MOUSE_UP and window.event_code() == 0 then { ui.dragging = false }
     uistate.Stay
+  }
+
+/// The pointer moved: the link under it found while Cmd is held, and the
+/// pointer shaped for where it is — a hand on a link, the I-beam on the
+/// grid, the arrow on the tab bar and the scrollbar.
+fn hover(cur: tabset.Tab, mut ui: uistate.Ui, p: Place) -> Unit = {
+  let on_grid = not (p.tabs > 1 and py(p) < render.bar_height(p.r)) and not render.on_scrollbar(p.r, cur.t, p.width, px(p))
+  let link = if on_grid and link_click() then {
+    let (col, _) = pointer.cell_at(p.r, cur.t, p.scale, p.tabs)
+    links.link_at(cur.t, pointer.pointer_line(p.r, cur, p.scale, p.tabs), col)
+  } else none
+  if link != ui.link then {
+    ui.link = link
+    ui.dirty = true
+  }
+  let shape = if link != none then window.POINTER_LINK else if on_grid then window.POINTER_TEXT else window.POINTER_ARROW
+  if shape != ui.pointer then {
+    window.set_pointer(shape)
+    ui.pointer = shape
+  }
+}
+
+/// Whether a press opens what it is on: Cmd held, Ctrl on Linux — and
+/// nothing else, so Cmd+Shift and the like stay presses.
+fn link_click() -> Bool =
+  window.event_mods() == (if sys.is_linux() then window.MOD_CTRL else window.MOD_SUPER)
+
+/// The URL or file under the pointer opened as the desktop does; whether
+/// there was one. Even where the program has the mouse: the press is the
+/// window's.
+effect fn open_link(cur: tabset.Tab, p: Place) -> Bool = {
+  let (col, _) = pointer.cell_at(p.r, cur.t, p.scale, p.tabs)
+  let line = pointer.pointer_line(p.r, cur, p.scale, p.tabs)
+  match links.link_at(cur.t, line, col) {
+    some(l) => match target_of(cur, l)! {
+      some(target) => sys.open_target(target),
+      none => false,
+    },
+    none => false,
+  }
+}
+
+/// What to open for link `l`: a URL as it is, a path from the tab's working
+/// directory (or home, for `~/`) when the file is there.
+effect fn target_of(cur: tabset.Tab, l: links.Link) -> Option[String] =
+  if l.url then some(l.target)
+  else {
+    let home = env.get("HOME") ?? ""
+    let dir = if cur.t.cwd != "" then cur.t.cwd else pty.cwd(cur.fd)
+    let path = if string.starts_with(l.target, "~/") then home + string.drop(l.target, 1)
+      else if string.starts_with(l.target, "/") then l.target
+      else dir + "/" + l.target
+    if fs.exists(path) then some(path) else none
   }
 
 /// An input that isn't the grid's to select with: on the find bar, on the

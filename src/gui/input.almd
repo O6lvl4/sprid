@@ -31,7 +31,10 @@ effect fn handle(mut cur: tabset.Tab, mut ui: uistate.Ui, kind: Int, r: render.R
     pointer.wheel(cur, ui, r, scale, window.event_dy(), col, row)
     uistate.Stay
   }
-  else if kind == window.MOUSE_DOWN or kind == window.MOUSE_UP or kind == window.MOUSE_MOVE then presses.mouse(cur, ui, kind, p)!
+  else if kind == window.MOUSE_DOWN or kind == window.MOUSE_UP or kind == window.MOUSE_MOVE then {
+    if kind == window.MOUSE_MOVE then presses.hover(cur, ui, p)
+    presses.mouse(cur, ui, kind, p)!
+  }
   else if kind == window.THEME then uistate.Restyle
   else if kind == window.FOCUS then uistate.Focus(window.event_code() == 1)
   else {

@@ -15,7 +15,7 @@ fn draw_row(mut r: surface.Renderer, row: record.Row, line: Int, sel: Option[vie
             top: Int, cols: Int, sx: Float, sy: Float) -> Int = {
   var n = draw_backgrounds(r, row, line, sel, lit, top, cols, sx, sy)
   for x in 0..<cols {
-    n = n + draw_cell(r, row, x, colors(r, row, line, x, sel, lit).0, top, sx, sy)
+    n = n + draw_cell(r, row, x, colors(r, row, line, x, sel, lit).0, x >= lit.link_from and x < lit.link_to, top, sx, sy)
   }
   n
 }
@@ -43,10 +43,10 @@ fn draw_backgrounds(mut r: surface.Renderer, row: record.Row, line: Int, sel: Op
 
 /// Cell `x` in `fg`: its character (unless hidden) and its lines. How many
 /// quads it pushed.
-fn draw_cell(mut r: surface.Renderer, row: record.Row, x: Int, fg: Int, top: Int, sx: Float, sy: Float) -> Int = {
+fn draw_cell(mut r: surface.Renderer, row: record.Row, x: Int, fg: Int, linked: Bool, top: Int, sx: Float, sy: Float) -> Int = {
   let o = x * cell.SIZE
   let cp = bytes.read_u32_le(row.cells, o + cell.OFF_CP)
-  let attrs = bytes.read_u16_le(row.cells, o + cell.OFF_ATTRS)
+  let attrs = int.bor(bytes.read_u16_le(row.cells, o + cell.OFF_ATTRS), if linked then cell.ATTR_UNDERLINE else 0)
   let alpha = if int.band(attrs, cell.ATTR_FAINT) != 0 then 0.6 else 1.0
   let left = r.pad_x + x * r.cell_w
   let w = r.cell_w * int.max(1, bytes.read_u8(row.cells, o + cell.OFF_WIDTH))
@@ -120,7 +120,9 @@ fn marks(row: record.Row, x: Int) -> List[Int] =
 
 /// A row's find matches: their columns, and the current one's (`from` -1
 /// when it isn't on the row).
-type Lit = { spans: List[(Int, Int)], from: Int, to: Int }
+/// The columns of a link under the pointer with Cmd held, underlined
+/// (`link_from` -1 when none is on the row).
+type Lit = { spans: List[(Int, Int)], from: Int, to: Int, link_from: Int, link_to: Int }
 
 /// Foreground and background of cell `x` as 0xRRGGBB: inverse and hidden
 /// applied, and a find match's or the selection's colour over it.

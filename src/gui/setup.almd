@@ -75,7 +75,7 @@ fn fresh_ui(home: String) -> uistate.Ui = uistate.Ui {
   renaming: false, draft: "", click_ms: 0, click_tab: -1, home: home, finding: false, find: search.empty(),
   field: field.of(""), find_focus: false, field_drag: false, scroll_drag: false, scroll_grab: 0,
   ime_x: -1, ime_y: -1,
-  app_button: -1, report_col: -1, report_row: -1,
+  app_button: -1, report_col: -1, report_row: -1, link: none, pointer: -1,
 }
 
 effect fn fresh_stats() -> session.Stats = {
