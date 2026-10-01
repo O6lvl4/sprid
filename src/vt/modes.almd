@@ -7,52 +7,77 @@ import self.vt.glyphs
 /// DECRQM's answer for private mode `p`: 1 set, 2 reset, 0 not known —
 /// how a program asks, say, whether synchronized output (2026) is there
 /// before it relies on it.
-fn mode_state(t: core.Terminal, p: Int) -> Int = {
-  let on = (b: Bool) => if b then 1 else 2
-  match p {
-    1 => on(t.app_cursor),
-    6 => on(t.origin),
-    7 => on(t.autowrap),
-    25 => on(t.cursor_visible),
-    47 | 1047 | 1049 => on(t.alt),
-    1000 | 1002 | 1003 => on(t.mouse_mode == p),
-    1004 => on(t.focus_events),
-    1006 => on(t.mouse_sgr),
-    2004 => on(t.bracketed_paste),
-    2026 => on(t.sync_output),
-    _ => 0,
-  }
+fn mode_state(t: core.Terminal, p: Int) -> Int = match (if p < 1000 then screen_mode(t, p) else input_mode(t, p)) {
+  some(on) => if on then 1 else 2,
+  none => 0,
 }
+
+/// Cursor keys, origin, autowrap, the cursor shown, the alternate screen.
+fn screen_mode(t: core.Terminal, p: Int) -> Option[Bool] =
+  if p == 1 then some(t.app_cursor)
+  else if p == 6 then some(t.origin)
+  else if p == 7 then some(t.autowrap)
+  else if p == 25 then some(t.cursor_visible)
+  else if p == 47 then some(t.alt)
+  else none
+
+/// Mouse reports, focus reports, the alternate screen, bracketed paste,
+/// synchronized output.
+fn input_mode(t: core.Terminal, p: Int) -> Option[Bool] =
+  if list.contains(MOUSE_MODES, p) then some(t.mouse_mode == p)
+  else if p == 1004 then some(t.focus_events)
+  else if p == 1006 then some(t.mouse_sgr)
+  else if p == 1047 or p == 1049 then some(t.alt)
+  else if p == 2004 then some(t.bracketed_paste)
+  else if p == 2026 then some(t.sync_output)
+  else none
+
+/// X10-compatible clicks, button events, any motion.
+let MOUSE_MODES = [1000, 1002, 1003]
 
 fn set_private_modes(mut t: core.Terminal, on: Bool) -> Unit = {
   for i in 0..<t.n_params {
     let p = core.param_at(t, i)
-    match p {
-      1 => { t.app_cursor = on },
-      6 => {
-        t.origin = on
-        screen.move_to(t, 0, 0)
-      },
-      7 => { t.autowrap = on },
-      25 => {
-        if on and not t.cursor_visible then t.cursor_pairs = true
-        if not on and t.cursor_visible then t.hide_starts = t.hide_starts + 1
-        if on then t.first_screen = false
-        t.cursor_visible = on
-      },
-      47 | 1047 => switch_screen(t, on, false),
-      1049 => switch_screen(t, on, true),
-      1000 | 1002 | 1003 => { t.mouse_mode = if on then p else 0 },
-      1004 => { t.focus_events = on },
-      1006 => { t.mouse_sgr = on },
-      2004 => { t.bracketed_paste = on },
-      2026 => {
-        if on and not t.sync_output then t.sync_starts = t.sync_starts + 1
-        t.sync_output = on
-      },
-      _ => { () },
-    }
+    if p < 1000 then set_screen_mode(t, p, on) else set_input_mode(t, p, on)
   }
+}
+
+fn set_screen_mode(mut t: core.Terminal, p: Int, on: Bool) -> Unit = match p {
+  1 => { t.app_cursor = on },
+  6 => {
+    t.origin = on
+    screen.move_to(t, 0, 0)
+  },
+  7 => { t.autowrap = on },
+  25 => show_cursor(t, on),
+  47 => switch_screen(t, on, false),
+  _ => { () },
+}
+
+fn set_input_mode(mut t: core.Terminal, p: Int, on: Bool) -> Unit =
+  if p == 1047 or p == 1049 then switch_screen(t, on, p == 1049)
+  else if p == 2004 then { t.bracketed_paste = on }
+  else if p == 2026 then {
+    if on and not t.sync_output then t.sync_starts = t.sync_starts + 1
+    t.sync_output = on
+  }
+  else set_report_mode(t, p, on)
+
+/// Mouse and focus reports.
+fn set_report_mode(mut t: core.Terminal, p: Int, on: Bool) -> Unit =
+  if list.contains(MOUSE_MODES, p) then { t.mouse_mode = if on then p else 0 }
+  else if p == 1004 then { t.focus_events = on }
+  else if p == 1006 then { t.mouse_sgr = on }
+  else ()
+
+/// Mode 25. Shown after hidden, the program is known to pair them (see
+/// `mid_update`); hidden, a redraw with it hidden begins; shown, a
+/// full-screen program's first screen is done.
+fn show_cursor(mut t: core.Terminal, on: Bool) -> Unit = {
+  if on and not t.cursor_visible then t.cursor_pairs = true
+  if not on and t.cursor_visible then t.hide_starts = t.hide_starts + 1
+  if on then t.first_screen = false
+  t.cursor_visible = on
 }
 
 /// Enter (`on`) or leave the alternate screen. The alternate screen has no

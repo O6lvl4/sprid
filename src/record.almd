@@ -30,9 +30,15 @@ let MARKS_MAX = 128
 /// columns of it, can take: per cell a run header and 4 bytes of UTF-8, and
 /// room for marks on a cell that has them — only a row with marks has such
 /// cells.
-fn bound(grid: Bytes, off: Int, used: Int, graphemes: Map[Int, String]) -> Int =
-  if map.len(graphemes) == 0 then 4 + 7 + used * 18
-  else list.range(0, used) |> list.fold(4 + 7 + used * 18, (n, x) => if has_marks(grid, off + x * cell.SIZE) then n + MARKS_MAX else n)
+fn bound(grid: Bytes, off: Int, used: Int, graphemes: Map[Int, String]) -> Int = {
+  var n = 4 + 7 + used * 18
+  if map.len(graphemes) > 0 then {
+    for x in 0..<used {
+      if has_marks(grid, off + x * cell.SIZE) then n = n + MARKS_MAX
+    }
+  }
+  n
+}
 
 fn has_marks(grid: Bytes, c: Int) -> Bool = int.band(bytes.read_u8(grid, c + cell.OFF_FLAGS), cell.FLAG_GRAPHEME) != 0
 

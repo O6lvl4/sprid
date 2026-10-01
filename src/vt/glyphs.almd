@@ -8,47 +8,55 @@ import self.vt.core
 import self.vt.screen
 import self.vt.erase
 
-/// DEC Special Graphics (ESC ( 0): line drawing in place of 0x60..0x7E.
-fn dec_graphic(cp: Int) -> Int = match cp {
-  0x60 => 0x25C6, 0x61 => 0x2592, 0x66 => 0x00B0, 0x67 => 0x00B1,
-  0x6A => 0x2518, 0x6B => 0x2510, 0x6C => 0x250C, 0x6D => 0x2514,
-  0x6E => 0x253C, 0x6F => 0x23BA, 0x70 => 0x23BB, 0x71 => 0x2500,
-  0x72 => 0x23BC, 0x73 => 0x23BD, 0x74 => 0x251C, 0x75 => 0x2524,
-  0x76 => 0x2534, 0x77 => 0x252C, 0x78 => 0x2502, 0x79 => 0x2264,
-  0x7A => 0x2265, 0x7B => 0x03C0, 0x7C => 0x2260, 0x7D => 0x00A3,
-  0x7E => 0x00B7, _ => cp,
+/// DEC Special Graphics (ESC ( 0): what 0x60..0x7E draw, in order; 0
+/// where the character stays itself (0x62..0x65, 0x68, 0x69).
+let DEC_GRAPHICS = [
+  0x25C6, 0x2592, 0, 0, 0, 0, 0x00B0, 0x00B1, 0, 0, 0x2518, 0x2510, 0x250C, 0x2514, 0x253C, 0x23BA,
+  0x23BB, 0x2500, 0x23BC, 0x23BD, 0x251C, 0x2524, 0x2534, 0x252C, 0x2502, 0x2264, 0x2265, 0x03C0, 0x2260, 0x00A3, 0x00B7,
+]
+
+fn dec_graphic(cp: Int) -> Int = {
+  let g = if cp >= 0x60 and cp <= 0x7E then DEC_GRAPHICS[cp - 0x60] else 0
+  if g == 0 then cp else g
 }
 
 fn print(mut t: core.Terminal, raw: Int) -> Unit = {
-  let cp = if t.dec_graphics and raw >= 0x60 and raw <= 0x7E then dec_graphic(raw) else raw
+  let cp = if t.dec_graphics then dec_graphic(raw) else raw
   let w = width.of(cp)
   if w == 0 then attach(t, cp)
   else {
-    if t.pending_wrap and t.autowrap then {
-      screen.mark_wrapped(t)
-      t.x = 0
-      screen.index(t)
-    }
+    if t.pending_wrap and t.autowrap then wrap(t)
     t.pending_wrap = false
+    // A wide char does not fit in the last column: wrap first.
     if w == 2 and t.x == t.cols - 1 then {
-      // A wide char does not fit in the last column: wrap first.
       if t.autowrap then {
         screen.erase_cells(t, t.y, t.x, t.cols)
-        screen.mark_wrapped(t)
-        t.x = 0
-        screen.index(t)
+        wrap(t)
       } else t.x = t.cols - 2
     }
     if t.insert then shift_right(t, t.x, w)
     put(t, t.x, cp, w)
-    t.last_x = t.x
-    t.last_y = t.y
-    t.last_cp = cp
-    if t.x + w >= t.cols then {
-      t.x = t.cols - 1
-      t.pending_wrap = true
-    } else t.x = t.x + w
+    advance(t, cp, w)
   }
+}
+
+/// To the start of the next row, the row left marked as wrapped onto it.
+fn wrap(mut t: core.Terminal) -> Unit = {
+  screen.mark_wrapped(t)
+  t.x = 0
+  screen.index(t)
+}
+
+/// Past `cp`, `w` columns wide, just printed at the cursor: on to the next
+/// column, or held at the last one with a wrap pending.
+fn advance(mut t: core.Terminal, cp: Int, w: Int) -> Unit = {
+  t.last_x = t.x
+  t.last_y = t.y
+  t.last_cp = cp
+  if t.x + w >= t.cols then {
+    t.x = t.cols - 1
+    t.pending_wrap = true
+  } else t.x = t.x + w
 }
 
 /// Write `cp` of width `w` at column x of the cursor row, first splitting any

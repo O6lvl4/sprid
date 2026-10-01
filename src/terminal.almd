@@ -116,44 +116,62 @@ fn feed(mut t: core.Terminal, data: Bytes) -> Unit = {
 
 fn feed_string(mut t: core.Terminal, s: String) -> Unit = feed(t, bytes.from_string(s))
 
-fn step(mut t: core.Terminal, b: Int) -> Unit = {
-  if t.utf8_need > 0 and (b < 0x80 or b > 0xBF) then {
+fn step(mut t: core.Terminal, b: Int) -> Unit =
+  if t.utf8_need > 0 and b >= 0x80 and b <= 0xBF then utf8_continue(t, b)
+  else {
     // A sequence cut short: show the replacement, then take b afresh.
-    t.utf8_need = 0
-    glyphs.print(t, 0xFFFD)
+    if t.utf8_need > 0 then {
+      t.utf8_need = 0
+      glyphs.print(t, 0xFFFD)
+    }
+    control_or_state(t, b)
   }
-  if t.utf8_need > 0 then {
-    t.utf8_cp = int.bor(int.bshl(t.utf8_cp, 6), int.band(b, 0x3F))
-    t.utf8_need = t.utf8_need - 1
-    if t.utf8_need == 0 then glyphs.print(t, valid_cp(t.utf8_cp, t.utf8_min))
-  } else if b == 0x18 or b == 0x1A then t.state = core.GROUND
+
+/// The next byte of a UTF-8 sequence; the character printed at its last.
+fn utf8_continue(mut t: core.Terminal, b: Int) -> Unit = {
+  t.utf8_cp = int.bor(int.bshl(t.utf8_cp, 6), int.band(b, 0x3F))
+  t.utf8_need = t.utf8_need - 1
+  if t.utf8_need == 0 then glyphs.print(t, valid_cp(t.utf8_cp, t.utf8_min))
+}
+
+/// CAN and SUB cancel a sequence and ESC starts one in any state; any other
+/// byte is the state's.
+fn control_or_state(mut t: core.Terminal, b: Int) -> Unit =
+  if b == 0x18 or b == 0x1A then { t.state = core.GROUND }
   else if b == 0x1B then {
     if t.state == core.OSC_STRING then osc.osc_dispatch(t)
     enter_escape(t)
   }
-  else if t.state == core.GROUND then ground(t, b)
+  else in_state(t, b)
+
+/// `b` in the parser's state.
+fn in_state(mut t: core.Terminal, b: Int) -> Unit =
+  if t.state == core.GROUND then ground(t, b)
   else if t.state == core.OSC_STRING then osc.osc_byte(t, b)
-  else if t.state == core.IGNORED_STRING then { () }
+  else if t.state == core.IGNORED_STRING then ()
   else if b < 0x20 then execute(t, b)
   else if t.state == core.ESCAPE then escape(t, b)
   else if t.state == core.ESCAPE_INTERMEDIATE then escape_intermediate(t, b)
   else csi.csi(t, b)
-}
 
 fn enter_escape(mut t: core.Terminal) -> Unit = {
   t.state = core.ESCAPE
   t.intermediate = 0
 }
 
-fn ground(mut t: core.Terminal, b: Int) -> Unit = {
+fn ground(mut t: core.Terminal, b: Int) -> Unit =
   if b < 0x20 then execute(t, b)
   else if b < 0x7F then glyphs.print(t, b)
-  else if b == 0x7F then { () }
-  else if b >= 0xC2 and b <= 0xDF then { t.utf8_need = 1; t.utf8_cp = int.band(b, 0x1F) }
+  else if b == 0x7F then ()
+  else utf8_lead(t, b)
+
+/// The first byte of a UTF-8 sequence: how many follow, and the bits it
+/// carries; anything else shown as the replacement character.
+fn utf8_lead(mut t: core.Terminal, b: Int) -> Unit =
+  if b >= 0xC2 and b <= 0xDF then { t.utf8_need = 1; t.utf8_cp = int.band(b, 0x1F) }
   else if b >= 0xE0 and b <= 0xEF then { t.utf8_need = 2; t.utf8_cp = int.band(b, 0x0F); t.utf8_min = 0x800 }
   else if b >= 0xF0 and b <= 0xF4 then { t.utf8_need = 3; t.utf8_cp = int.band(b, 0x07); t.utf8_min = 0x10000 }
   else glyphs.print(t, 0xFFFD)
-}
 
 /// `cp` if UTF-8 may encode it in a sequence for at least `min`: else the
 /// replacement character — overlong forms, surrogates and past U+10FFFF are
@@ -177,38 +195,47 @@ fn execute(mut t: core.Terminal, b: Int) -> Unit = match b {
   _ => { () },
 }
 
-fn escape(mut t: core.Terminal, b: Int) -> Unit = {
+fn escape(mut t: core.Terminal, b: Int) -> Unit =
   if b >= 0x20 and b <= 0x2F then {
     t.intermediate = b
     t.state = core.ESCAPE_INTERMEDIATE
-  } else {
-    t.state = core.GROUND
-    match b {
-      0x5B => { // [
-        t.state = core.CSI_ENTRY
-        t.n_params = 0
-        t.param = -1
-        t.colon = false
-        t.private = 0
-        t.intermediate = 0
-      },
-      0x5D => { // ]
-        t.state = core.OSC_STRING
-        bytes.clear(t.osc)
-      },
-      0x50 | 0x58 | 0x5E | 0x5F => { t.state = core.IGNORED_STRING }, // P X ^ _
-      0x37 => { t.saved = screen.save_cursor(t) },            // 7 DECSC
-      0x38 => screen.restore_cursor(t, t.saved),              // 8 DECRC
-      0x44 => screen.index(t),                                // D IND
-      0x45 => { t.x = 0; t.pending_wrap = false; screen.index(t) }, // E NEL
-      0x4D => screen.reverse_index(t),                        // M RI
-      0x48 => bytes.set_u8(t.tabs, t.x, 1),            // H HTS
-      0x63 => modes.reset(t),                                // c RIS
-      0x3D => { t.app_keypad = true },                 // =
-      0x3E => { t.app_keypad = false },                // >
-      _ => { () },
-    }
   }
+  else if b == 0x5B then enter_csi(t)                            // [
+  else if b == 0x5D then {                                       // ]
+    t.state = core.OSC_STRING
+    bytes.clear(t.osc)
+  }
+  // DCS, SOS, PM, APC: P X ^ _
+  else if list.contains([0x50, 0x58, 0x5E, 0x5F], b) then { t.state = core.IGNORED_STRING }
+  else {
+    t.state = core.GROUND
+    escape_final(t, b)
+  }
+
+fn enter_csi(mut t: core.Terminal) -> Unit = {
+  t.state = core.CSI_ENTRY
+  t.n_params = 0
+  t.param = -1
+  t.colon = false
+  t.private = 0
+  t.intermediate = 0
+}
+
+/// The escape sequences that are one byte after ESC.
+fn escape_final(mut t: core.Terminal, b: Int) -> Unit =
+  if list.contains([0x37, 0x38, 0x44, 0x45, 0x4D], b) then escape_cursor(t, b)
+  else if b == 0x48 then bytes.set_u8(t.tabs, t.x, 1)             // H HTS
+  else if b == 0x63 then modes.reset(t)                          // c RIS
+  else if b == 0x3D or b == 0x3E then { t.app_keypad = b == 0x3D }  // = DECKPAM, > DECKPNM
+  else ()
+
+/// DECSC, DECRC, IND, NEL, RI.
+fn escape_cursor(mut t: core.Terminal, b: Int) -> Unit = match b {
+  0x37 => { t.saved = screen.save_cursor(t) },            // 7 DECSC
+  0x38 => screen.restore_cursor(t, t.saved),              // 8 DECRC
+  0x44 => screen.index(t),                                // D IND
+  0x45 => { t.x = 0; t.pending_wrap = false; screen.index(t) }, // E NEL
+  _ => screen.reverse_index(t),                           // M RI
 }
 
 fn escape_intermediate(mut t: core.Terminal, b: Int) -> Unit = {

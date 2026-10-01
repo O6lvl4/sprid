@@ -8,69 +8,107 @@ import self.vt.erase
 import self.vt.sgr
 import self.vt.modes
 
-fn csi(mut t: core.Terminal, b: Int) -> Unit = {
-  if t.state == core.CSI_IGNORE then {
-    if b >= 0x40 and b <= 0x7E then t.state = core.GROUND
-  } else if b >= 0x30 and b <= 0x39 then {
-    if t.state == core.CSI_INTERMEDIATE then t.state = core.CSI_IGNORE
-    else {
-      t.state = core.CSI_PARAM
-      t.param = int.min(if t.param < 0 then b - 0x30 else t.param * 10 + b - 0x30, 65535)
-    }
-  } else if b == 0x3B or b == 0x3A then {
-    if t.state == core.CSI_INTERMEDIATE then t.state = core.CSI_IGNORE
-    else {
-      t.state = core.CSI_PARAM
-      core.push_param(t)
-      t.colon = b == 0x3A
-    }
-  } else if b >= 0x3C and b <= 0x3F then {
-    if t.state == core.CSI_ENTRY then {
-      t.private = b
-      t.state = core.CSI_PARAM
-    } else t.state = core.CSI_IGNORE
-  } else if b >= 0x20 and b <= 0x2F then {
+/// One byte of a CSI sequence: a parameter digit or separator, a private
+/// marker, an intermediate, or the final byte that runs it.
+fn csi(mut t: core.Terminal, b: Int) -> Unit =
+  if t.state == core.CSI_IGNORE then { if b >= 0x40 and b <= 0x7E then t.state = core.GROUND }
+  else if b <= 0x2F then {
     t.intermediate = b
     t.state = core.CSI_INTERMEDIATE
-  } else if b >= 0x40 and b <= 0x7E then {
+  }
+  else if b <= 0x3B then param_byte(t, b)
+  else if b <= 0x3F then private_marker(t, b)
+  else if b <= 0x7E then {
     core.push_param(t)
     t.state = core.GROUND
     csi_dispatch(t, b)
-  } else t.state = core.CSI_IGNORE
-}
+  }
+  else { t.state = core.CSI_IGNORE }
 
-fn csi_dispatch(mut t: core.Terminal, final: Int) -> Unit = {
+/// `?`, `>`, `<` or `=`: a private sequence, when it comes first.
+fn private_marker(mut t: core.Terminal, b: Int) -> Unit =
+  if t.state == core.CSI_ENTRY then {
+    t.private = b
+    t.state = core.CSI_PARAM
+  } else t.state = core.CSI_IGNORE
+
+/// A digit, or `;` / `:` ending a parameter (`:` starting a sub-parameter).
+fn param_byte(mut t: core.Terminal, b: Int) -> Unit =
+  if t.state == core.CSI_INTERMEDIATE then t.state = core.CSI_IGNORE
+  else {
+    t.state = core.CSI_PARAM
+    if b <= 0x39 then t.param = int.min(if t.param < 0 then b - 0x30 else t.param * 10 + b - 0x30, 65535)
+    else {
+      core.push_param(t)
+      t.colon = b == 0x3A
+    }
+  }
+
+fn csi_dispatch(mut t: core.Terminal, final: Int) -> Unit =
   if t.private == 0 and t.intermediate == 0 then csi_plain(t, final)
-  else if t.private == 0x3F and t.intermediate == 0 then {
-    if final == 0x68 then modes.set_private_modes(t, true)
-    else if final == 0x6C then modes.set_private_modes(t, false)
-    else if final == 0x75 then core.reply(t, "\x1b[?${int.to_string(t.kitty_flags)}u") // kitty keyboard: flags
-    else if final == 0x6E and core.arg0(t, 0) == 996 then core.reply(t, "\x1b[?997;1n")    // colour scheme: dark
-  } else if t.private == 0x3F and t.intermediate == 0x24 and final == 0x70 then {   // DECRQM
-    let p = core.arg0(t, 0)
-    core.reply(t, "\x1b[?${int.to_string(p)};${int.to_string(modes.mode_state(t, p))}$y")
-  } else if t.private == 0x3E and final == 0x63 then core.reply(t, "\x1b[>1;10;0c")   // DA2
-  else if t.private == 0x3E and final == 0x71 then core.reply(t, "\x1bP>|sprid ${core.VERSION}\x1b\\") // XTVERSION
-  else if t.private == 0x3E and final == 0x75 then {                          // kitty keyboard: push
+  else if t.private == 0x3F then csi_question(t, final)
+  else if t.private == 0x3E then csi_greater(t, final)
+  else if t.private == 0x3C or t.private == 0x3D then kitty_flags(t, final)
+  else with_intermediate(t, final)
+
+/// `CSI SP q` DECSCUSR and `CSI ! p` DECSTR.
+fn with_intermediate(mut t: core.Terminal, final: Int) -> Unit =
+  if t.intermediate == 0x20 and final == 0x71 then { t.cursor_shape = core.arg0(t, 0) }
+  else if t.intermediate == 0x21 and final == 0x70 then modes.soft_reset(t)
+  else ()
+
+/// `CSI ? ...`: DECSET / DECRST, the kitty keyboard flags query, the colour
+/// scheme query, DECRQM.
+fn csi_question(mut t: core.Terminal, final: Int) -> Unit =
+  if t.intermediate == 0x24 then {
+    if final == 0x70 then {                                                 // DECRQM
+      let p = core.arg0(t, 0)
+      core.reply(t, "\x1b[?${int.to_string(p)};${int.to_string(modes.mode_state(t, p))}$y")
+    }
+  } else if t.intermediate != 0 then ()
+  else if final == 0x68 then modes.set_private_modes(t, true)
+  else if final == 0x6C then modes.set_private_modes(t, false)
+  else if final == 0x75 then core.reply(t, "\x1b[?${int.to_string(t.kitty_flags)}u") // kitty keyboard: flags
+  else if final == 0x6E and core.arg0(t, 0) == 996 then core.reply(t, "\x1b[?997;1n")    // colour scheme: dark
+  else ()
+
+/// `CSI > ...`: DA2, XTVERSION, a kitty keyboard push.
+fn csi_greater(mut t: core.Terminal, final: Int) -> Unit =
+  if final == 0x63 then core.reply(t, "\x1b[>1;10;0c")                          // DA2
+  else if final == 0x71 then core.reply(t, "\x1bP>|sprid ${core.VERSION}\x1b\\")  // XTVERSION
+  else if final == 0x75 then {                                                 // kitty keyboard: push
     list.push(t.kitty_stack, t.kitty_flags)
     t.kitty_flags = int.band(core.arg0(t, 0), core.KITTY_SUPPORTED)
-  } else if t.private == 0x3C and final == 0x75 then {                        // kitty keyboard: pop
+  } else ()
+
+/// `CSI < u` pops kitty keyboard flags, `CSI = u` sets them.
+fn kitty_flags(mut t: core.Terminal, final: Int) -> Unit =
+  if final != 0x75 then ()
+  else if t.private == 0x3C then {
     for _ in 0..<core.arg(t, 0, 1) {
       t.kitty_flags = list.pop(t.kitty_stack) ?? 0
     }
-  } else if t.private == 0x3D and final == 0x75 then {                        // kitty keyboard: set
+  } else {
     let flags = int.band(core.arg0(t, 0), core.KITTY_SUPPORTED)
     let mode = core.arg(t, 1, 1)
     t.kitty_flags = if mode == 2 then int.bor(t.kitty_flags, flags)
       else if mode == 3 then int.band(t.kitty_flags, int.bxor(flags, 0xFF))
       else flags
   }
-  else if t.intermediate == 0x20 and final == 0x71 then t.cursor_shape = core.arg0(t, 0) // DECSCUSR
-  else if t.intermediate == 0x21 and final == 0x70 then modes.soft_reset(t)             // DECSTR
-}
 
-fn csi_plain(mut t: core.Terminal, final: Int) -> Unit = match final {
-  0x40 => { glyphs.shift_right(t, t.x, int.min(core.arg(t, 0, 1), t.cols - t.x)); t.pending_wrap = false }, // @ ICH
+/// The finals of the plain CSI sequences, by what they do.
+let MOVES = [0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x60, 0x61, 0x64, 0x65, 0x66]
+let EDITS = [0x40, 0x4A, 0x4B, 0x4C, 0x4D, 0x50, 0x58, 0x62]
+let SCROLLS_AND_TABS = [0x49, 0x53, 0x54, 0x5A, 0x67]
+
+fn csi_plain(mut t: core.Terminal, final: Int) -> Unit =
+  if list.contains(MOVES, final) then cursor_move(t, final)
+  else if list.contains(EDITS, final) then edit(t, final)
+  else if list.contains(SCROLLS_AND_TABS, final) then scroll_or_tab(t, final)
+  else other(t, final)
+
+/// Cursor movement: CUU CUD CUF CUB CNL CPL CHA CUP, HPA HPR VPA VPR HVP.
+fn cursor_move(mut t: core.Terminal, final: Int) -> Unit = match final {
   0x41 => screen.move_vertical(t, 0 - core.arg(t, 0, 1)),                        // A CUU
   0x42 | 0x65 => screen.move_vertical(t, core.arg(t, 0, 1)),                     // B CUD, e VPR
   0x43 | 0x61 => { t.x = int.min(t.x + core.arg(t, 0, 1), t.cols - 1); t.pending_wrap = false }, // C CUF, a HPR
@@ -78,50 +116,75 @@ fn csi_plain(mut t: core.Terminal, final: Int) -> Unit = match final {
   0x45 => { screen.move_vertical(t, core.arg(t, 0, 1)); t.x = 0 },               // E CNL
   0x46 => { screen.move_vertical(t, 0 - core.arg(t, 0, 1)); t.x = 0 },           // F CPL
   0x47 | 0x60 => { t.x = int.clamp(core.arg(t, 0, 1) - 1, 0, t.cols - 1); t.pending_wrap = false }, // G CHA, ` HPA
-  0x48 | 0x66 => screen.move_to(t, core.arg(t, 1, 1) - 1, core.arg(t, 0, 1) - 1),     // H CUP, f HVP
-  0x49 => screen.tab_forward(t, core.arg(t, 0, 1)),                              // I CHT
+  0x64 => screen.move_to(t, t.x, core.arg(t, 0, 1) - 1),                         // d VPA
+  _ => screen.move_to(t, core.arg(t, 1, 1) - 1, core.arg(t, 0, 1) - 1),         // H CUP, f HVP
+}
+
+/// Editing: ICH ED EL IL DL DCH ECH REP.
+fn edit(mut t: core.Terminal, final: Int) -> Unit = match final {
+  0x40 => { glyphs.shift_right(t, t.x, int.min(core.arg(t, 0, 1), t.cols - t.x)); t.pending_wrap = false }, // @ ICH
   0x4A => erase.erase_display(t, core.arg0(t, 0)),                              // J ED
   0x4B => erase.erase_line(t, core.arg0(t, 0)),                                 // K EL
   0x4C => screen.insert_lines(t, core.arg(t, 0, 1)),                             // L IL
   0x4D => screen.delete_lines(t, core.arg(t, 0, 1)),                             // M DL
   0x50 => glyphs.delete_chars(t, core.arg(t, 0, 1)),                             // P DCH
-  0x53 => screen.scroll_up_region(t, core.arg(t, 0, 1)),                         // S SU
-  0x54 => screen.scroll_down(t, core.arg(t, 0, 1)),                              // T SD
   0x58 => { erase.erase_span(t, t.x, t.x + core.arg(t, 0, 1)); t.pending_wrap = false }, // X ECH
-  0x5A => screen.tab_backward(t, core.arg(t, 0, 1)),                             // Z CBT
-  0x62 => {                                                          // b REP
+  _ => {                                                                          // b REP
     for _ in 0..<int.min(core.arg(t, 0, 1), 65535) {
       glyphs.print(t, t.last_cp)
     }
   },
-  0x63 => { if core.arg0(t, 0) == 0 then core.reply(t, "\x1b[?62;22c") },     // c DA1
-  0x64 => { screen.move_to(t, t.x, core.arg(t, 0, 1) - 1) },                     // d VPA
-  0x67 => {                                                          // g TBC
+}
+
+/// Scrolling and tab stops: SU SD, CHT CBT TBC.
+fn scroll_or_tab(mut t: core.Terminal, final: Int) -> Unit = match final {
+  0x49 => screen.tab_forward(t, core.arg(t, 0, 1)),                              // I CHT
+  0x53 => screen.scroll_up_region(t, core.arg(t, 0, 1)),                         // S SU
+  0x54 => screen.scroll_down(t, core.arg(t, 0, 1)),                              // T SD
+  0x5A => screen.tab_backward(t, core.arg(t, 0, 1)),                             // Z CBT
+  _ => {                                                                          // g TBC
     let mode = core.arg0(t, 0)
     if mode == 0 then bytes.set_u8(t.tabs, t.x, 0)
     else if mode == 3 then bytes.fill(t.tabs, 0)
   },
-  0x68 => { if core.arg0(t, 0) == 4 then t.insert = true },               // h SM
-  0x6C => { if core.arg0(t, 0) == 4 then t.insert = false },              // l RM
+}
+
+/// The rest: DA1, SM / RM (insert mode), SGR, DSR, DECSTBM, SCOSC / SCORC.
+fn other(mut t: core.Terminal, final: Int) -> Unit = match final {
+  0x63 => primary_attributes(t),                                         // c DA1
+  0x68 => set_mode(t, true),                                             // h SM
+  0x6C => set_mode(t, false),                                            // l RM
   0x6D => sgr.sgr(t),                                                    // m SGR
-  0x6E => {                                                          // n DSR
-    let mode = core.arg0(t, 0)
-    if mode == 5 then core.reply(t, "\x1b[0n")
-    else if mode == 6 then {
-      let row = if t.origin then t.y - t.margin_top else t.y
-      core.reply(t, "\x1b[${int.to_string(row + 1)};${int.to_string(t.x + 1)}R")
-    }
-  },
-  0x72 => {                                                          // r DECSTBM
-    let top = core.arg(t, 0, 1) - 1
-    let bottom = int.min(core.arg(t, 1, t.rows), t.rows) - 1
-    if top < bottom then {
-      t.margin_top = top
-      t.margin_bottom = bottom
-      screen.move_to(t, 0, 0)
-    }
-  },
+  0x6E => device_status(t, core.arg0(t, 0)),                             // n DSR
+  0x72 => set_margins(t),                                                // r DECSTBM
   0x73 => { t.saved = screen.save_cursor(t) },                              // s SCOSC
   0x75 => screen.restore_cursor(t, t.saved),                                // u SCORC
   _ => { () },
+}
+
+/// DA1, asked with no parameter: a VT220 with ANSI colour.
+fn primary_attributes(mut t: core.Terminal) -> Unit =
+  if core.arg0(t, 0) == 0 then core.reply(t, "\x1b[?62;22c") else ()
+
+/// SM / RM: of the ANSI modes only 4, insert, is kept.
+fn set_mode(mut t: core.Terminal, on: Bool) -> Unit =
+  if core.arg0(t, 0) == 4 then t.insert = on else ()
+
+/// DSR: 5 the terminal's status, 6 where the cursor is.
+fn device_status(mut t: core.Terminal, mode: Int) -> Unit =
+  if mode == 5 then core.reply(t, "\x1b[0n")
+  else if mode == 6 then {
+    let row = if t.origin then t.y - t.margin_top else t.y
+    core.reply(t, "\x1b[${int.to_string(row + 1)};${int.to_string(t.x + 1)}R")
+  } else ()
+
+/// DECSTBM: the scrolling margins, the cursor home.
+fn set_margins(mut t: core.Terminal) -> Unit = {
+  let top = core.arg(t, 0, 1) - 1
+  let bottom = int.min(core.arg(t, 1, t.rows), t.rows) - 1
+  if top < bottom then {
+    t.margin_top = top
+    t.margin_bottom = bottom
+    screen.move_to(t, 0, 0)
+  }
 }
