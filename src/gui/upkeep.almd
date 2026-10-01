@@ -115,7 +115,7 @@ fn resized(mut a: session.Session) -> Unit = {
     }
     a.width = window.width()
     a.height = window.height()
-    tabset.relayout_live(a.tabs, a.r, a.width, a.height)
+    tabset.relayout_window(a.tabs, a.r, a.width, a.height)
     a.resized_at = sys.now_ms()
     uistate.touch(a.ui)
   }

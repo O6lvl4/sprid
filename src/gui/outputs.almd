@@ -30,7 +30,7 @@ effect fn read_all(mut a: session.Session) -> Unit = {
 effect fn read_tab(mut a: session.Session, mut cur: tabset.Tab, i: Int) -> Unit = {
   let title_before = (cur.t.title, cur.t.cwd)
   let bells_before = cur.t.bells
-  let (got, more) = tabset.drain(cur, if i == a.active then session.STREAM_DRAIN_MS else session.DRAIN_MS)
+  let (got, more) = tabset.drain(cur, if i == a.active then session.STREAM_DRAIN_MS else session.DRAIN_MS, i == a.active)
   if got then asks(a, cur, i, cur.t.bells != bells_before)!
   // A tab in the back retitled itself: the tab bar shows it.
   if got and i != a.active and (cur.t.title, cur.t.cwd) != title_before then uistate.touch(a.ui)

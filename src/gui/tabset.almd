@@ -22,6 +22,10 @@ let MID_UPDATE_GAP_MS = 10
 /// Longest the screen waits for a full-screen program's first screen, ms.
 let FIRST_SCREEN_LIMIT = 1000
 
+/// Longest the screen waits for a program to draw itself again at a new
+/// grid size, ms.
+let RESIZE_LIMIT = 150
+
 /// One tab: a terminal, the PTY its program runs on, and how it is viewed.
 type Tab = {
   t: terminal.Terminal,
@@ -45,8 +49,12 @@ type Tab = {
 /// each was first seen, ms. A hold is timed from the start of the update it
 /// is for: timed from the first of a run of them, a program that keeps the
 /// cursor hidden, drawing in synchronized updates, would soon have none of
-/// them held, and its half-drawn screens shown.
-type Updates = { syncs: Int, sync_at: Int, hides: Int, hide_at: Int }
+/// them held, and its half-drawn screens shown. `resized_at`: when the grid
+/// changed size and the program has not yet answered by drawing, -1 when it
+/// has.
+type Updates = { syncs: Int, sync_at: Int, hides: Int, hide_at: Int, resized_at: Int }
+
+let NO_UPDATES = Updates { syncs: 0, sync_at: 0, hides: 0, hide_at: 0, resized_at: -1 }
 
 /// Whether tab `i` may close: at once when its shell waits at the prompt,
 /// else when the user says so — closing ends what runs in it.
@@ -118,12 +126,16 @@ fn note_updates(mut tb: Tab, now: Int) -> Unit = {
 /// ms; 0 when it isn't. A synchronized update is asked for, a hidden cursor
 /// only suggests one — but a program's first full screen comes while it is
 /// still starting up, its pieces hundreds of ms apart, and until it is whole
-/// the screen before it is the better one to show.
+/// the screen before it is the better one to show. So is the screen before
+/// a resize, until the program has drawn itself again at the new size: what
+/// it drew for the old one, wrapped or cut to the new, is not a screen it
+/// ever drew.
 fn hold_left(tb: Tab, now: Int) -> Int = {
   let t = tb.t
   let sync = if t.sync_output then tb.up.sync_at + SYNC_LIMIT - now else 0
   let hidden = if terminal.drawing_hidden(t) then tb.up.hide_at + (if t.first_screen then FIRST_SCREEN_LIMIT else HIDDEN_LIMIT) - now else 0
-  int.max(0, int.max(sync, hidden))
+  let resized = if tb.up.resized_at >= 0 then tb.up.resized_at + RESIZE_LIMIT - now else 0
+  int.max(0, int.max(sync, int.max(hidden, resized)))
 }
 
 /// How long the active tab's program may still hold the frame, ms.
@@ -152,7 +164,7 @@ fn open_tab(r: render.Renderer, width: Int, height: Int, count: Int, command: St
   let (cols, rows) = render.grid_size(r, width, height, count)
   let fd = pty.spawn(command, cwd, cols, rows)
   if fd < 0 then none
-  else some(Tab { t: terminal.with_scrollback(cols, rows, scrollback), fd: fd, back: 0, shift: 0, sel: none, up: Updates { syncs: 0, sync_at: 0, hides: 0, hide_at: 0 }, name: "", alert: false })
+  else some(Tab { t: terminal.with_scrollback(cols, rows, scrollback), fd: fd, back: 0, shift: 0, sel: none, up: NO_UPDATES, name: "", alert: false })
 }
 
 /// Close tab `i` and its program, keeping the other tabs in order.
@@ -174,14 +186,20 @@ fn close_tab(mut tabs: List[Tab], i: Int) -> Unit = {
 /// Fit every tab to the window: the grid shrinks by the tab bar from two tabs
 /// on.
 fn relayout(mut tabs: List[Tab], r: render.Renderer, width: Int, height: Int) -> Unit =
-  fit(tabs, r, width, height, false)
+  fit(tabs, r, width, height, false, true)
 
-/// `relayout` while the window is being resized: scrollback is reflowed once
-/// the size holds (`settle_all`).
+/// `relayout` for a size that is still changing — the font stepped larger
+/// or smaller: scrollback is reflowed once the size holds (`settle_all`).
 fn relayout_live(mut tabs: List[Tab], r: render.Renderer, width: Int, height: Int) -> Unit =
-  fit(tabs, r, width, height, true)
+  fit(tabs, r, width, height, true, true)
 
-fn fit(mut tabs: List[Tab], r: render.Renderer, width: Int, height: Int, live: Bool) -> Unit = {
+/// `relayout_live` for the window being resized. Its frame is drawn at once,
+/// not held for the program to draw itself again (`hold_left`): the window
+/// has a new size, which only a new frame fills.
+fn relayout_window(mut tabs: List[Tab], r: render.Renderer, width: Int, height: Int) -> Unit =
+  fit(tabs, r, width, height, true, false)
+
+fn fit(mut tabs: List[Tab], r: render.Renderer, width: Int, height: Int, live: Bool, hold: Bool) -> Unit = {
   let (cols, rows) = render.grid_size(r, width, height, list.len(tabs))
   for i in 0..<list.len(tabs) {
     match take(tabs, i) {
@@ -194,6 +212,8 @@ fn fit(mut tabs: List[Tab], r: render.Renderer, width: Int, height: Int, live: B
           // would point at other lines.
           scroll_to(cur, 0)
           cur.sel = none
+          // Timed from the first of a run of resizes, as a held update is.
+          if hold and cur.up.resized_at < 0 then cur.up = { ...cur.up, resized_at: sys.now_ms() }
         }
         list.push(tabs, cur)
         tabs = list.swap(tabs, i, list.len(tabs) - 1)
@@ -228,8 +248,8 @@ fn title_of(tb: Tab, home: String) -> String = {
 
 /// Feed the tab everything its program has written, up to `budget_ms` of
 /// work: (whether there was any, whether it stopped at the budget with more
-/// still coming).
-fn drain(mut tb: Tab, budget_ms: Int) -> (Bool, Bool) = {
+/// still coming). `front`: the tab is the one drawn.
+fn drain(mut tb: Tab, budget_ms: Int, front: Bool) -> (Bool, Bool) = {
   let until = sys.now_ms() + budget_ms
   let screen_before = view.screen_line(tb.t)
   var data = pty.read(tb.fd, 0)
@@ -244,13 +264,16 @@ fn drain(mut tb: Tab, budget_ms: Int) -> (Bool, Bool) = {
     // a screen the frame is held for (see `hold_left`) the rest is surely
     // coming, and a program that writes only as fast as it is read — a
     // full-screen redraw comes 1 KB per turn — is kept waiting by every turn
-    // not spent reading.
-    let gap = if hold_left(tb, sys.now_ms()) > 0 then MID_UPDATE_GAP_MS else 1
+    // not spent reading. A tab in the back has no frame to hold, and waiting
+    // on it would keep the one in front waiting.
+    let gap = if front and hold_left(tb, sys.now_ms()) > 0 then MID_UPDATE_GAP_MS else 1
     data = if sys.now_ms() < until then pty.read(tb.fd, gap) else {
       more = true
       bytes.new(0)
     }
   }
+  // What came after a resize is the program drawing itself at the new size.
+  if got then tb.up = { ...tb.up, resized_at: -1 }
   // Scrolled back, the viewport stays on the lines it shows while new ones
   // arrive below.
   if tb.back > 0 or tb.shift > 0 then tb.back = int.min(tb.back + view.screen_line(tb.t) - screen_before, view.max_back(tb.t))
@@ -283,4 +306,11 @@ test "a tab moved keeps the others in order" {
   assert_eq(move_to([0, 1, 2, 3], 0, 2), [1, 2, 0, 3])
   assert_eq(move_to([0, 1, 2, 3], 3, 1), [0, 3, 1, 2])
   assert_eq(move_to([0, 1, 2], 1, 1), [0, 1, 2])
+}
+
+test "a resized tab's frame waits for its program to draw again, no longer than the limit" {
+  let tb = Tab { t: terminal.new(10, 3), fd: -1, back: 0, shift: 0, sel: none, up: { ...NO_UPDATES, resized_at: 1000 }, name: "", alert: false }
+  assert_eq(hold_left(tb, 1040), RESIZE_LIMIT - 40)
+  assert_eq(hold_left(tb, 1000 + RESIZE_LIMIT), 0)
+  assert_eq(hold_left({ ...tb, up: NO_UPDATES }, 1040), 0)
 }

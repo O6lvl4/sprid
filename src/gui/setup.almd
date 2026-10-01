@@ -78,7 +78,7 @@ effect fn start(id: Int, capture: Option[String], faces: fonts.Faces, st: settin
     config_fd: if capture == none then sys.watch(prefs.config_path()!) else -1,
     st: st, r: r,
     tabs: [tabset.Tab { t: terminal.with_scrollback(cols, rows, st.scrollback), fd: first_fd, back: 0, shift: 0, sel: none,
-      up: tabset.Updates { syncs: 0, sync_at: 0, hides: 0, hide_at: 0 }, name: "", alert: false }],
+      up: tabset.NO_UPDATES, name: "", alert: false }],
     active: 0, ui: fresh_ui(home), width: width, height: height, font_size: st.font_size,
     blink_at: -1, flash_until: -1, alive: true, last_frame: 0, streaming: false, resized_at: -1,
     front: first_fd, window_title: "", stats: fresh_stats()!,
