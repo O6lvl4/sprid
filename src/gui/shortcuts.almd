@@ -8,6 +8,7 @@ import self.pty
 import self.scrollback
 import self.field
 import self.sys
+import self.gui.prefs
 import self.terminal
 import self.view
 import self.prompts
@@ -192,6 +193,10 @@ effect fn command_key(mut cur: tabset.Tab, mut ui: uistate.Ui, k: Key) -> Bool =
   } else if find_key(cur, ui, k) then true
   else if k.command and k.lower == 0x6B then {
     clear(cur, ui)
+    true
+  } else if k.command and k.code == 0x2C then {
+    // Cmd+, as every Mac app: the settings.
+    prefs.edit_config()!
     true
   } else if k.command and k.lower == 0x63 then {
     // Cmd+C: the selection to the clipboard.

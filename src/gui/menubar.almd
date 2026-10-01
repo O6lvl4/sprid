@@ -1,0 +1,103 @@
+// The macOS menu bar: sprid, Edit, View, Window, Help — in Japanese on a
+// Japanese system. An item hands sprid the input its key would (see
+// native/menu.rs), so each does exactly what its shortcut does.
+
+import env
+import snaidhm.native.window as window
+import self.gui.dialog
+
+/// NSEventModifierFlags: Command, Shift, Option, Control.
+let CMD = 1048576
+let SHIFT = 131072
+let OPT = 524288
+let CTRL = 262144
+
+/// An item doing what `key` with Cmd (and `extra`, NSEventModifierFlags)
+/// does.
+fn item(title: String, key: String, extra: Int) -> String = keyed(title, key, CMD + extra, key, extra)
+
+/// An item shown with key equivalent `equiv` (modifiers `mask`) doing what
+/// `key` with Cmd and `extra` does — for a key whose Shift types another
+/// character: Cmd+Shift+] is matched as Cmd+}.
+fn keyed(title: String, equiv: String, mask: Int, key: String, extra: Int) -> String = {
+  let mods = window.MOD_SUPER + (if int.band(extra, SHIFT) != 0 then window.MOD_SHIFT else 0)
+    + (if int.band(extra, CTRL) != 0 then window.MOD_CTRL else 0) + (if int.band(extra, OPT) != 0 then window.MOD_ALT else 0)
+  let input = if key == "up" then "${int.to_string(window.KEY)}:${int.to_string(window.KEY_UP)}"
+    else if key == "down" then "${int.to_string(window.KEY)}:${int.to_string(window.KEY_DOWN)}"
+    else "${int.to_string(window.TEXT)}:${int.to_string(string.codepoint(key) ?? 0)}"
+  "${title}\t${equiv}\t${int.to_string(mask)}\tkey:${input}:${int.to_string(mods)}"
+}
+
+/// An item sending AppKit's own `action` along the responder chain.
+fn standard(title: String, key: String, mask: Int, action: String) -> String =
+  "${title}\t${key}\t${int.to_string(mask)}\tsel:${action}"
+
+/// The menus, as native/menu.rs reads them.
+fn spec(ja: Bool) -> String = {
+  let t = (en: String, j: String) => if ja then j else en
+  [
+    ">sprid",
+    standard(t("About sprid", "sprid について"), "", 0, "orderFrontStandardAboutPanel:"),
+    "-",
+    item(t("Settings…", "設定…"), ",", 0),
+    "-",
+    standard(t("Hide sprid", "sprid を隠す"), "h", CMD, "hide:"),
+    standard(t("Hide Others", "ほかを隠す"), "h", CMD + OPT, "hideOtherApplications:"),
+    standard(t("Show All", "すべてを表示"), "", 0, "unhideAllApplications:"),
+    "-",
+    standard(t("Quit sprid", "sprid を終了"), "q", CMD, "terminate:"),
+    ">" + t("Edit", "編集"),
+    item(t("Copy", "コピー"), "c", 0),
+    item(t("Paste", "ペースト"), "v", 0),
+    item(t("Select All", "すべてを選択"), "a", 0),
+    item(t("Select Command Output", "コマンドの出力を選択"), "a", SHIFT),
+    "-",
+    item(t("Find…", "検索…"), "f", 0),
+    item(t("Find Next", "次を検索"), "g", 0),
+    item(t("Find Previous", "前を検索"), "g", SHIFT),
+    "-",
+    item(t("Clear", "クリア"), "k", 0),
+    ">" + t("View", "表示"),
+    item(t("Bigger", "拡大"), "=", 0),
+    item(t("Smaller", "縮小"), "-", 0),
+    item(t("Actual Size", "実際のサイズ"), "0", 0),
+    "-",
+    item(t("Previous Prompt", "前のプロンプト"), "up", 0),
+    item(t("Next Prompt", "次のプロンプト"), "down", 0),
+    "-",
+    item(t("Toggle Full Screen", "フルスクリーンの切り替え"), "f", CTRL),
+    ">" + t("Window", "ウインドウ") + "*",
+    item(t("New Window", "新規ウインドウ"), "n", 0),
+    item(t("New Tab", "新規タブ"), "t", 0),
+    "-",
+    item(t("Close Tab", "タブを閉じる"), "w", 0),
+    item(t("Close Window", "ウインドウを閉じる"), "w", SHIFT),
+    item(t("Minimize", "しまう"), "m", 0),
+    "-",
+    keyed(t("Next Tab", "次のタブ"), "}", CMD, "]", SHIFT),
+    keyed(t("Previous Tab", "前のタブ"), "{", CMD, "[", SHIFT),
+    "-",
+    ">" + t("Help", "ヘルプ") + "?",
+    "${t("Keyboard Shortcuts", "キーボードショートカット")}\t\t0\topen:https://github.com/O6lvl4/sprid#keys",
+    "${t("sprid on GitHub", "GitHub の sprid")}\t\t0\topen:https://github.com/O6lvl4/sprid",
+  ] |> list.join("\n")
+}
+
+/// Put the menus up (macOS; nothing elsewhere). SPRID_CAPTURE_MENU="menu,
+/// item" then picks that item, for a capture of what it does.
+effect fn install(ja: Bool) -> Unit = {
+  dialog.set_menu(spec(ja))
+  match env.get("SPRID_CAPTURE_MENU") {
+    some(at) => {
+      let n = list.map(string.split(at, ","), (x) => int.parse(x) ?? 0)
+      if list.len(n) == 2 then dialog.perform_menu(n[0], n[1])
+    },
+    none => (),
+  }
+}
+
+test "an item says its key and hands over the key's input" {
+  assert_eq(item("Copy", "c", 0), "Copy\tc\t1048576\tkey:5:99:8")
+  assert_eq(keyed("Next Tab", "}", CMD, "]", SHIFT), "Next Tab\t}\t1048576\tkey:5:93:9")
+  assert_eq(item("Previous Prompt", "up", 0), "Previous Prompt\tup\t1048576\tkey:6:38:8")
+}

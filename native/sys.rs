@@ -192,9 +192,19 @@ pub fn primary_get() -> String {
 /// on macOS, `xdg-open` elsewhere. Never waits; false when that couldn't
 /// be started.
 pub fn open_target(target: &str) -> bool {
+    open_with(&[target])
+}
+
+/// Open the text file at `path` in the text editor the desktop uses for
+/// text, whatever its name ends in: `open -t` on macOS.
+pub fn open_text(path: &str) -> bool {
+    if cfg!(target_os = "macos") { open_with(&["-t", path]) } else { open_with(&[path]) }
+}
+
+fn open_with(args: &[&str]) -> bool {
     let tool = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
     use std::process::Stdio;
-    match std::process::Command::new(tool).arg(target).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
+    match std::process::Command::new(tool).args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
         Ok(mut child) => {
             // Reaped on a thread of its own, so it never lingers as a zombie.
             std::thread::spawn(move || child.wait());

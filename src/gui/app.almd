@@ -14,6 +14,7 @@ import self.gui.prefs
 import self.gui.setup
 import self.gui.turn
 import self.gui.restore
+import self.gui.menubar
 
 /// How the window starts: a command for the first tab instead of the login
 /// shell (the window closes when it exits), and the grid to size the window
@@ -51,6 +52,17 @@ effect fn first_command(opts: Options, login: String) -> String = match opts.com
 effect fn first_dir() -> String =
   if sys.cwd() == "/" or sys.cwd() == "" then env.get("HOME") ?? "" else ""
 
+/// The app as its first window opens: input methods, latency, Option, the
+/// menu bar.
+effect fn opened(st: settings.Settings) -> Unit = {
+  window.set_ime(true)
+  // A key's echo shows as soon as it is drawn, not a display refresh or two
+  // later.
+  gpu.set_low_latency(true)
+  window.set_option_as_alt(st.option_as_alt)
+  menubar.install(string.starts_with(env.get("LANG") ?? "", "ja"))!
+}
+
 effect fn run_with(opts: Options, faces: fonts.Faces, st: settings.Settings) -> Unit = {
   // Sized to a grid, the window is measured before it opens, for a Retina
   // display (the scale is only known once it is open).
@@ -74,11 +86,7 @@ effect fn run_with(opts: Options, faces: fonts.Faces, st: settings.Settings) -> 
   guard first_fd >= 0 else println("sprid: could not start ${first}")
   guard window.open("sprid", win_w, win_h) else println("sprid: could not open a window")
   if list.len(kept) > 0 then window.set_position(kept[0].x, kept[0].y)
-  window.set_ime(true)
-  // A key's echo shows as soon as it is drawn, not a display refresh or two
-  // later.
-  gpu.set_low_latency(true)
-  window.set_option_as_alt(st.option_as_alt)
+  opened(st)!
   var wins = [setup.start(1, opts.capture, faces, st, login, first_fd, expected)!]
   if reopen then restore.reopen(wins, kept)!
   while list.len(wins) > 0 {
