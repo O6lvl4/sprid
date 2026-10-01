@@ -20,9 +20,9 @@ NAVY = (0x1F, 0x3A, 0x5F)
 WHITE = (0xFF, 0xFF, 0xFF)
 
 
-def ghost_mask(n: int, cx: float, top_y: float, w: float, hem_y: float, scallops: int) -> np.ndarray:
+def ghost_mask(nw: int, nh: int, cx: float, top_y: float, w: float, hem_y: float, scallops: int) -> np.ndarray:
     """The ghost's silhouette: a dome, straight sides, a scalloped hem."""
-    m = Image.new("L", (n, n), 0)
+    m = Image.new("L", (nw, nh), 0)
     d = ImageDraw.Draw(m)
     left, right = cx - w / 2, cx + w / 2
     d.ellipse([left, top_y, right, top_y + w], fill=255)
@@ -33,6 +33,52 @@ def ghost_mask(n: int, cx: float, top_y: float, w: float, hem_y: float, scallops
         # Bumps below the hem at both ends and between, bites in the rest.
         d.ellipse([x0, hem_y - sw / 2, x0 + sw, hem_y + sw / 2], fill=255 if i % 2 == 0 else 0)
     return np.asarray(m) > 127
+
+
+GHOST_W, GHOST_H = 440, 518
+
+
+def ghost(k: float) -> Image.Image:
+    """The ghost alone, on transparency, `k` pixels to a unit: GHOST_W x
+    GHOST_H units. Its head is the shell — bands curving round a point to the
+    right, as the armadillo's do, light outside to deep inside, a white gap
+    between each — parted from the navy body by a white line; white eyes,
+    and a prompt and block cursor for a mouth in the shell's light teal."""
+    nw, nh = round(GHOST_W * k), round(GHOST_H * k)
+    cx, w, hem_y = GHOST_W / 2 * k, GHOST_W * k, 472 * k
+    body = ghost_mask(nw, nh, cx, 0, w, hem_y, 5)
+    yy, xx = np.mgrid[0:nh, 0:nw]
+    px = np.zeros((nh, nw, 4), dtype=np.uint8)
+
+    shell_bottom, gap = 204 * k, 12 * k
+    shell = body & (yy < shell_bottom)
+    r = np.hypot(xx - (cx + 330 * k), yy - 234 * k)
+    r_lo, r_hi = r[shell].min(), r[shell].max()
+    t = np.clip((r_hi - r) / (r_hi - r_lo), 0, 0.9999)
+    band = (t * len(BANDS)).astype(int)
+    width = (r_hi - r_lo) / len(BANDS)
+    nearest = np.round(t * len(BANDS))
+    to_edge = np.abs(t * len(BANDS) - nearest) * width
+    inside = (nearest > 0) & (nearest < len(BANDS))
+    colors = np.array(BANDS, dtype=np.uint8)[band]
+    px[shell, :3] = colors[shell]
+    px[shell & inside & (to_edge < gap / 2), :3] = WHITE
+    px[body & (yy >= shell_bottom) & (yy < shell_bottom + gap), :3] = WHITE
+    px[body & (yy >= shell_bottom + gap), :3] = NAVY
+    px[body, 3] = 255
+    img = Image.fromarray(px)
+
+    d = ImageDraw.Draw(img)
+    eye_w, eye_h, eye_y = 58 * k, 76 * k, 242 * k
+    for ex in (cx - 92 * k, cx + 92 * k):
+        d.ellipse([ex - eye_w / 2, eye_y, ex + eye_w / 2, eye_y + eye_h], fill=WHITE + (255,))
+        d.ellipse([ex - 12 * k, eye_y + 30 * k, ex + 16 * k, eye_y + 62 * k], fill=NAVY + (255,))
+    prompt_y = 336 * k
+    teal = BANDS[0] + (255,)
+    p = cx - 82 * k
+    d.line([(p, prompt_y), (p + 50 * k, prompt_y + 40 * k), (p, prompt_y + 80 * k)], fill=teal, width=round(24 * k), joint="curve")
+    d.rectangle([cx + 12 * k, prompt_y + 4 * k, cx + 66 * k, prompt_y + 80 * k], fill=teal)
+    return img
 
 
 def icon() -> Image.Image:
@@ -56,48 +102,9 @@ def icon() -> Image.Image:
     img = Image.alpha_composite(img, shadow)
     img = Image.alpha_composite(img, bg)
 
-    # The ghost.
-    cx, top_y, w, hem_y = 512 * SS, 236 * SS, 440 * SS, 708 * SS
-    body = ghost_mask(n, cx, top_y, w, hem_y, 5)
-    yy, xx = np.mgrid[0:n, 0:n]
-    px = np.array(img)
-
-    # The head is the shell: bands curving round a point to the right, as
-    # the armadillo's do, light at the outside to deep at the inside, a white
-    # gap between each; a white line parts it from the body.
-    shell_bottom = 440 * SS
-    gap = 12 * SS
-    shell = body & (yy < shell_bottom)
-    r = np.hypot(xx - (cx + 330 * SS), yy - 470 * SS)
-    r_lo, r_hi = r[shell].min(), r[shell].max()
-    t = np.clip((r_hi - r) / (r_hi - r_lo), 0, 0.9999)
-    band = (t * len(BANDS)).astype(int)
-    width = (r_hi - r_lo) / len(BANDS)
-    to_edge = np.abs((t * len(BANDS) - np.round(t * len(BANDS)))) * width
-    inside = (np.round(t * len(BANDS)) > 0) & (np.round(t * len(BANDS)) < len(BANDS))
-    colors = np.array(BANDS, dtype=np.uint8)[band]
-    px[shell, :3] = colors[shell]
-    px[shell & inside & (to_edge < gap / 2), :3] = WHITE
-    seam = body & (yy >= shell_bottom) & (yy < shell_bottom + gap)
-    px[seam, :3] = WHITE
-    lower = body & (yy >= shell_bottom + gap)
-    px[lower, :3] = NAVY
-    px[body, 3] = 255
-    img = Image.fromarray(px)
-
-    d = ImageDraw.Draw(img)
-    # Eyes: white, looking a little toward the prompt.
-    eye_w, eye_h, eye_y = 58 * SS, 76 * SS, 478 * SS
-    for ex in (cx - 92 * SS, cx + 92 * SS):
-        d.ellipse([ex - eye_w // 2, eye_y, ex + eye_w // 2, eye_y + eye_h], fill=WHITE + (255,))
-        d.ellipse([ex - 12 * SS, eye_y + 30 * SS, ex + 16 * SS, eye_y + 62 * SS], fill=NAVY + (255,))
-    # A prompt and a block cursor for a mouth, in the shell's light teal.
-    prompt_y = 572 * SS
-    teal = BANDS[0] + (255,)
-    stroke = 24 * SS
-    p = cx - 82 * SS
-    d.line([(p, prompt_y), (p + 50 * SS, prompt_y + 40 * SS), (p, prompt_y + 80 * SS)], fill=teal, width=stroke, joint="curve")
-    d.rectangle([cx + 12 * SS, prompt_y + 4 * SS, cx + 66 * SS, prompt_y + 80 * SS], fill=teal)
+    # The ghost, 440 units wide: on the 1024 canvas at (292, 236).
+    g = ghost(SS)
+    img.alpha_composite(g, (292 * SS, 236 * SS))
 
     return img.resize((S, S), Image.LANCZOS)
 
