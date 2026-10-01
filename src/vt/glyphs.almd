@@ -69,8 +69,8 @@ fn put(mut t: core.Terminal, x: Int, cp: Int, w: Int) -> Unit = {
   if w == 2 then write_cell(t, o + cell.SIZE, 0, 0)
 }
 
-/// Write a whole cell at byte `o` with the pen's colours and attributes, no
-/// flags. Three stores instead of six: fg and bg are adjacent (bytes 4..12)
+/// Write a whole cell at byte `o` with the pen's colours, attributes and
+/// link, no other flags. Three stores instead of six: fg and bg are adjacent (bytes 4..12)
 /// and so are attrs, width and flags (12..16).
 fn write_cell(mut t: core.Terminal, o: Int, cp: Int, w: Int) -> Unit = {
   let colors = int.bor(t.fg, int.bshl(t.bg, 32))

@@ -66,6 +66,8 @@ type Terminal = {
   pending_wrap: Bool,
   fg: Int,
   bg: Int,
+  // The pen's attributes and its link (OSC 8), as the bits they set in a
+  // cell's word at `cell.OFF_ATTRS`.
   attrs: Int,
   saved: Saved,
   // DECSC's slot of the screen not in front.
@@ -128,6 +130,12 @@ type Terminal = {
   /// A program asked to read the clipboard (OSC 52 with `?`): the targets
   /// it named, for the window to answer or not; "" when none asked.
   clipboard_asked: String,
+  /// Links (OSC 8) by id: the id the program named (`id=`, "" for none) and
+  /// the URI; the id of each such pair, so a link printed in parts keeps one
+  /// id; and the id to give next — they are reused past `cell.LINK_MAX`.
+  links: Map[Int, (String, String)],
+  link_ids: Map[String, Int],
+  link_next: Int,
   sb: scrollback.Scrollback,
   // Parser.
   state: Int,
@@ -211,6 +219,9 @@ fn with_scrollback(cols: Int, rows: Int, limit: Int) -> Terminal = {
     notice_parts: ("", "", ""),
     clipboard: none,
     clipboard_asked: "",
+    links: [:],
+    link_ids: [:],
+    link_next: 1,
     sb: scrollback.new(limit),
     state: GROUND,
     params: bytes.new(MAX_PARAMS * 4),

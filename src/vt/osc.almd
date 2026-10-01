@@ -1,7 +1,9 @@
-// OSC strings: titles, the working directory, notifications, the clipboard.
+// OSC strings: titles, the working directory, links, notifications, the
+// clipboard.
 
 import base64
 import bytes
+import self.cell
 import self.vt.core
 
 fn osc_byte(mut t: core.Terminal, b: Int) -> Unit = {
@@ -16,11 +18,43 @@ fn osc_dispatch(mut t: core.Terminal) -> Unit = {
   let (cmd, arg) = string.split_once(s, ";") ?? (s, "")
   if cmd == "0" or cmd == "2" then { t.title = arg }
   else if cmd == "7" then { t.cwd = file_url_path(arg) }
+  else if cmd == "8" then hyperlink(t, arg)
   else if cmd == "9" then message_notice(t, arg)
   else if cmd == "777" then rxvt_notice(t, arg)
   else if cmd == "99" then kitty_notice(t, arg)
   else if cmd == "52" then clipboard(t, arg)
   if bytes.len(t.osc) > core.OSC_KEEP then t.osc = bytes.new(0) else bytes.clear(t.osc)
+}
+
+/// `8;params;URI` starts a link — what is printed after it, up to an
+/// `8;;`, links to the URI. Parts of one link (as a program redraws around
+/// it) share an `id=` among the params.
+fn hyperlink(mut t: core.Terminal, arg: String) -> Unit = {
+  let (params, uri) = string.split_once(arg, ";") ?? ("", "")
+  let named = string.split(params, ":") |> list.filter_map((kv) => string.split_once(kv, "=")) |> list.filter((e) => e.0 == "id") |> list.last
+  let name = named |> option.map((e) => e.1) ?? ""
+  let link = if uri == "" then 0 else cell.link_bits(link_id(t, name, uri))
+  t.attrs = int.bor(int.band(t.attrs, cell.ATTR_MASK), link)
+}
+
+/// The id of link (`name`, `uri`): the one it was given, or the next free
+/// one — past `cell.LINK_MAX` the oldest are given out again.
+fn link_id(mut t: core.Terminal, name: String, uri: String) -> Int = {
+  let key = name + "\n" + uri
+  match map.get(t.link_ids, key) {
+    some(id) => id,
+    none => {
+      let id = t.link_next
+      t.link_next = if id >= cell.LINK_MAX then 1 else id + 1
+      match map.get(t.links, id) {
+        some(old) => map.delete(t.link_ids, old.0 + "\n" + old.1),
+        none => (),
+      }
+      map.insert(t.links, id, (name, uri))
+      map.insert(t.link_ids, key, id)
+      id
+    },
+  }
 }
 
 /// `9;message`. ConEmu's `9;N;...` (progress and the like, N a number up

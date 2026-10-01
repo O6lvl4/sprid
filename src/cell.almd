@@ -5,9 +5,9 @@
 //   0  u32  codepoint (0 = never written, shown as a blank)
 //   4  u32  foreground color
 //   8  u32  background color
-//   12 u16  attributes (ATTR_* bits)
+//   12 u16  attributes (ATTR_* bits; the top 6 the link's low bits)
 //   14 u8   width: 1 normal, 2 head of a wide char, 0 tail of a wide char
-//   15 u8   flags (FLAG_* bits)
+//   15 u8   flags (FLAG_* bits; the top 7 the link's high bits)
 //
 // Colors: 0 is the default color, 0x01000000 | n palette entry n,
 // 0x02000000 | 0xRRGGBB a direct color.
@@ -38,6 +38,24 @@ let ATTR_OVERLINE = 512
 /// screen's grapheme map.
 let FLAG_GRAPHEME = 1
 
+/// The attribute bits proper, without the link's.
+let ATTR_MASK = 0x3FF
+
+/// The most links (OSC 8) a terminal tells apart at once: a cell's link is a
+/// 13-bit id into its terminal's table, 0 for none. It lives in the bits the
+/// attributes and the flags leave free, so it goes wherever the cell goes —
+/// scrolled, reflowed, into scrollback — with nothing kept in step.
+let LINK_MAX = 8191
+
+/// Link `id` as bits of the u32 at `OFF_ATTRS` (attributes, width, flags).
+fn link_bits(id: Int) -> Int = int.bor(int.bshl(int.band(id, 63), 10), int.bshl(int.band(int.bshr(id, 6), 127), 25))
+
+/// The link id in `word`, the u32 at a cell's `OFF_ATTRS`.
+fn link_of(word: Int) -> Int = int.bor(int.band(int.bshr(word, 10), 63), int.bshl(int.band(int.bshr(word, 25), 127), 6))
+
+/// The link of the cell at byte `o` of `cells`.
+fn link_at(cells: Bytes, o: Int) -> Int = link_of(bytes.read_u32_le(cells, o + OFF_ATTRS))
+
 let COLOR_DEFAULT = 0
 
 fn palette(n: Int) -> Int = int.bor(0x01000000, int.band(n, 0xFF))
@@ -55,4 +73,14 @@ fn blank_row(cols: Int, bg: Int) -> Bytes = {
     bytes.set_u8(row, x * SIZE + OFF_WIDTH, 1)
   }
   row
+}
+
+test "a link id round-trips through a cell's free bits" {
+  for id in [0, 1, 63, 64, 1000, LINK_MAX] {
+    let word = int.bor(int.bor(link_bits(id), ATTR_MASK), int.bor(int.bshl(2, 16), int.bshl(FLAG_GRAPHEME, 24)))
+    assert_eq(link_of(word), id)
+    assert_eq(int.band(word, ATTR_MASK), ATTR_MASK)
+    assert_eq(int.band(int.bshr(word, 16), 0xFF), 2)
+    assert_eq(int.band(int.bshr(word, 24), FLAG_GRAPHEME), FLAG_GRAPHEME)
+  }
 }

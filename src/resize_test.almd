@@ -1,7 +1,6 @@
 // Resizing and reflow, scrollback, and the sequences added since.
 
 import bytes
-import self.cell
 import self.scrollback
 import self.terminal
 

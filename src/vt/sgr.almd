@@ -65,7 +65,7 @@ let ATTRIBUTES = [
 
 /// One SGR parameter; `sub` is its first sub-parameter, or -1.
 fn sgr_one(mut t: core.Terminal, p: Int, sub: Int) -> Unit =
-  if p == 0 then { t.fg = 0; t.bg = 0; t.attrs = 0 }
+  if p == 0 then { t.fg = 0; t.bg = 0; t.attrs = int.band(t.attrs, int.bnot(cell.ATTR_MASK)) }
   else if p >= 30 and p <= 49 then base_color(t, p)
   else if p >= 90 and p <= 107 then bright_color(t, p)
   else if p == 4 then {

@@ -7,14 +7,25 @@
 //   u32 payload length
 //   u16 columns used   u8 wrapped (the row continued onto the next)
 //   runs, each:  u32 fg  u32 bg  u16 attrs  u32 text length  UTF-8 text
+//
+// A run's link (OSC 8) rides in bits its header leaves free, as in a cell:
+// the low 6 in the attributes' top bits, the high 7 in the text length's
+// top byte (a run's text is far below 16 MB).
 
 import bytes
 import self.cell
 import self.width
 
-/// The background and attributes bytes of a cell's second 8 (`cell.OFF_BG`
-/// on): all but width and flags.
-let STYLE_MASK = 0xFFFFFFFFFFFF
+/// The bits of a cell's second 8 bytes (`cell.OFF_BG` on) a run shares:
+/// background, attributes and link — all but width and the flags proper.
+/// (0xFE00FFFFFFFFFFFF as a signed 64-bit integer.)
+let STYLE_MASK = -143833713099145217
+
+/// A run's bytes before its text.
+let RUN_HEADER = 14
+
+/// The text length's bits of a run's last header word; the link's are above.
+let LEN_MASK = 0xFFFFFF
 
 /// A blank cell's bytes from `cell.OFF_BG` up to its flags: default
 /// background, no attributes, width 1.
@@ -31,7 +42,7 @@ let MARKS_MAX = 128
 /// room for marks on a cell that has them — only a row with marks has such
 /// cells.
 fn bound(grid: Bytes, off: Int, used: Int, graphemes: Map[Int, String]) -> Int = {
-  var n = 4 + 7 + used * 18
+  var n = 4 + 7 + used * (RUN_HEADER + 4)
   if map.len(graphemes) > 0 then {
     for x in 0..<used {
       if has_marks(grid, off + x * cell.SIZE) then n = n + MARKS_MAX
@@ -61,7 +72,7 @@ fn write(mut out: Bytes, start: Int, grid: Bytes, off: Int, used: Int, wrapped: 
 }
 
 /// Write the run starting at column `from`: cells with the same foreground
-/// and the same background and attributes. Where the record and the row go
+/// and the same background, attributes and link. Where the record and the row go
 /// on: (byte, column).
 fn write_run(mut out: Bytes, at: Int, grid: Bytes, off: Int, from: Int, used: Int, graphemes: Map[Int, String], base: Int) -> (Int, Int) = {
   let o = off + from * cell.SIZE
@@ -69,7 +80,7 @@ fn write_run(mut out: Bytes, at: Int, grid: Bytes, off: Int, from: Int, used: In
   let style = int.band(bytes.read_i64_le(grid, o + cell.OFF_BG), STYLE_MASK)
   bytes.set_u32_le(out, at, fg)
   bytes.set_i64_le(out, at + 4, style)
-  let text_start = at + 14
+  let text_start = at + RUN_HEADER
   var p = text_start
   var x = from
   var more = true
@@ -86,8 +97,8 @@ fn write_run(mut out: Bytes, at: Int, grid: Bytes, off: Int, from: Int, used: In
     }
   }
   // The text length overwrites the 4 bytes past the style that the 8-byte
-  // write above spilled into.
-  bytes.set_u32_le(out, at + 10, p - text_start)
+  // write above spilled into, with the link's high bits from the flags.
+  bytes.set_u32_le(out, at + 10, int.bor(p - text_start, int.bshl(int.band(int.bshr(style, 57), 0x7F), 24)))
   (p, x)
 }
 
@@ -180,9 +191,9 @@ fn text(block: Bytes, start: Int, end: Int) -> String = {
   var p = start + 3
   var s = ""
   while p < end {
-    let n = bytes.read_u32_le(block, p + 10)
-    s = s + bytes.read_string_at(block, p + 14, n)
-    p = p + 14 + n
+    let n = int.band(bytes.read_u32_le(block, p + 10), LEN_MASK)
+    s = s + bytes.read_string_at(block, p + RUN_HEADER, n)
+    p = p + RUN_HEADER + n
   }
   s
 }
@@ -201,9 +212,9 @@ fn decode(block: Bytes, start: Int, end: Int, cols: Int) -> Row = {
   var p = start + 3
   var at = (0, -1)
   while p < end {
-    let n = bytes.read_u32_le(block, p + 10)
+    let n = int.band(bytes.read_u32_le(block, p + 10), LEN_MASK)
     at = decode_run(row, block, p, n, cols, at)
-    p = p + 14 + n
+    p = p + RUN_HEADER + n
   }
   row
 }
@@ -211,11 +222,13 @@ fn decode(block: Bytes, start: Int, end: Int, cols: Int) -> Row = {
 /// Decode the run at `p` with `n` bytes of text into `row`, from (next
 /// column, last character's column) `at`; where it leaves them.
 fn decode_run(mut row: Row, block: Bytes, p: Int, n: Int, cols: Int, at: (Int, Int)) -> (Int, Int) = {
-  let style = (bytes.read_u32_le(block, p), bytes.read_u32_le(block, p + 4), bytes.read_u16_le(block, p + 8))
+  // The attributes with the link's low bits as in a cell, and its high bits.
+  let word = int.bor(bytes.read_u16_le(block, p + 8), int.bshl(bytes.read_u8(block, p + 13), 25))
+  let style = (bytes.read_u32_le(block, p), bytes.read_u32_le(block, p + 4), word)
   // FIXME(almide#3149): `var (x, last) = at` once var destructures.
   var x = at.0
   var last = at.1
-  for ch in string.chars(bytes.read_string_at(block, p + 14, n)) {
+  for ch in string.chars(bytes.read_string_at(block, p + RUN_HEADER, n)) {
     let cp = string.codepoint(ch) ?? 32
     let w = width.of(cp)
     if w == 0 then add_mark(row, last, ch)
@@ -236,16 +249,16 @@ fn add_mark(mut row: Row, last: Int, ch: String) -> Unit =
     bytes.set_u8(row.cells, o, int.bor(bytes.read_u8(row.cells, o), cell.FLAG_GRAPHEME))
   }
 
-/// Cell `x`: `cp`, `w` columns wide, in `style` (fg, bg, attrs); the second
-/// half of a wide one takes its background.
+/// Cell `x`: `cp`, `w` columns wide, in `style` (fg, bg, and the word at
+/// `cell.OFF_ATTRS` without the width: attributes and link); the second half
+/// of a wide one takes its background.
 fn set_cell(mut cells: Bytes, x: Int, cp: Int, w: Int, style: (Int, Int, Int)) -> Unit = {
   let o = x * cell.SIZE
-  let (fg, bg, attrs) = style
+  let (fg, bg, word) = style
   bytes.set_u32_le(cells, o + cell.OFF_CP, if cp == 32 then 0 else cp)
   bytes.set_u32_le(cells, o + cell.OFF_FG, fg)
   bytes.set_u32_le(cells, o + cell.OFF_BG, bg)
-  bytes.set_u16_le(cells, o + cell.OFF_ATTRS, attrs)
-  bytes.set_u8(cells, o + cell.OFF_WIDTH, w)
+  bytes.set_u32_le(cells, o + cell.OFF_ATTRS, int.bor(word, int.bshl(w, 16)))
   if w == 2 then {
     bytes.set_u32_le(cells, o + cell.SIZE + cell.OFF_BG, bg)
     bytes.set_u8(cells, o + cell.SIZE + cell.OFF_WIDTH, 0)

@@ -1,6 +1,6 @@
-// Links in the text: a URL or a file path under the pointer, found in the
-// line as the program wrote it — across the rows it wrapped onto — for
-// Cmd+click to open.
+// Links in the text: one the program made (OSC 8), else a URL or a file
+// path under the pointer, found in the line as the program wrote it — across
+// the rows it wrapped onto — for Cmd+click to open.
 
 import bytes
 import self.cell
@@ -8,21 +8,41 @@ import self.terminal
 import self.view
 
 /// What was found: a URL (with a scheme) or a path (as written: relative,
-/// `~/…`, absolute; a `:line` or `:line:col` after it dropped), and where it
-/// lies — from (line, col) to (line, col), inclusive.
-type Link = { target: String, url: Bool, from_line: Int, from_col: Int, to_line: Int, to_col: Int }
+/// `~/…`, absolute; a `:line` or `:line:col` after it dropped), whether the
+/// program made it (OSC 8: its text need not say where it goes), and where
+/// it lies — from (line, col) to (line, col), inclusive.
+type Link = { target: String, url: Bool, made: Bool, from_line: Int, from_col: Int, to_line: Int, to_col: Int }
 
-/// A character of a logical line and the cell it is in.
-type Spot = { cp: Int, line: Int, col: Int }
+/// A character of a logical line, the cell it is in, and the cell's link
+/// (OSC 8; 0 for none).
+type Spot = { cp: Int, line: Int, col: Int, link: Int }
 
 /// The link at (`line`, `col`) of `t`, if one is there.
 fn link_at(t: terminal.Terminal, line: Int, col: Int) -> Option[Link] = {
   let (l0, _, l1, _) = view.line_span(t, line)
   let spots = spots_of(t, l0, l1)
   match list.find_index(spots, (s) => s.line == line and s.col == col) {
-    some(i) => token_at(spots, i) |> option.flat_map(((a, b)) => classify(spots, a, b, i)),
+    some(i) => match terminal.link_uri(t, spots[i].link) {
+      some(uri) => some(program_link(spots, i, uri)),
+      none => token_at(spots, i) |> option.flat_map(((a, b)) => classify(spots, a, b, i)),
+    },
     none => none,
   }
+}
+
+/// The link the program made around spot `i`, to `uri`: the run of spots
+/// with its id.
+fn program_link(spots: List[Spot], i: Int, uri: String) -> Link = {
+  let id = spots[i].link
+  var a = i
+  while a > 0 and spots[a - 1].link == id {
+    a = a - 1
+  }
+  var b = i
+  while b + 1 < list.len(spots) and spots[b + 1].link == id {
+    b = b + 1
+  }
+  Link { target: uri, url: true, made: true, from_line: spots[a].line, from_col: spots[a].col, to_line: spots[b].line, to_col: spots[b].col }
 }
 
 /// The characters of lines `l0`..`l1`, a wide one once, at its first cell.
@@ -34,7 +54,7 @@ fn spots_of(t: terminal.Terminal, l0: Int, l1: Int) -> List[Spot] = {
         for x in 0..<t.cols {
           let o = x * cell.SIZE
           if bytes.read_u8(row.cells, o + cell.OFF_WIDTH) != 0 then
-            list.push(out, Spot { cp: bytes.read_u32_le(row.cells, o + cell.OFF_CP), line: n, col: x })
+            list.push(out, Spot { cp: bytes.read_u32_le(row.cells, o + cell.OFF_CP), line: n, col: x, link: cell.link_at(row.cells, o) })
         }
       },
       none => (),
@@ -93,7 +113,7 @@ fn named(spots: List[Spot], a1: Int, b: Int) -> Option[Link] = {
     let text = text_of(spots, a1, b1)
     let (s, e) = (spots[a1], spots[b1])
     let target = if is_url(text) then some(text) else path_of(text)
-    target |> option.map((x) => Link { target: x, url: is_url(text), from_line: s.line, from_col: s.col, to_line: e.line, to_col: e.col })
+    target |> option.map((x) => Link { target: x, url: is_url(text), made: false, from_line: s.line, from_col: s.col, to_line: e.line, to_col: e.col })
   }
 }
 
@@ -182,4 +202,26 @@ test "a URL wrapped onto the next row is found whole" {
   let t = term(20, "go to https://example.com/very/long/path now")
   assert_eq(target_at(t, 1, 3), "url https://example.com/very/long/path")
   assert_eq(target_at(t, 0, 10), "url https://example.com/very/long/path")
+}
+
+test "a link the program made, in parts, wrapped, and scrolled off" {
+  let open = "\x1b]8;id=a;https://example.com/x\x1b\\"
+  var t = term(10, "ls " + open + "\x1b[1mo\x1b[0mne\x1b]8;;\x07 " + open + "two\x1b]8;;\x1b\\ three-four-five")
+  assert_eq(terminal.screen_text(t), "ls one two\n three-fou\nr-five")
+  assert_eq(target_at(t, 0, 4), "url https://example.com/x")
+  assert_eq(target_at(t, 0, 8), "url https://example.com/x")
+  // Not the text around it, which is no URL or path.
+  assert_eq(target_at(t, 0, 6), "-")
+  assert_eq(target_at(t, 1, 3), "-")
+  // The parts are one link: the same id, through a style reset.
+  assert_eq(terminal.cell_link(t, 3, 0), terminal.cell_link(t, 7, 0))
+  assert_eq(terminal.cell_link(t, 4, 0), terminal.cell_link(t, 3, 0))
+  assert_eq((terminal.cell_attrs(t, 3, 0), terminal.cell_attrs(t, 4, 0)), (cell.ATTR_BOLD, 0))
+  assert_eq(terminal.cell_link(t, 6, 0), 0)
+  // Four lines scroll off.
+  terminal.feed_string(t, "\r\n\r\n\r\n\r\n\r\n")
+  match link_at(t, view.screen_line(t) - 4, 4) {
+    some(l) => assert_eq((l.target, l.from_col, l.to_col), ("https://example.com/x", 3, 5)),
+    none => assert_eq("scrolled off", "a link"),
+  }
 }

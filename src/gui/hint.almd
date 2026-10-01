@@ -1,0 +1,70 @@
+// Where a link goes, shown at the bottom left while the pointer is on it —
+// for a link the program made (OSC 8), whose text need not say.
+
+import self.links
+import self.width as cell_width
+import self.gui.surface
+import self.gui.ink
+import self.gui.findbar
+
+/// Quads of the hint besides its characters: its box and border.
+let HINT_QUADS = 5
+
+/// What the hint shows for `link`, cut to `cols` columns with an ellipsis:
+/// nothing but for a link the program made.
+fn chars(link: Option[links.Link], cols: Int) -> List[Int] = match link {
+  some(l) => if l.made then fit(string.chars(l.target) |> list.filter_map(string.codepoint), cols) else [],
+  none => [],
+}
+
+/// `cps` while they fit in `cols` columns, else as many as fit before "…".
+fn fit(cps: List[Int], cols: Int) -> List[Int] =
+  if columns(cps) <= cols then cps
+  else {
+    // Room kept for the ellipsis.
+    var n = 0
+    var used = 1
+    while n < list.len(cps) and used + int.max(1, cell_width.of(cps[n])) <= cols {
+      used = used + int.max(1, cell_width.of(cps[n]))
+      n = n + 1
+    }
+    list.take(cps, n) + [0x2026]
+  }
+
+fn columns(cps: List[Int]) -> Int = list.fold(cps, 0, (acc, cp) => acc + int.max(1, cell_width.of(cp)))
+
+/// The most columns of text the hint may take in a drawable `width` wide.
+fn room(r: surface.Renderer, width: Int) -> Int = int.max(4, (width - 3 * r.pad_x) / r.cell_w - 1)
+
+/// The hint, `cps`, at the bottom left of a drawable `width` x `height`. How
+/// many quads it pushed.
+fn draw(mut r: surface.Renderer, cps: List[Int], width: Int, height: Int, sx: Float, sy: Float) -> Int =
+  if cps == [] then 0
+  else {
+    let x0 = r.pad_x
+    let x1 = int.min(width - r.pad_x, x0 + (columns(cps) + 1) * r.cell_w)
+    let y1 = height - r.pad_y
+    let y0 = y1 - r.cell_h - r.pad_y
+    let lw = int.max(1, r.line_w)
+    ink.rect(r, x0, y0, x1, y1, r.theme.tab_bar, 1.0, sx, sy)
+    ink.rect(r, x0, y0, x1, y0 + lw, r.theme.tab_rule, 1.0, sx, sy)
+    ink.rect(r, x0, y1 - lw, x1, y1, r.theme.tab_rule, 1.0, sx, sy)
+    ink.rect(r, x0, y0, x0 + lw, y1, r.theme.tab_rule, 1.0, sx, sy)
+    ink.rect(r, x1 - lw, y0, x1, y1, r.theme.tab_rule, 1.0, sx, sy)
+    let baseline = y0 + r.pad_y / 2 + r.baseline
+    var x = x0 + r.cell_w / 2
+    var n = HINT_QUADS
+    // FIXME(almide#3154): a fold over the characters once a closure may
+    // capture the `mut` renderer.
+    for cp in cps {
+      n = n + findbar.text_glyph(r, cp, x, baseline, r.theme.fg, sx, sy)
+      x = x + r.cell_w * int.max(1, cell_width.of(cp))
+    }
+    n
+  }
+
+test "a long target is cut to fit, with an ellipsis" {
+  let cps = string.chars("https://example.com/") |> list.filter_map(string.codepoint)
+  assert_eq(fit(cps, 30), cps)
+  assert_eq(fit(cps, 8), list.take(cps, 7) + [0x2026])
+}

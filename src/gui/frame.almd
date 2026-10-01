@@ -94,10 +94,10 @@ fn prepare_cell(mut r: surface.Renderer, row: record.Row, x: Int) -> Int = {
   }
 }
 
-/// The composition's, the find bar's and the titles' glyphs into the atlas,
-/// and what the last frame had to leave out.
-fn prepare_rest(mut r: surface.Renderer, preedit: List[Int], f: Frame) -> Unit = {
-  for cp in preedit + f.bar + list.flatten(f.titles) {
+/// The glyphs of `extra` (the composition, the link hint), the find bar and
+/// the titles into the atlas, and what the last frame had to leave out.
+fn prepare_rest(mut r: surface.Renderer, extra: List[Int], f: Frame) -> Unit = {
+  for cp in extra + f.bar + list.flatten(f.titles) {
     let _ = ink.glyph(r, cp, false)
   }
   for w in r.wanted {

@@ -233,7 +233,8 @@ fn restore_cursor(mut t: core.Terminal, s: core.Saved) -> Unit = {
   t.y = int.min(s.y, t.rows - 1)
   t.fg = s.fg
   t.bg = s.bg
-  t.attrs = s.attrs
+  // The link being printed goes on.
+  t.attrs = int.bor(int.band(s.attrs, cell.ATTR_MASK), int.band(t.attrs, int.bnot(cell.ATTR_MASK)))
   t.origin = s.origin
   t.pending_wrap = s.pending_wrap
   t.dec_graphics = s.dec_graphics

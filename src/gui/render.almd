@@ -30,6 +30,7 @@ import self.gui.caret
 import self.gui.chrome
 import self.gui.rowpaint
 import self.gui.findbar
+import self.gui.hint
 
 /// The renderer (its fields: surface.almd).
 type Renderer = surface.Renderer
@@ -106,7 +107,8 @@ fn compose_caret(c: composition.Compose, x: Int, cols: Int) -> Int = composition
 /// lines and `shift` pixels into scrollback, `sel` highlighted, and `compose`
 /// — what the input method is composing — at the cursor. `width` x `height`
 /// is the drawable. With `find`, its matches are marked and its bar is shown
-/// — while the bar has the focus, with the composition in it.
+/// — while the bar has the focus, with the composition in it. `link` is
+/// underlined, and where it goes shown when its text need not say.
 fn draw(mut r: surface.Renderer, t: terminal.Terminal, back: Int, shift: Int, sel: Option[view.Selection],
         compose: composition.Compose, width: Int, height: Int, tabs: List[String], active: Int,
         find: Option[findbar.Bar], link: Option[links.Link]) -> Unit = {
@@ -114,12 +116,13 @@ fn draw(mut r: surface.Renderer, t: terminal.Terminal, back: Int, shift: Int, se
   // Pass 1: every glyph on screen into the atlas.
   r.layer = text.solid(r.device, r.layer)
   let marks_total = frame.prepare_rows(r, f.lines, t.cols)
-  frame.prepare_rest(r, compose.cps, f)
+  let shown_hint = hint.chars(link, hint.room(r, width))
+  frame.prepare_rest(r, compose.cps + shown_hint, f)
   let title_chars = list.fold(f.titles, 0, (acc, title) => acc + list.len(title))
   // Room for the worst case: per cell a background, a glyph and two lines,
   // plus marks, the cursor, the scrollbar and the composition.
   reserve(r, f.shown * t.cols * 4 + 2 + marks_total + 7 + list.len(compose.cps) * 3 + title_chars + list.len(f.titles) * 3 + 1
-    + list.len(f.bar) * 3 + findbar.FIND_QUADS + 1)
+    + list.len(f.bar) * 3 + findbar.FIND_QUADS + 1 + list.len(shown_hint) + hint.HINT_QUADS)
 
   // Pass 2: the quads.
   let sx = 2.0 / int.to_float(width)
@@ -146,6 +149,7 @@ fn draw(mut r: surface.Renderer, t: terminal.Terminal, back: Int, shift: Int, se
     some(b) => { n = n + findbar.draw_find(r, b, compose.cps, f.gy, width, sx, sy) },
     none => (),
   }
+  n = n + hint.draw(r, shown_hint, width, height, sx, sy)
   r.pushing = false
   submit(r, n)
 }

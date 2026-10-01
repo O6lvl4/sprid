@@ -33,21 +33,31 @@ fn on_bar(ui: uistate.Ui, p: Place) -> Bool = render.on_bar(p.r, uistate.bar(ui)
 effect fn mouse(mut cur: tabset.Tab, mut ui: uistate.Ui, kind: Int, p: Place) -> uistate.Act =
   if kind == window.MOUSE_DOWN and window.event_code() == 0 and link_click() and open_link(cur, p)! then uistate.Stay
   else if off_grid(cur, ui, kind, p) then uistate.Stay
-  else if kind == window.MOUSE_DOWN and window.event_code() == 0 then press(cur, ui, p)!
-  // A right click: copy, paste, select all, find, clear.
-  else if kind == window.MOUSE_DOWN and window.event_code() == 1 then uistate.Menu
-  // A middle click pastes the PRIMARY selection, as X11 has it.
-  else if kind == window.MOUSE_DOWN and window.event_code() == 2 and sys.is_linux() then uistate.PastePrimary
+  else if kind == window.MOUSE_DOWN then button_down(cur, ui, p)!
   else if kind == window.MOUSE_MOVE and ui.dragging then {
     drag_select(cur, ui, p)
     uistate.Stay
   }
-  else if kind == window.MOUSE_UP and window.event_code() == 0 and ui.dragging then {
-    ui.dragging = false
-    // The selection made, for copy-on-select.
-    if cur.sel != none then uistate.Selected else uistate.Stay
-  }
+  else if kind == window.MOUSE_UP then release(cur, ui)
   else uistate.Stay
+
+/// A button pressed on the grid.
+effect fn button_down(mut cur: tabset.Tab, mut ui: uistate.Ui, p: Place) -> uistate.Act = match window.event_code() {
+  0 => press(cur, ui, p)!,
+  // A right click: copy, paste, select all, find, clear.
+  1 => uistate.Menu,
+  // A middle click pastes the PRIMARY selection, as X11 has it.
+  2 => if sys.is_linux() then uistate.PastePrimary else uistate.Stay,
+  _ => uistate.Stay,
+}
+
+/// A button released: a selecting drag ends, with the selection made — for
+/// copy-on-select.
+fn release(cur: tabset.Tab, mut ui: uistate.Ui) -> uistate.Act =
+  if window.event_code() == 0 and ui.dragging then {
+    ui.dragging = false
+    if cur.sel != none then uistate.Selected else uistate.Stay
+  } else uistate.Stay
 
 /// The pointer moved: the link under it found while Cmd is held, and the
 /// pointer shaped for where it is — a hand on a link, the I-beam on the
@@ -105,26 +115,37 @@ effect fn target_of(cur: tabset.Tab, l: links.Link) -> Option[String] =
 /// An input that isn't the grid's to select with: on the find bar, on the
 /// scrollbar, or the program's. Whether it was one, done.
 fn off_grid(mut cur: tabset.Tab, mut ui: uistate.Ui, kind: Int, p: Place) -> Bool = {
-  let left_down = kind == window.MOUSE_DOWN and window.event_code() == 0
-  let held = kind == window.MOUSE_MOVE or kind == window.MOUSE_UP
-  if left_down and ui.finding and on_bar(ui, p) then {
-    press_bar(ui, p)
-    true
-  } else if held and ui.field_drag then {
-    drag_bar(ui, p, kind)
-    true
-  } else if left_down and render.on_scrollbar(p.r, cur.t, p.width, px(p)) then {
-    press_scrollbar(cur, ui, p)
-    true
-  } else if held and ui.scroll_drag then {
-    pointer.drag_scrollbar(cur, ui, p.r, p.scale, p.tabs)
-    if kind == window.MOUSE_UP then ui.scroll_drag = false
-    true
-  } else if pointer.app_mouse(cur.t, ui, p.r, p.scale, p.tabs, kind) then {
+  let done = if kind == window.MOUSE_DOWN then window.event_code() == 0 and press_off_grid(cur, ui, p)
+    else held_off_grid(cur, ui, kind, p)
+  if done then true
+  else if pointer.app_mouse(cur.t, ui, p.r, p.scale, p.tabs, kind) then {
     report(cur, ui, kind, p)
     true
   } else false
 }
+
+/// A left press on the find bar or the scrollbar, done; whether it was.
+fn press_off_grid(mut cur: tabset.Tab, mut ui: uistate.Ui, p: Place) -> Bool =
+  if ui.finding and on_bar(ui, p) then {
+    press_bar(ui, p)
+    true
+  } else if render.on_scrollbar(p.r, cur.t, p.width, px(p)) then {
+    press_scrollbar(cur, ui, p)
+    true
+  } else false
+
+/// A move or release in a drag begun on the find bar or the scrollbar,
+/// done; whether it was.
+fn held_off_grid(mut cur: tabset.Tab, mut ui: uistate.Ui, kind: Int, p: Place) -> Bool =
+  if kind != window.MOUSE_MOVE and kind != window.MOUSE_UP then false
+  else if ui.field_drag then {
+    drag_bar(ui, p, kind)
+    true
+  } else if ui.scroll_drag then {
+    pointer.drag_scrollbar(cur, ui, p.r, p.scale, p.tabs)
+    if kind == window.MOUSE_UP then ui.scroll_drag = false
+    true
+  } else false
 
 /// A press on the find bar focuses it and puts the caret there (Shift:
 /// selects to there); a drag selects.

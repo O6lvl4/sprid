@@ -84,6 +84,10 @@ fn take_clipboard_ask(mut t: Terminal) -> String = osc.take_clipboard_ask(t)
 /// The answer to a clipboard read (OSC 52) for `targets`: `text` as base64.
 fn clipboard_reply(targets: String, text: String) -> String = osc.clipboard_reply(targets, text)
 
+/// The URI of link `id` (a cell's `cell.link_at`), when it is one.
+fn link_uri(t: Terminal, id: Int) -> Option[String] =
+  if id == 0 then none else map.get(t.links, id) |> option.map((e) => e.1)
+
 /// The part of `mid_update` a hidden cursor tells: a program that hides it
 /// to draw has it hidden, or a full-screen program draws its first screen.
 fn drawing_hidden(t: Terminal) -> Bool = modes.drawing_hidden(t)
@@ -277,4 +281,6 @@ fn cell_fg(t: core.Terminal, x: Int, y: Int) -> Int = bytes.read_u32_le(t.grid, 
 
 fn cell_bg(t: core.Terminal, x: Int, y: Int) -> Int = bytes.read_u32_le(t.grid, screen.cell_off(t, x, y) + cell.OFF_BG)
 
-fn cell_attrs(t: core.Terminal, x: Int, y: Int) -> Int = bytes.read_u16_le(t.grid, screen.cell_off(t, x, y) + cell.OFF_ATTRS)
+fn cell_attrs(t: core.Terminal, x: Int, y: Int) -> Int = int.band(bytes.read_u16_le(t.grid, screen.cell_off(t, x, y) + cell.OFF_ATTRS), cell.ATTR_MASK)
+
+fn cell_link(t: core.Terminal, x: Int, y: Int) -> Int = cell.link_at(t.grid, screen.cell_off(t, x, y))
