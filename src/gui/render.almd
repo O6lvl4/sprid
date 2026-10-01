@@ -14,452 +14,101 @@
 // Positions are physical pixels of the drawable, y down, mapped to normal
 // space as they are pushed.
 
-import bytes
 import snaidhm.web.gpu as gpu
-import snaidhm.sfnt as sfnt
 import snaidhm.text as text
 import self.cell
-import self.gui.fonts
-import self.gui.emoji
 import self.gui.sprite
-import self.record
 import self.search
-import self.field
 import self.terminal
-import self.theme
 import self.view
-import self.width as cell_width
+import self.gui.surface
+import self.gui.ink
+import self.gui.composition
+import self.gui.chrome
+import self.gui.rowpaint
+import self.gui.findbar
 
-/// Floats per vertex of the text pipeline: position 2, uv 2, colour 4.
-let VERTEX_FLOATS = 8
-
-type Renderer = {
-  device: Int,
-  // The layer's fonts: the grid face first, then the bold and the fallbacks
-  // in the order they were first needed.
-  layer: text.TextLayer,
-  // Where the bold is in the layer's fonts: -1 not read yet, -2 none.
-  bold_index: Int,
-  bold_path: String,
-  fallback_paths: List[String],
-  // Where each fallback read so far is in the layer's fonts, and how many of
-  // `fallback_paths` have been tried.
-  fallback_indices: List[Int],
-  fallbacks_tried: Int,
-  size_px: Int,
-  cell_w: Int,
-  cell_h: Int,
-  baseline: Int,
-  pad_x: Int,
-  pad_y: Int,
-  line_w: Int,
-  // The colours: the theme's, and its 256-colour palette.
-  theme: theme.Theme,
-  // The cursor's shape when the program sets none (DECSCUSR numbers; 0 a
-  // steady bar), whether the window has the focus, and whether a blinking
-  // cursor is in its off phase.
-  cursor_default: Int,
-  focused: Bool,
-  blink_off: Bool,
-  // The visual bell: the screen lit for a moment.
-  flash: Bool,
-  palette: List[Int],
-  // (code point * 2 + bold) -> glyph cache slot, -1 for no glyph.
-  glyphs: Map[Int, Int],
-  // Colour emoji: code point -> colour atlas slot, -1 when it has none.
-  emojis: Map[Int, Int],
-  // Box drawing and block elements, as rectangles for this cell size.
-  sprites: Map[Int, List[sprite.Piece]],
-  vtx: Int,
-  capacity: Int,
-  count: Int,
-  // Pushing a frame's quads: a glyph or emoji not in the atlas yet can't be
-  // made now — uploading it goes through the same staging buffer and would
-  // wipe the quads pushed so far — so it is left out, and `missed` asks for
-  // another frame, which makes it first.
-  pushing: Bool,
-  missed: Bool,
-  // What was left out, made first thing next frame: (code point, bold), and
-  // emoji.
-  wanted: List[(Int, Bool)],
-  wanted_emoji: List[Int],
-}
-
-/// `r` in the colours of `t`.
-fn with_theme(r: Renderer, t: theme.Theme) -> Renderer = { ...r, theme: t, palette: palette256(t.ansi) }
-
-/// The 256-colour palette: the 16 of the theme, the 6x6x6 cube, 24 greys.
-fn palette256(ansi: List[Int]) -> List[Int] = {
-  var p = ansi
-  let steps = [0, 95, 135, 175, 215, 255]
-  for i in 0..<216 {
-    let r = steps[i / 36]
-    let g = steps[(i / 6) % 6]
-    let b = steps[i % 6]
-    list.push(p, r * 65536 + g * 256 + b)
-  }
-  for i in 0..<24 {
-    let v = 8 + i * 10
-    list.push(p, v * 65536 + v * 256 + v)
-  }
-  p
-}
+/// The renderer (its fields: surface.almd).
+type Renderer = surface.Renderer
+/// The find bar as drawn (findbar.almd).
+type Bar = findbar.Bar
+/// The input method's composition (composition.almd).
+type Compose = composition.Compose
 
 /// A renderer drawing `faces` at `size_px` pixels per em, the grid inset by
 /// `pad_x` x `pad_y` pixels.
-fn new(device: Int, faces: fonts.Faces, size_px: Int, pad_x: Int, pad_y: Int, cell_height: Float) -> Renderer = {
-  let r = Renderer {
-    device: device,
-    layer: text.new_buffer_layer(device, [faces.regular]),
-    bold_index: if faces.bold_path == "" then -2 else -1,
-    bold_path: faces.bold_path,
-    fallback_paths: faces.fallback_paths,
-    fallback_indices: [],
-    fallbacks_tried: 0,
-    size_px: 0,
-    cell_w: 1,
-    cell_h: 1,
-    baseline: 0,
-    pad_x: 0,
-    pad_y: 0,
-    line_w: 1,
-    theme: theme.default(),
-    cursor_default: 0,
-    focused: true,
-    blink_off: false,
-    flash: false,
-    palette: palette256(theme.default().ansi),
-    glyphs: [:],
-    emojis: [:],
-    sprites: [:],
-    vtx: 0,
-    capacity: 0,
-    count: 0,
-    pushing: false,
-    missed: false,
-    wanted: [],
-    wanted_emoji: [],
-  }
-  with_size(r, size_px, pad_x, pad_y, cell_height)
-}
+fn new(device: Int, faces: fonts.Faces, size_px: Int, pad_x: Int, pad_y: Int, cell_height: Float) -> surface.Renderer = surface.new(device, faces, size_px, pad_x, pad_y, cell_height)
 
 /// `r` drawing at `size_px` pixels per em, inset by `pad_x` x `pad_y`: the
 /// cell measured anew, and what was cached for the old cell dropped. The
 /// layer, its fonts and its atlas stay — glyphs are cached by size, so going
 /// back to a size finds them still there.
-fn with_size(r: Renderer, size_px: Int, pad_x: Int, pad_y: Int, cell_height: Float) -> Renderer = {
-  let size = int.to_float(size_px)
-  let grid = r.layer.fonts[0]
-  let cell_w = int.max(1, float.to_int(float.round(text.advance_px(r.layer, 0, sfnt.glyph_id(grid, 0x4D), size))))
-  let ascent = text.ascent(r.layer, size)
-  let natural = ascent + text.descent(r.layer, size)
-  let cell_h = int.max(1, float.to_int(float.ceil(natural * cell_height)))
-  // Extra line height goes half above, half below.
-  let baseline = float.to_int(float.round(ascent + (int.to_float(cell_h) - natural) / 2.0))
-  let glyphs: Map[Int, Int] = [:]
-  let emojis: Map[Int, Int] = [:]
-  let sprites: Map[Int, List[sprite.Piece]] = [:]
-  {
-    ...r,
-    size_px: size_px,
-    cell_w: cell_w,
-    cell_h: cell_h,
-    baseline: baseline,
-    pad_x: pad_x,
-    pad_y: pad_y,
-    line_w: int.max(1, size_px / 14),
-    glyphs: glyphs,
-    emojis: emojis,
-    sprites: sprites,
-  }
-}
+fn with_size(r: surface.Renderer, size_px: Int, pad_x: Int, pad_y: Int, cell_height: Float) -> surface.Renderer = surface.with_size(r, size_px, pad_x, pad_y, cell_height)
+
+/// `r` in the colours of `t`.
+fn with_theme(r: surface.Renderer, t: theme.Theme) -> surface.Renderer = surface.with_theme(r, t)
+
+/// Pixel row the grid starts at: below the tab bar when there is one.
+fn grid_top(r: surface.Renderer, tabs: Int) -> Int = surface.grid_top(r, tabs)
+
+/// Columns and rows that fit a `width` x `height` drawable with `tabs` tabs
+/// open (the tab bar shows from two on).
+fn grid_size(r: surface.Renderer, width: Int, height: Int, tabs: Int) -> (Int, Int) = surface.grid_size(r, width, height, tabs)
+
+/// Height of the tab bar.
+fn bar_height(r: surface.Renderer) -> Int = surface.bar_height(r)
+
+/// The tab under pixel `x` of the tab bar, for `tabs` tabs across `width`.
+fn tab_at(r: surface.Renderer, x: Int, width: Int, tabs: Int) -> Int = surface.tab_at(r, x, width, tabs)
 
 /// Cell width and height in pixels for `faces` at `size_px`: what `new`
 /// works out, without a GPU, so a window can be sized to a grid before it
 /// opens.
-fn cell_size(faces: fonts.Faces, size_px: Int, cell_height: Float) -> (Int, Int) = {
-  let f = faces.regular
-  let size = int.to_float(size_px)
-  let upem = int.to_float(f.units_per_em)
-  let w = int.max(1, float.to_int(float.round(int.to_float(sfnt.advance(f, sfnt.glyph_id(f, 0x4D))) * size / upem)))
-  let natural = (int.to_float(f.ascent) - int.to_float(f.descent)) * size / upem
-  (w, int.max(1, float.to_int(float.ceil(natural * cell_height))))
-}
+fn cell_size(faces: fonts.Faces, size_px: Int, cell_height: Float) -> (Int, Int) = surface.cell_size(faces, size_px, cell_height)
 
-/// Columns and rows that fit a `width` x `height` drawable with `tabs` tabs
-/// open (the tab bar shows from two on).
-fn grid_size(r: Renderer, width: Int, height: Int, tabs: Int) -> (Int, Int) =
-  (int.max(1, (width - 2 * r.pad_x) / r.cell_w), int.max(1, (height - grid_top(r, tabs) - r.pad_y) / r.cell_h))
+fn rgb_floats(rgb: Int) -> (Float, Float, Float) = surface.rgb_floats(rgb)
 
-/// Height of the tab bar.
-fn bar_height(r: Renderer) -> Int = r.cell_h + r.pad_y
+/// Whether pixel (`px`, `py`) is on the find bar.
+fn on_bar(r: surface.Renderer, b: findbar.Bar, tabs: Int, width: Int, px: Int, py: Int) -> Bool = findbar.on_bar(r, b, tabs, width, px, py)
 
-/// Pixel row the grid starts at: below the tab bar when there is one.
-fn grid_top(r: Renderer, tabs: Int) -> Int = r.pad_y + (if tabs > 1 then bar_height(r) else 0)
+/// The caret position in the field nearest pixel column `px`.
+fn field_index_at(r: surface.Renderer, b: findbar.Bar, tabs: Int, width: Int, px: Int) -> Int = findbar.field_index_at(r, b, tabs, width, px)
 
-/// The tab under pixel `x` of the tab bar, for `tabs` tabs across `width`.
-fn tab_at(r: Renderer, x: Int, width: Int, tabs: Int) -> Int = int.clamp(x * tabs / int.max(1, width), 0, tabs - 1)
+/// Where the find bar's caret is: (x, y) of the cell it stands in, pixels.
+fn find_caret(r: surface.Renderer, b: findbar.Bar, preedit: List[Int], tabs: Int, width: Int) -> (Int, Int) = findbar.find_caret(r, b, preedit, tabs, width)
 
-/// 0xRRGGBB of a cell colour; `fallback` for the default colour.
-fn resolve(r: Renderer, color: Int, fallback: Int) -> Int = {
-  let kind = int.bshr(color, 24)
-  if kind == 1 then r.palette[int.band(color, 0xFF)]
-  else if kind == 2 then int.band(color, 0xFFFFFF)
-  else fallback
-}
+/// The scrollbar thumb's top and bottom, pixels, for the view scrolled
+/// `back` lines and `shift` pixels.
+fn thumb(r: surface.Renderer, t: terminal.Terminal, back: Int, shift: Int, tabs: Int, height: Int) -> (Int, Int) = chrome.thumb(r, t, back, shift, tabs, height)
 
-// ── Glyphs ────────────────────────────────────────────────────────────────
+/// Where the view is scrolled to, pixels back, with the thumb's top at `y`.
+fn scroll_pos_at(r: surface.Renderer, t: terminal.Terminal, tabs: Int, height: Int, y: Int) -> Int = chrome.scroll_pos_at(r, t, tabs, height, y)
 
-/// The glyph cache slot drawing `cp`, rasterizing it on first use; -1 when no
-/// face has it.
-fn glyph(mut r: Renderer, cp: Int, bold: Bool) -> Int = {
-  let k = cp * 2 + (if bold then 1 else 0)
-  match map.get(r.glyphs, k) {
-    some(slot) => slot,
-    none => if r.pushing then {
-      r.missed = true
-      list.push(r.wanted, (cp, bold))
-      -1
-    } else {
-      let (fi, gid) = face_for(r, cp, bold)
-      let slot = if gid == 0 then -1 else {
-        let before = list.len(r.layer.rects)
-        let device = r.device
-        let size_px = r.size_px
-        r.layer = text.cached(device, r.layer, fi, gid, size_px)
-        // The atlas filled up and started over: every slot we knew is gone.
-        if list.len(r.layer.rects) < before then map.clear(r.glyphs)
-        map.get(r.layer.keys, text.key(fi, gid, size_px)) ?? -1
-      }
-      map.insert(r.glyphs, k, slot)
-      slot
-    }
-  }
-}
-
-/// The colour atlas slot drawing `cp` as a colour emoji, made on first use;
-/// -1 when it isn't one. An emoji is a wide character the grid face has no
-/// glyph for and the emoji font an image; it fills its two cells.
-fn emoji_slot(mut r: Renderer, cp: Int) -> Int =
-  match map.get(r.emojis, cp) {
-    some(slot) => slot,
-    none => if r.pushing then {
-      r.missed = true
-      list.push(r.wanted_emoji, cp)
-      -1
-    } else {
-      let slot = if cell_width.of(cp) != 2 or sfnt.glyph_id(r.layer.fonts[0], cp) != 0 then -1 else {
-        let img = emoji.bitmap(cp, r.cell_w * 2, r.cell_h)
-        if bytes.len(img) <= 8 then -1 else {
-          let before = list.len(r.layer.color_rects)
-          let device = r.device
-          r.layer = text.place_color(device, r.layer, cp, img, 8, bytes.read_u32_le(img, 0), bytes.read_u32_le(img, 4))
-          // The atlas started over: every slot known before is gone.
-          if list.len(r.layer.color_rects) <= before then map.clear(r.emojis)
-          text.color_slot(r.layer, cp)
-        }
-      }
-      map.insert(r.emojis, cp, slot)
-      slot
-    }
-  }
-
-/// Quad drawing colour atlas slot `slot` over the two cells from (`x`, `top`).
-fn emoji_quad(r: Renderer, slot: Int, x: Int, top: Int, alpha: Float, sx: Float, sy: Float) -> Unit = {
-  let o = slot * 4
-  let (ax, ay, w, h) = (r.layer.color_rects[o], r.layer.color_rects[o + 1], r.layer.color_rects[o + 2], r.layer.color_rects[o + 3])
-  let atlas = int.to_float(text.COLOR_ATLAS)
-  quad(r, int.to_float(x), int.to_float(top), int.to_float(x + w), int.to_float(top + h),
-    2.0 + int.to_float(ax) / atlas, int.to_float(ay) / atlas, 2.0 + int.to_float(ax + w) / atlas, int.to_float(ay + h) / atlas,
-    r.theme.fg, alpha, sx, sy)
-}
-
-/// The font (index into the layer's fonts) and glyph drawing `cp`: the grid
-/// face or its bold, else the first fallback that has it, reading fallbacks
-/// until one does. (0, 0) when none has it.
-fn face_for(mut r: Renderer, cp: Int, bold: Bool) -> (Int, Int) = {
-  let face = if bold then bold_face(r) else 0
-  let g = sfnt.glyph_id(r.layer.fonts[face], cp)
-  if g != 0 then (face, g)
-  else {
-    var found = (0, 0)
-    for fi in r.fallback_indices {
-      if found.1 == 0 then {
-        let fg = sfnt.glyph_id(r.layer.fonts[fi], cp)
-        if fg != 0 then found = (fi, fg)
-      }
-    }
-    while found.1 == 0 and r.fallbacks_tried < list.len(r.fallback_paths) {
-      let path = r.fallback_paths[r.fallbacks_tried]
-      r.fallbacks_tried = r.fallbacks_tried + 1
-      match fonts.load(path) {
-        some(f) => {
-          let fi = add_font(r, f)
-          r.fallback_indices = r.fallback_indices + [fi]
-          let fg = sfnt.glyph_id(f, cp)
-          if fg != 0 then found = (fi, fg)
-        },
-        none => (),
-      }
-    }
-    found
-  }
-}
-
-/// Where the bold is in the layer's fonts, reading it the first time; the
-/// grid face when there is no bold.
-fn bold_face(mut r: Renderer) -> Int = {
-  if r.bold_index == -1 then {
-    let path = r.bold_path
-    r.bold_index = match fonts.load(path) {
-      some(f) => add_font(r, f),
-      none => -2,
-    }
-  }
-  if r.bold_index >= 0 then r.bold_index else 0
-}
-
-/// Append `f` to the layer's fonts; its index.
-fn add_font(mut r: Renderer, f: sfnt.Font) -> Int = {
-  let fi = list.len(r.layer.fonts)
-  r.layer = { ...r.layer, fonts: r.layer.fonts + [f] }
-  fi
-}
-
-/// The rectangles drawing box-drawing or block character `cp`, made once
-/// per character.
-fn sprite_pieces(mut r: Renderer, cp: Int) -> List[sprite.Piece] =
-  match map.get(r.sprites, cp) {
-    some(ps) => ps,
-    none => {
-      let ps = sprite.pieces(cp, r.cell_w, r.cell_h, r.line_w)
-      map.insert(r.sprites, cp, ps)
-      ps
-    }
-  }
-
-// ── Quads ─────────────────────────────────────────────────────────────────
-
-/// Push one quad: pixels (x0, y0)-(x1, y1), atlas uv (u0, v0)-(u1, v1),
-/// colour 0xRRGGBB at `alpha`.
-fn quad(r: Renderer, x0: Float, y0: Float, x1: Float, y1: Float,
-        u0: Float, v0: Float, u1: Float, v1: Float, rgb: Int, alpha: Float,
-        sx: Float, sy: Float) -> Unit = {
-  let cr = int.to_float(int.band(int.bshr(rgb, 16), 0xFF)) / 255.0
-  let cg = int.to_float(int.band(int.bshr(rgb, 8), 0xFF)) / 255.0
-  let cb = int.to_float(int.band(rgb, 0xFF)) / 255.0
-  let nx0 = x0 * sx - 1.0
-  let nx1 = x1 * sx - 1.0
-  let ny0 = 1.0 - y0 * sy
-  let ny1 = 1.0 - y1 * sy
-  vertex(nx0, ny0, u0, v0, cr, cg, cb, alpha)
-  vertex(nx1, ny0, u1, v0, cr, cg, cb, alpha)
-  vertex(nx0, ny1, u0, v1, cr, cg, cb, alpha)
-  vertex(nx0, ny1, u0, v1, cr, cg, cb, alpha)
-  vertex(nx1, ny0, u1, v0, cr, cg, cb, alpha)
-  vertex(nx1, ny1, u1, v1, cr, cg, cb, alpha)
-}
-
-fn vertex(x: Float, y: Float, u: Float, v: Float, cr: Float, cg: Float, cb: Float, a: Float) -> Unit = {
-  gpu.push_f32(x)
-  gpu.push_f32(y)
-  gpu.push_f32(u)
-  gpu.push_f32(v)
-  gpu.push_f32(cr)
-  gpu.push_f32(cg)
-  gpu.push_f32(cb)
-  gpu.push_f32(a)
-}
-
-/// A filled rectangle, sampling the atlas's solid texel.
-fn rect(r: Renderer, x0: Int, y0: Int, x1: Int, y1: Int, rgb: Int, alpha: Float, sx: Float, sy: Float) -> Unit = {
-  let slot = map.get(r.layer.keys, text.SOLID) ?? 0
-  let atlas = int.to_float(text.ATLAS)
-  let u = (int.to_float(r.layer.rects[slot * 6]) + 0.5) / atlas
-  let v = (int.to_float(r.layer.rects[slot * 6 + 1]) + 0.5) / atlas
-  quad(r, int.to_float(x0), int.to_float(y0), int.to_float(x1), int.to_float(y1), u, v, u, v, rgb, alpha, sx, sy)
-}
-
-/// The glyph in `slot` with its pen at `x` on the baseline `y`.
-/// One quad for glyph `slot` — always one: a glyph with nothing to draw (an
-/// ideographic space) gets an empty quad, as every caller counts one, and a
-/// quad counted but not written draws whatever an earlier frame left in the
-/// vertex buffer there.
-fn glyph_quad(r: Renderer, slot: Int, x: Int, y: Int, rgb: Int, alpha: Float, sx: Float, sy: Float) -> Unit = {
-  let o = slot * 6
-  let w = r.layer.rects[o + 2]
-  let h = r.layer.rects[o + 3]
-  if w <= 0 or h <= 0 then quad(r, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, rgb, 0.0, sx, sy)
-  else {
-    let left = x + r.layer.rects[o + 4]
-    let top = y - r.layer.rects[o + 5]
-    let atlas = int.to_float(text.ATLAS)
-    let ax = int.to_float(r.layer.rects[o])
-    let ay = int.to_float(r.layer.rects[o + 1])
-    quad(r, int.to_float(left), int.to_float(top), int.to_float(left + w), int.to_float(top + h),
-      ax / atlas, ay / atlas, (ax + int.to_float(w)) / atlas, (ay + int.to_float(h)) / atlas,
-      rgb, alpha, sx, sy)
-  }
-}
-
-// ── Frames ────────────────────────────────────────────────────────────────
-
-/// What the input method is composing: its characters, where among them its
-/// caret is, and the part being converted, [`from`, `to`) (empty when none).
-type Compose = { cps: List[Int], caret: Int, from: Int, to: Int }
-
-fn no_compose() -> Compose = Compose { cps: [], caret: 0, from: 0, to: 0 }
+/// Whether pixel column `x` is on the scrollbar: the right margin, while
+/// there is scrollback to scroll.
+fn on_scrollbar(r: surface.Renderer, t: terminal.Terminal, width: Int, x: Int) -> Bool = chrome.on_scrollbar(r, t, width, x)
 
 /// The part of a composition shown, and where: characters [`a`, `b`) from
 /// column `x0` of the cursor's row. As terminals commonly lay it out: on
 /// the cursor's row, over its cells, from the cursor — moved left to end
 /// within the row; wider than the row, its end is shown, or from the input
 /// method's caret on when the caret is before that.
-fn compose_span(c: Compose, x: Int, cols: Int) -> (Int, Int, Int) = {
-  let n = list.len(c.cps)
-  var a = n
-  var w = 0
-  while a > 0 and w + cell_cols(c.cps[a - 1]) <= cols {
-    a = a - 1
-    w = w + cell_cols(c.cps[a])
-  }
-  var b = n
-  let focus = compose_focus(c)
-  if focus < a then {
-    a = focus
-    b = a
-    w = 0
-    while b < n and w + cell_cols(c.cps[b]) <= cols {
-      w = w + cell_cols(c.cps[b])
-      b = b + 1
-    }
-  }
-  (int.max(0, int.min(x, cols - w)), a, b)
-}
-
-/// Where in a composition the input method is: the part being converted,
-/// else its caret.
-fn compose_focus(c: Compose) -> Int = int.clamp(if c.from < c.to then c.from else c.caret, 0, list.len(c.cps))
+fn compose_span(c: composition.Compose, x: Int, cols: Int) -> (Int, Int, Int) = composition.compose_span(c, x, cols)
 
 /// The column of the input method's caret in a composition at column `x`:
 /// where its candidates go.
-fn compose_caret(c: Compose, x: Int, cols: Int) -> Int = {
-  let (x0, a, b) = compose_span(c, x, cols)
-  x0 + cols_of(list.slice(c.cps, a, int.clamp(compose_focus(c), a, b)))
-}
-
-fn cell_cols(cp: Int) -> Int = int.max(1, cell_width.of(cp))
+fn compose_caret(c: composition.Compose, x: Int, cols: Int) -> Int = composition.compose_caret(c, x, cols)
 
 /// Draw `t` into the window's current frame: the viewport scrolled `back`
 /// lines and `shift` pixels into scrollback, `sel` highlighted, and `compose`
 /// — what the input method is composing — at the cursor. `width` x `height`
 /// is the drawable. With `find`, its matches are marked and its bar is shown
 /// — while the bar has the focus, with the composition in it.
-fn draw(mut r: Renderer, t: terminal.Terminal, back: Int, shift: Int, sel: Option[view.Selection],
-        compose: Compose, width: Int, height: Int, tabs: List[String], active: Int,
-        find: Option[Bar]) -> Unit = {
+fn draw(mut r: surface.Renderer, t: terminal.Terminal, back: Int, shift: Int, sel: Option[view.Selection],
+        compose: composition.Compose, width: Int, height: Int, tabs: List[String], active: Int,
+        find: Option[findbar.Bar]) -> Unit = {
   let preedit = compose.cps
-  let gy = grid_top(r, list.len(tabs))
+  let gy = surface.grid_top(r, list.len(tabs))
   let titles = if list.len(tabs) > 1 then list.map(tabs, (s) => text.code_points(s)) else []
   // Scrolled by part of a line, the line above the viewport shows in part at
   // its top: one row more is drawn, from `shift` pixels less than a row
@@ -482,7 +131,7 @@ fn draw(mut r: Renderer, t: terminal.Terminal, back: Int, shift: Int, sel: Optio
     none => (-1, 0, 0),
   }
   let bar = match find {
-    some(b) => bar_chars(b, preedit) + find_count(b.find),
+    some(b) => findbar.bar_chars(b, preedit) + findbar.find_count(b.find),
     none => [],
   }
 
@@ -496,14 +145,14 @@ fn draw(mut r: Renderer, t: terminal.Terminal, back: Int, shift: Int, sel: Optio
           let o = x * cell.SIZE
           let cp = bytes.read_u32_le(row.cells, o + cell.OFF_CP)
           if sprite.is_sprite(cp) then {
-            marks_total = marks_total + list.len(sprite_pieces(r, cp))
+            marks_total = marks_total + list.len(ink.sprite_pieces(r, cp))
           } else if cp > 32 then {
             let bold = int.band(bytes.read_u16_le(row.cells, o + cell.OFF_ATTRS), cell.ATTR_BOLD) != 0
-            if emoji_slot(r, cp) < 0 then {
-              let _ = glyph(r, cp, bold)
+            if ink.emoji_slot(r, cp) < 0 then {
+              let _ = ink.glyph(r, cp, bold)
             }
-            for mark in marks(row, x) {
-              let _ = glyph(r, mark, bold)
+            for mark in rowpaint.marks(row, x) {
+              let _ = ink.glyph(r, mark, bold)
               marks_total = marks_total + 1
             }
           }
@@ -513,17 +162,17 @@ fn draw(mut r: Renderer, t: terminal.Terminal, back: Int, shift: Int, sel: Optio
     }
   }
   for cp in preedit {
-    let _ = glyph(r, cp, false)
+    let _ = ink.glyph(r, cp, false)
   }
   for cp in bar {
-    let _ = glyph(r, cp, false)
+    let _ = ink.glyph(r, cp, false)
   }
   // What the last frame had to leave out.
   for w in r.wanted {
-    let _ = glyph(r, w.0, w.1)
+    let _ = ink.glyph(r, w.0, w.1)
   }
   for cp in r.wanted_emoji {
-    let _ = emoji_slot(r, cp)
+    let _ = ink.emoji_slot(r, cp)
   }
   let none_wanted: List[(Int, Bool)] = []
   let no_emoji: List[Int] = []
@@ -531,12 +180,12 @@ fn draw(mut r: Renderer, t: terminal.Terminal, back: Int, shift: Int, sel: Optio
   r.wanted_emoji = no_emoji
   // What a title cut short ends with.
   if list.len(titles) > 1 then {
-    let _ = glyph(r, 0x2026, false)
+    let _ = ink.glyph(r, 0x2026, false)
   }
   var title_chars = 0
   for title in titles {
     for cp in title {
-      let _ = glyph(r, cp, false)
+      let _ = ink.glyph(r, cp, false)
       title_chars = title_chars + 1
     }
   }
@@ -544,14 +193,14 @@ fn draw(mut r: Renderer, t: terminal.Terminal, back: Int, shift: Int, sel: Optio
   // Room for the worst case: per cell a background, a glyph and two lines,
   // plus marks, the cursor, the scrollbar and the composition.
   let quads = shown * t.cols * 4 + 2 + marks_total + 7 + list.len(preedit) * 3 + title_chars + list.len(titles) * 3 + 1
-    + list.len(bar) * 3 + FIND_QUADS + 1
+    + list.len(bar) * 3 + findbar.FIND_QUADS + 1
   if quads * 6 > r.capacity then {
     // Grow by half again, so a count creeping up doesn't replace the buffer
     // every frame, and free the old one: its GPU memory isn't reclaimed
     // otherwise.
     if r.vtx != 0 then gpu.destroy_buffer(r.device, r.vtx)
     r.capacity = int.max(quads * 6, r.capacity * 3 / 2)
-    r.vtx = gpu.create_stream_buffer(r.device, r.capacity * VERTEX_FLOATS * 4, int.bor(gpu.VERTEX, gpu.COPY_DST))
+    r.vtx = gpu.create_stream_buffer(r.device, r.capacity * surface.VERTEX_FLOATS * 4, int.bor(gpu.VERTEX, gpu.COPY_DST))
   }
 
   // Pass 2: the quads.
@@ -564,15 +213,15 @@ fn draw(mut r: Renderer, t: terminal.Terminal, back: Int, shift: Int, sel: Optio
   for y in 0..<shown {
     match lines[y] {
       some(row) => {
-        let lit = if current.0 == y then Lit { spans: found[y], from: current.1, to: current.2 } else Lit { spans: found[y], from: -1, to: -1 }
-        n = n + draw_row(r, row, top_line + y, sel, lit, row_y + y * r.cell_h, t.cols, sx, sy)
+        let lit = if current.0 == y then rowpaint.Lit { spans: found[y], from: current.1, to: current.2 } else rowpaint.Lit { spans: found[y], from: -1, to: -1 }
+        n = n + rowpaint.draw_row(r, row, top_line + y, sel, lit, row_y + y * r.cell_h, t.cols, sx, sy)
       },
       none => (),
     }
   }
   if extra == 1 then {
-    rect(r, 0, 0, width, gy, r.theme.bg, 1.0, sx, sy)
-    rect(r, 0, gy + t.rows * r.cell_h, width, height, r.theme.bg, 1.0, sx, sy)
+    ink.rect(r, 0, 0, width, gy, r.theme.bg, 1.0, sx, sy)
+    ink.rect(r, 0, gy + t.rows * r.cell_h, width, height, r.theme.bg, 1.0, sx, sy)
     n = n + 2
   }
 
@@ -585,23 +234,23 @@ fn draw(mut r: Renderer, t: terminal.Terminal, back: Int, shift: Int, sel: Optio
       // Underlined, over the cells it covers; the caret a bar, the part being
       // converted boxed. The terminal's cursor is
       // not drawn meanwhile.
-      let (x0, ca, cb) = compose_span(compose, t.x, t.cols)
+      let (x0, ca, cb) = composition.compose_span(compose, t.x, t.cols)
       var px = r.pad_x + x0 * r.cell_w
       var from_x = -1
       var to_x = -1
       var caret_x = if compose.caret == ca then px else -1
       for i in ca..<cb {
         let cp = preedit[i]
-        let w = r.cell_w * cell_cols(cp)
+        let w = r.cell_w * composition.cell_cols(cp)
         if i == compose.from then from_x = px
-        rect(r, px, ctop, px + w, ctop + r.cell_h, r.theme.bg, 1.0, sx, sy)
-        let slot = glyph(r, cp, false)
+        ink.rect(r, px, ctop, px + w, ctop + r.cell_h, r.theme.bg, 1.0, sx, sy)
+        let slot = ink.glyph(r, cp, false)
         if slot >= 0 then {
-          glyph_quad(r, slot, px, ctop + r.baseline, r.theme.fg, 1.0, sx, sy)
+          ink.glyph_quad(r, slot, px, ctop + r.baseline, r.theme.fg, 1.0, sx, sy)
           n = n + 1
         }
         let uy = ctop + r.baseline + r.line_w
-        rect(r, px, uy, px + w, uy + r.line_w, r.theme.fg, 1.0, sx, sy)
+        ink.rect(r, px, uy, px + w, uy + r.line_w, r.theme.fg, 1.0, sx, sy)
         n = n + 2
         px = px + w
         if i + 1 == compose.to then to_x = px
@@ -610,13 +259,13 @@ fn draw(mut r: Renderer, t: terminal.Terminal, back: Int, shift: Int, sel: Optio
       let lw = int.max(1, r.line_w)
       if compose.from < compose.to and from_x >= 0 then {
         let x1 = if to_x >= 0 then to_x else px
-        rect(r, from_x, ctop, x1, ctop + lw, r.theme.cursor, 1.0, sx, sy)
-        rect(r, from_x, ctop + r.cell_h - lw, x1, ctop + r.cell_h, r.theme.cursor, 1.0, sx, sy)
-        rect(r, from_x, ctop, from_x + lw, ctop + r.cell_h, r.theme.cursor, 1.0, sx, sy)
-        rect(r, x1 - lw, ctop, x1, ctop + r.cell_h, r.theme.cursor, 1.0, sx, sy)
+        ink.rect(r, from_x, ctop, x1, ctop + lw, r.theme.cursor, 1.0, sx, sy)
+        ink.rect(r, from_x, ctop + r.cell_h - lw, x1, ctop + r.cell_h, r.theme.cursor, 1.0, sx, sy)
+        ink.rect(r, from_x, ctop, from_x + lw, ctop + r.cell_h, r.theme.cursor, 1.0, sx, sy)
+        ink.rect(r, x1 - lw, ctop, x1, ctop + r.cell_h, r.theme.cursor, 1.0, sx, sy)
         n = n + 4
       } else if compose.from >= compose.to and caret_x >= 0 then {
-        rect(r, caret_x, ctop, caret_x + int.max(2, r.line_w * 2), ctop + r.cell_h, r.theme.cursor, 1.0, sx, sy)
+        ink.rect(r, caret_x, ctop, caret_x + int.max(2, r.line_w * 2), ctop + r.cell_h, r.theme.cursor, 1.0, sx, sy)
         n = n + 1
       }
     } else if t.cursor_visible then {
@@ -625,15 +274,15 @@ fn draw(mut r: Renderer, t: terminal.Terminal, back: Int, shift: Int, sel: Optio
       let lw = int.max(1, r.line_w)
       if not r.focused then {
         // Keys go elsewhere: a hollow box.
-        rect(r, cx, ctop, cx + r.cell_w, ctop + lw, r.theme.cursor, 1.0, sx, sy)
-        rect(r, cx, ctop + r.cell_h - lw, cx + r.cell_w, ctop + r.cell_h, r.theme.cursor, 1.0, sx, sy)
-        rect(r, cx, ctop, cx + lw, ctop + r.cell_h, r.theme.cursor, 1.0, sx, sy)
-        rect(r, cx + r.cell_w - lw, ctop, cx + r.cell_w, ctop + r.cell_h, r.theme.cursor, 1.0, sx, sy)
+        ink.rect(r, cx, ctop, cx + r.cell_w, ctop + lw, r.theme.cursor, 1.0, sx, sy)
+        ink.rect(r, cx, ctop + r.cell_h - lw, cx + r.cell_w, ctop + r.cell_h, r.theme.cursor, 1.0, sx, sy)
+        ink.rect(r, cx, ctop, cx + lw, ctop + r.cell_h, r.theme.cursor, 1.0, sx, sy)
+        ink.rect(r, cx + r.cell_w - lw, ctop, cx + r.cell_w, ctop + r.cell_h, r.theme.cursor, 1.0, sx, sy)
         n = n + 3
       } else if r.blink_off and int.band(shape, 1) == 1 then ()
-      else if shape == 1 or shape == 2 then rect(r, cx, ctop, cx + r.cell_w, ctop + r.cell_h, r.theme.cursor, 0.5, sx, sy)
-      else if shape == 3 or shape == 4 then rect(r, cx, ctop + r.cell_h - 2 * r.line_w, cx + r.cell_w, ctop + r.cell_h, r.theme.cursor, 1.0, sx, sy)
-      else rect(r, cx, ctop, cx + int.max(2, r.line_w * 2), ctop + r.cell_h, r.theme.cursor, 1.0, sx, sy)
+      else if shape == 1 or shape == 2 then ink.rect(r, cx, ctop, cx + r.cell_w, ctop + r.cell_h, r.theme.cursor, 0.5, sx, sy)
+      else if shape == 3 or shape == 4 then ink.rect(r, cx, ctop + r.cell_h - 2 * r.line_w, cx + r.cell_w, ctop + r.cell_h, r.theme.cursor, 1.0, sx, sy)
+      else ink.rect(r, cx, ctop, cx + int.max(2, r.line_w * 2), ctop + r.cell_h, r.theme.cursor, 1.0, sx, sy)
       n = n + 1
     }
   }
@@ -641,20 +290,20 @@ fn draw(mut r: Renderer, t: terminal.Terminal, back: Int, shift: Int, sel: Optio
   // The scrollbar, while there is scrollback: faint at the bottom, plainer
   // scrolled back.
   if view.max_back(t) > 0 then {
-    let (y0, y1) = thumb(r, t, back, shift, list.len(tabs), height)
-    let w = scrollbar_width(r)
-    rect(r, width - w - r.pad_x / 4, y0, width - r.pad_x / 4, y1, r.theme.fg, if back > 0 or shift > 0 then 0.4 else 0.2, sx, sy)
+    let (y0, y1) = chrome.thumb(r, t, back, shift, list.len(tabs), height)
+    let w = chrome.scrollbar_width(r)
+    ink.rect(r, width - w - r.pad_x / 4, y0, width - r.pad_x / 4, y1, r.theme.fg, if back > 0 or shift > 0 then 0.4 else 0.2, sx, sy)
     n = n + 1
   }
 
   if r.flash then {
-    rect(r, 0, grid_top(r, list.len(tabs)) - r.pad_y, width, height, r.theme.fg, 0.12, sx, sy)
+    ink.rect(r, 0, surface.grid_top(r, list.len(tabs)) - r.pad_y, width, height, r.theme.fg, 0.12, sx, sy)
     n = n + 1
   }
 
-  if list.len(titles) > 1 then n = n + draw_tabs(r, titles, active, width, sx, sy)
+  if list.len(titles) > 1 then n = n + chrome.draw_tabs(r, titles, active, width, sx, sy)
   match find {
-    some(b) => { n = n + draw_find(r, b, preedit, gy, width, sx, sy) },
+    some(b) => { n = n + findbar.draw_find(r, b, preedit, gy, width, sx, sy) },
     none => (),
   }
 
@@ -662,7 +311,7 @@ fn draw(mut r: Renderer, t: terminal.Terminal, back: Int, shift: Int, sel: Optio
   if n > 0 then gpu.flush_to_buffer(r.device, r.vtx)
   r.count = n * 6
 
-  let (br, bgg, bb) = rgb_floats(r.theme.bg)
+  let (br, bgg, bb) = surface.rgb_floats(r.theme.bg)
   let encoder = gpu.begin_encoder(r.device)
   let pass = gpu.begin_render_pass(encoder, br, bgg, bb, 1.0)
   if r.count > 0 then {
@@ -673,363 +322,4 @@ fn draw(mut r: Renderer, t: terminal.Terminal, back: Int, shift: Int, sel: Optio
   }
   gpu.end_pass(pass)
   gpu.finish_and_submit(r.device, encoder)
-}
-
-// ── Scrollbar ─────────────────────────────────────────────────────────────
-
-fn scrollbar_width(r: Renderer) -> Int = int.max(4, r.pad_x / 3)
-
-/// The scrollbar's track: its top and height, pixels.
-fn track(r: Renderer, tabs: Int, height: Int) -> (Int, Int) = {
-  let top = grid_top(r, tabs)
-  (top, int.max(1, height - top - r.pad_y))
-}
-
-/// The scrollbar thumb's top and bottom, pixels, for the view scrolled
-/// `back` lines and `shift` pixels.
-fn thumb(r: Renderer, t: terminal.Terminal, back: Int, shift: Int, tabs: Int, height: Int) -> (Int, Int) = {
-  let (top, len) = track(r, tabs, height)
-  let max = view.max_back(t) * r.cell_h
-  let size = int.min(len, int.max(r.cell_h, len * t.rows / (view.max_back(t) + t.rows)))
-  let pos = back * r.cell_h + shift
-  let y0 = top + (len - size) * (max - pos) / int.max(1, max)
-  (y0, y0 + size)
-}
-
-/// Where the view is scrolled to, pixels back, with the thumb's top at `y`.
-fn scroll_pos_at(r: Renderer, t: terminal.Terminal, tabs: Int, height: Int, y: Int) -> Int = {
-  let (top, len) = track(r, tabs, height)
-  let max = view.max_back(t) * r.cell_h
-  let (y0, y1) = thumb(r, t, 0, 0, tabs, height)
-  let room = int.max(1, len - (y1 - y0))
-  int.clamp(max - (y - top) * max / room, 0, max)
-}
-
-/// Whether pixel column `x` is on the scrollbar: the right margin, while
-/// there is scrollback to scroll.
-fn on_scrollbar(r: Renderer, t: terminal.Terminal, width: Int, x: Int) -> Bool =
-  view.max_back(t) > 0 and x >= width - int.max(r.pad_x, scrollbar_width(r) * 3)
-
-/// The tab bar: one tab per title, `active` raised to the terminal's
-/// background with an accent line, the others on a darker strip. Returns the
-/// quads it pushed.
-fn draw_tabs(mut r: Renderer, titles: List[List[Int]], active: Int, width: Int, sx: Float, sy: Float) -> Int = {
-  let h = bar_height(r)
-  let count = list.len(titles)
-  var n = 0
-  rect(r, 0, 0, width, h, r.theme.tab_bar, 1.0, sx, sy)
-  n = n + 1
-  for i in 0..<count {
-    let x0 = i * width / count
-    let x1 = (i + 1) * width / count
-    if i == active then {
-      rect(r, x0, 0, x1, h, r.theme.bg, 1.0, sx, sy)
-      rect(r, x0, 0, x1, int.max(2, r.line_w), r.theme.accent, 1.0, sx, sy)
-      n = n + 2
-    } else if i > 0 and i != active + 1 then {
-      rect(r, x0, h / 4, x0 + int.max(1, r.line_w / 2), h - h / 4, r.theme.tab_rule, 1.0, sx, sy)
-      n = n + 1
-    }
-    // The title, centred, cut to the tab with room to spare on each side.
-    let room = int.max(1, (x1 - x0) / r.cell_w - 2)
-    let title = titles[i]
-    let shown = if list.len(title) > room then list.take(title, int.max(1, room - 1)) + [0x2026] else title
-    var w = 0
-    for cp in shown {
-      w = w + r.cell_w * int.max(1, cell_width.of(cp))
-    }
-    var pen = x0 + (x1 - x0 - w) / 2
-    let baseline = (h - r.cell_h) / 2 + r.baseline
-    let color = if i == active then r.theme.fg else r.theme.tab_dim
-    for cp in shown {
-      let slot = glyph(r, cp, false)
-      if slot >= 0 then {
-        glyph_quad(r, slot, pen, baseline, color, 1.0, sx, sy)
-        n = n + 1
-      }
-      pen = pen + r.cell_w * int.max(1, cell_width.of(cp))
-    }
-  }
-  n
-}
-
-/// Quads of one row at pixel row `top`: background runs, glyphs, marks and
-/// lines. Returns how many it pushed.
-fn draw_row(mut r: Renderer, row: record.Row, line: Int, sel: Option[view.Selection], lit: Lit,
-            top: Int, cols: Int, sx: Float, sy: Float) -> Int = {
-  var n = 0
-  var x = 0
-  while x < cols {
-    let bg = colors(r, row, line, x, sel, lit).1
-    var end = x + 1
-    while end < cols and colors(r, row, line, end, sel, lit).1 == bg {
-      end = end + 1
-    }
-    if bg != r.theme.bg then {
-      rect(r, r.pad_x + x * r.cell_w, top, r.pad_x + end * r.cell_w, top + r.cell_h, bg, 1.0, sx, sy)
-      n = n + 1
-    }
-    x = end
-  }
-  for cx in 0..<cols {
-    let o = cx * cell.SIZE
-    let cp = bytes.read_u32_le(row.cells, o + cell.OFF_CP)
-    let attrs = bytes.read_u16_le(row.cells, o + cell.OFF_ATTRS)
-    let fg = colors(r, row, line, cx, sel, lit).0
-    let alpha = if int.band(attrs, cell.ATTR_FAINT) != 0 then 0.6 else 1.0
-    let bold = int.band(attrs, cell.ATTR_BOLD) != 0
-    let left = r.pad_x + cx * r.cell_w
-    let w = r.cell_w * int.max(1, bytes.read_u8(row.cells, o + cell.OFF_WIDTH))
-    if sprite.is_sprite(cp) and int.band(attrs, cell.ATTR_HIDDEN) == 0 then {
-      for p in sprite_pieces(r, cp) {
-        rect(r, left + p.x0, top + p.y0, left + p.x1, top + p.y1, fg, alpha * p.alpha, sx, sy)
-        n = n + 1
-      }
-    } else if cp > 32 and int.band(attrs, cell.ATTR_HIDDEN) == 0 and emoji_slot(r, cp) >= 0 then {
-      let slot = emoji_slot(r, cp)
-      emoji_quad(r, slot, left, top, alpha, sx, sy)
-      n = n + 1
-    } else if cp > 32 and int.band(attrs, cell.ATTR_HIDDEN) == 0 then {
-      let slot = glyph(r, cp, bold)
-      if slot >= 0 then {
-        glyph_quad(r, slot, left, top + r.baseline, fg, alpha, sx, sy)
-        n = n + 1
-      }
-      // Combining marks have no advance of their own: fonts draw them back
-      // from the pen, which stands after the base character.
-      for mark in marks(row, cx) {
-        let ms = glyph(r, mark, bold)
-        if ms >= 0 then {
-          glyph_quad(r, ms, left + w, top + r.baseline, fg, alpha, sx, sy)
-          n = n + 1
-        }
-      }
-    }
-    if int.band(attrs, cell.ATTR_UNDERLINE + cell.ATTR_DOUBLE_UNDERLINE) != 0 then {
-      let uy = top + r.baseline + r.line_w
-      rect(r, left, uy, left + w, uy + r.line_w, fg, alpha, sx, sy)
-      n = n + 1
-    }
-    if int.band(attrs, cell.ATTR_STRIKE) != 0 then {
-      let y0 = top + r.baseline - r.size_px * 3 / 10
-      rect(r, left, y0, left + w, y0 + r.line_w, fg, alpha, sx, sy)
-      n = n + 1
-    }
-  }
-  n
-}
-
-/// The combining marks on cell `x` worth drawing (joiners and variation
-/// selectors only steer how the base is shown).
-fn marks(row: record.Row, x: Int) -> List[Int] =
-  if int.band(bytes.read_u8(row.cells, x * cell.SIZE + cell.OFF_FLAGS), cell.FLAG_GRAPHEME) == 0 then []
-  else text.code_points(map.get_or(row.extras, x, ""))
-    |> list.filter((cp) => cp != 0x200D and (cp < 0xFE00 or cp > 0xFE0F))
-
-/// A row's find matches: their columns, and the current one's (`from` -1
-/// when it isn't on the row).
-type Lit = { spans: List[(Int, Int)], from: Int, to: Int }
-
-/// Foreground and background of cell `x` as 0xRRGGBB: inverse and hidden
-/// applied, and a find match's or the selection's colour over it.
-fn colors(r: Renderer, row: record.Row, line: Int, x: Int, sel: Option[view.Selection], lit: Lit) -> (Int, Int) = {
-  let o = x * cell.SIZE
-  let fg = resolve(r, bytes.read_u32_le(row.cells, o + cell.OFF_FG), r.theme.fg)
-  let bg = resolve(r, bytes.read_u32_le(row.cells, o + cell.OFF_BG), r.theme.bg)
-  let attrs = bytes.read_u16_le(row.cells, o + cell.OFF_ATTRS)
-  let (f, b) = if int.band(attrs, cell.ATTR_INVERSE) != 0 then (bg, fg) else (fg, bg)
-  let (f2, b2) = if int.band(attrs, cell.ATTR_HIDDEN) != 0 then (b, b) else (f, b)
-  if x >= lit.from and x < lit.to then (r.theme.match_fg, r.theme.match_current)
-  else if list.any(lit.spans, (s) => x >= s.0 and x < s.1) then (f2, r.theme.match_bg)
-  else match sel {
-    some(s) => if view.selected(s, line, x) then (f2, r.theme.selection) else (f2, b2),
-    none => (f2, b2),
-  }
-}
-
-// ── Find bar ──────────────────────────────────────────────────────────────
-
-/// The find bar: the search, the field its query is typed in, and whether
-/// it has the focus — typing goes to it rather than the program.
-type Bar = { find: search.Find, field: field.Field, focused: Bool }
-
-/// Quads of the find bar besides its characters and their selection and
-/// underlines: its box, border and caret.
-let FIND_QUADS = 7
-
-/// Width of the find bar's box, cells, at the least.
-let FIND_CELLS = 30
-
-/// The count the find bar shows: "3/17", "0/0" when nothing matches.
-fn find_count(f: search.Find) -> List[Int] =
-  if f.query == "" then [] else text.code_points("${int.to_string(f.index + 1)}/${int.to_string(f.total)}")
-
-/// What the field shows: its text with the composition, if it has the
-/// focus, at the caret.
-fn bar_chars(b: Bar, preedit: List[Int]) -> List[Int] = {
-  let pre = if b.focused then preedit else []
-  list.take(b.field.chars, b.field.caret) + pre + list.drop(b.field.chars, b.field.caret)
-}
-
-/// The find bar's box: (x0, y0, x1, y1), at the top right of the grid.
-fn find_box(r: Renderer, b: Bar, preedit: List[Int], gy: Int, width: Int) -> (Int, Int, Int, Int) = {
-  let want = cols_of(bar_chars(b, preedit)) + list.len(find_count(b.find)) + 4
-  let w = int.min(width - 2 * r.pad_x, int.max(FIND_CELLS, want) * r.cell_w + r.pad_x)
-  let x1 = width - r.pad_x
-  (x1 - w, gy, x1, gy + r.cell_h + r.pad_y)
-}
-
-/// Columns `cps` take.
-fn cols_of(cps: List[Int]) -> Int = list.fold(cps, 0, (acc, cp) => acc + int.max(1, cell_width.of(cp)))
-
-/// The field's layout in the box: where its text starts (pixels), how many
-/// columns it may take, and the first character shown — the text scrolls
-/// so the caret stays in view.
-fn field_layout(r: Renderer, b: Bar, preedit: List[Int], box: (Int, Int, Int, Int)) -> (Int, Int, Int) = {
-  let (x0, _, x1, _) = box
-  let room = int.max(1, (x1 - x0 - r.pad_x) / r.cell_w - list.len(find_count(b.find)) - 2)
-  let chars = bar_chars(b, preedit)
-  let caret = b.field.caret + (if b.focused then list.len(preedit) else 0)
-  // Back from the caret while the columns up to it fit.
-  var first = caret
-  var used = 0
-  while first > 0 and used + int.max(1, cell_width.of(chars[first - 1])) < room {
-    first = first - 1
-    used = used + int.max(1, cell_width.of(chars[first]))
-  }
-  (x0 + r.pad_x / 2, room, first)
-}
-
-/// The x of the edge before character `i` of what the field shows.
-fn field_x(r: Renderer, b: Bar, preedit: List[Int], box: (Int, Int, Int, Int), i: Int) -> Int = {
-  let (left, _, first) = field_layout(r, b, preedit, box)
-  left + cols_of(list.slice(bar_chars(b, preedit), first, int.max(first, i))) * r.cell_w
-}
-
-/// Where the find bar's caret is: (x, y) of the cell it stands in, pixels.
-fn find_caret(r: Renderer, b: Bar, preedit: List[Int], tabs: Int, width: Int) -> (Int, Int) = {
-  let box = find_box(r, b, preedit, grid_top(r, tabs), width)
-  (field_x(r, b, preedit, box, b.field.caret), box.1 + r.pad_y / 2)
-}
-
-/// Whether pixel (`px`, `py`) is on the find bar.
-fn on_bar(r: Renderer, b: Bar, tabs: Int, width: Int, px: Int, py: Int) -> Bool = {
-  let (x0, y0, x1, y1) = find_box(r, b, [], grid_top(r, tabs), width)
-  px >= x0 and px < x1 and py >= y0 and py < y1
-}
-
-/// The caret position in the field nearest pixel column `px`.
-fn field_index_at(r: Renderer, b: Bar, tabs: Int, width: Int, px: Int) -> Int = {
-  let box = find_box(r, b, [], grid_top(r, tabs), width)
-  let (left, _, first) = field_layout(r, b, [], box)
-  var i = first
-  var x = left
-  let n = list.len(b.field.chars)
-  var done = false
-  while not done and i < n {
-    let w = r.cell_w * int.max(1, cell_width.of(b.field.chars[i]))
-    if px < x + w / 2 then done = true
-    else {
-      x = x + w
-      i = i + 1
-    }
-  }
-  i
-}
-
-/// The find bar: the field — its selection, the composition underlined,
-/// the caret while it has the focus — and the count on the right. Its border
-/// is the accent colour while it has the focus. Returns the quads it pushed.
-fn draw_find(mut r: Renderer, b: Bar, preedit: List[Int], gy: Int, width: Int, sx: Float, sy: Float) -> Int = {
-  let box = find_box(r, b, preedit, gy, width)
-  let (x0, y0, x1, y1) = box
-  let lw = int.max(1, r.line_w)
-  let edge = if b.focused then r.theme.accent else r.theme.tab_rule
-  rect(r, x0, y0, x1, y1, r.theme.tab_bar, 1.0, sx, sy)
-  rect(r, x0, y0, x1, y0 + lw, edge, 1.0, sx, sy)
-  rect(r, x0, y1 - lw, x1, y1, edge, 1.0, sx, sy)
-  rect(r, x0, y0, x0 + lw, y1, edge, 1.0, sx, sy)
-  rect(r, x1 - lw, y0, x1, y1, edge, 1.0, sx, sy)
-  var n = 5
-  let count = find_count(b.find)
-  let baseline = y0 + r.pad_y / 2 + r.baseline
-  let ctop = y0 + r.pad_y / 2
-  // The count, right-aligned; red when nothing matches.
-  var cx = x1 - r.pad_x / 2 - list.len(count) * r.cell_w
-  let count_color = if b.find.total == 0 then r.theme.no_match else r.theme.tab_dim
-  for cp in count {
-    let slot = glyph(r, cp, false)
-    if slot >= 0 then {
-      glyph_quad(r, slot, cx, baseline, count_color, 1.0, sx, sy)
-      n = n + 1
-    }
-    cx = cx + r.cell_w
-  }
-  // The field: characters from `first` while they fit.
-  let (left, room, first) = field_layout(r, b, preedit, box)
-  let chars = bar_chars(b, preedit)
-  let pre = if b.focused then list.len(preedit) else 0
-  let caret = b.field.caret
-  let (sel_a, sel_b) = field.range(b.field)
-  var pen = left
-  var used = 0
-  var i = first
-  while i < list.len(chars) and used + int.max(1, cell_width.of(chars[i])) <= room {
-    let cp = chars[i]
-    let cols = int.max(1, cell_width.of(cp))
-    let w = r.cell_w * cols
-    // Character `i` shown is the field's `at`, or part of the composition.
-    let composing = i >= caret and i < caret + pre
-    let at = if i < caret then i else i - pre
-    if not composing and at >= sel_a and at < sel_b then {
-      rect(r, pen, ctop, pen + w, ctop + r.cell_h, r.theme.selection, 1.0, sx, sy)
-      n = n + 1
-    }
-    let slot = glyph(r, cp, false)
-    if slot >= 0 then {
-      glyph_quad(r, slot, pen, baseline, r.theme.fg, 1.0, sx, sy)
-      n = n + 1
-    }
-    if composing then {
-      let uy = baseline + r.line_w
-      rect(r, pen, uy, pen + w, uy + r.line_w, r.theme.fg, 1.0, sx, sy)
-      n = n + 1
-    }
-    pen = pen + w
-    used = used + cols
-    i = i + 1
-  }
-  if b.focused and not field.has_selection(b.field) then {
-    let x = field_x(r, b, preedit, box, caret + pre)
-    rect(r, x, ctop, x + int.max(2, r.line_w * 2), ctop + r.cell_h, r.theme.accent, 1.0, sx, sy)
-    n = n + 1
-  }
-  n
-}
-
-fn rgb_floats(rgb: Int) -> (Float, Float, Float) = (
-  int.to_float(int.band(int.bshr(rgb, 16), 0xFF)) / 255.0,
-  int.to_float(int.band(int.bshr(rgb, 8), 0xFF)) / 255.0,
-  int.to_float(int.band(rgb, 0xFF)) / 255.0,
-)
-
-test "a composition lies from the cursor, moved left to end within the row" {
-  let c = (s) => { let cps = text.code_points(s); Compose { cps: cps, caret: list.len(cps), from: 0, to: 0 } }
-  assert_eq(compose_span(c("a"), 2, 10), (2, 0, 1))
-  assert_eq(compose_span(c("あ"), 2, 10), (2, 0, 1))
-  // At the right edge it moves left.
-  assert_eq(compose_span(c("あ"), 9, 10), (8, 0, 1))
-  // Wider than the row: its end, where the caret is.
-  assert_eq(compose_span(c("あいうえおか"), 0, 10), (0, 1, 6))
-  assert_eq(compose_caret(c("あいうえおか"), 0, 10), 10)
-}
-
-test "a long composition shows from the caret when the caret is before its end" {
-  let cps = text.code_points("あいうえおか")
-  let at_start = Compose { cps: cps, caret: 0, from: 0, to: 0 }
-  assert_eq(compose_span(at_start, 0, 10), (0, 0, 5))
-  // Converting: from the part being converted.
-  let converting = Compose { cps: cps, caret: 6, from: 1, to: 3 }
-  assert_eq(compose_span(converting, 0, 10), (0, 1, 6))
-  assert_eq(compose_caret(converting, 0, 10), 0)
 }

@@ -1,0 +1,83 @@
+// The window's own parts: the scrollbar and the tab bar.
+
+import self.terminal
+import self.view
+import self.width as cell_width
+import self.gui.surface
+import self.gui.ink
+
+fn scrollbar_width(r: surface.Renderer) -> Int = int.max(4, r.pad_x / 3)
+
+/// The scrollbar's track: its top and height, pixels.
+fn track(r: surface.Renderer, tabs: Int, height: Int) -> (Int, Int) = {
+  let top = surface.grid_top(r, tabs)
+  (top, int.max(1, height - top - r.pad_y))
+}
+
+/// The scrollbar thumb's top and bottom, pixels, for the view scrolled
+/// `back` lines and `shift` pixels.
+fn thumb(r: surface.Renderer, t: terminal.Terminal, back: Int, shift: Int, tabs: Int, height: Int) -> (Int, Int) = {
+  let (top, len) = track(r, tabs, height)
+  let max = view.max_back(t) * r.cell_h
+  let size = int.min(len, int.max(r.cell_h, len * t.rows / (view.max_back(t) + t.rows)))
+  let pos = back * r.cell_h + shift
+  let y0 = top + (len - size) * (max - pos) / int.max(1, max)
+  (y0, y0 + size)
+}
+
+/// Where the view is scrolled to, pixels back, with the thumb's top at `y`.
+fn scroll_pos_at(r: surface.Renderer, t: terminal.Terminal, tabs: Int, height: Int, y: Int) -> Int = {
+  let (top, len) = track(r, tabs, height)
+  let max = view.max_back(t) * r.cell_h
+  let (y0, y1) = thumb(r, t, 0, 0, tabs, height)
+  let room = int.max(1, len - (y1 - y0))
+  int.clamp(max - (y - top) * max / room, 0, max)
+}
+
+/// Whether pixel column `x` is on the scrollbar: the right margin, while
+/// there is scrollback to scroll.
+fn on_scrollbar(r: surface.Renderer, t: terminal.Terminal, width: Int, x: Int) -> Bool =
+  view.max_back(t) > 0 and x >= width - int.max(r.pad_x, scrollbar_width(r) * 3)
+
+/// The tab bar: one tab per title, `active` raised to the terminal's
+/// background with an accent line, the others on a darker strip. Returns the
+/// quads it pushed.
+fn draw_tabs(mut r: surface.Renderer, titles: List[List[Int]], active: Int, width: Int, sx: Float, sy: Float) -> Int = {
+  let h = surface.bar_height(r)
+  let count = list.len(titles)
+  var n = 0
+  ink.rect(r, 0, 0, width, h, r.theme.tab_bar, 1.0, sx, sy)
+  n = n + 1
+  for i in 0..<count {
+    let x0 = i * width / count
+    let x1 = (i + 1) * width / count
+    if i == active then {
+      ink.rect(r, x0, 0, x1, h, r.theme.bg, 1.0, sx, sy)
+      ink.rect(r, x0, 0, x1, int.max(2, r.line_w), r.theme.accent, 1.0, sx, sy)
+      n = n + 2
+    } else if i > 0 and i != active + 1 then {
+      ink.rect(r, x0, h / 4, x0 + int.max(1, r.line_w / 2), h - h / 4, r.theme.tab_rule, 1.0, sx, sy)
+      n = n + 1
+    }
+    // The title, centred, cut to the tab with room to spare on each side.
+    let room = int.max(1, (x1 - x0) / r.cell_w - 2)
+    let title = titles[i]
+    let shown = if list.len(title) > room then list.take(title, int.max(1, room - 1)) + [0x2026] else title
+    var w = 0
+    for cp in shown {
+      w = w + r.cell_w * int.max(1, cell_width.of(cp))
+    }
+    var pen = x0 + (x1 - x0 - w) / 2
+    let baseline = (h - r.cell_h) / 2 + r.baseline
+    let color = if i == active then r.theme.fg else r.theme.tab_dim
+    for cp in shown {
+      let slot = ink.glyph(r, cp, false)
+      if slot >= 0 then {
+        ink.glyph_quad(r, slot, pen, baseline, color, 1.0, sx, sy)
+        n = n + 1
+      }
+      pen = pen + r.cell_w * int.max(1, cell_width.of(cp))
+    }
+  }
+  n
+}

@@ -1,0 +1,201 @@
+// Glyphs into the atlas — faces, fallbacks, colour emoji, sprites — and
+// the quads that draw them.
+
+import snaidhm.web.gpu as gpu
+import snaidhm.sfnt as sfnt
+import snaidhm.text as text
+import self.gui.fonts
+import self.gui.emoji
+import self.gui.sprite
+import self.width as cell_width
+import self.gui.surface
+
+/// The glyph cache slot drawing `cp`, rasterizing it on first use; -1 when no
+/// face has it.
+fn glyph(mut r: surface.Renderer, cp: Int, bold: Bool) -> Int = {
+  let k = cp * 2 + (if bold then 1 else 0)
+  match map.get(r.glyphs, k) {
+    some(slot) => slot,
+    none => if r.pushing then {
+      r.missed = true
+      list.push(r.wanted, (cp, bold))
+      -1
+    } else {
+      let (fi, gid) = face_for(r, cp, bold)
+      let slot = if gid == 0 then -1 else {
+        let before = list.len(r.layer.rects)
+        let device = r.device
+        let size_px = r.size_px
+        r.layer = text.cached(device, r.layer, fi, gid, size_px)
+        // The atlas filled up and started over: every slot we knew is gone.
+        if list.len(r.layer.rects) < before then map.clear(r.glyphs)
+        map.get(r.layer.keys, text.key(fi, gid, size_px)) ?? -1
+      }
+      map.insert(r.glyphs, k, slot)
+      slot
+    }
+  }
+}
+
+/// The colour atlas slot drawing `cp` as a colour emoji, made on first use;
+/// -1 when it isn't one. An emoji is a wide character the grid face has no
+/// glyph for and the emoji font an image; it fills its two cells.
+fn emoji_slot(mut r: surface.Renderer, cp: Int) -> Int =
+  match map.get(r.emojis, cp) {
+    some(slot) => slot,
+    none => if r.pushing then {
+      r.missed = true
+      list.push(r.wanted_emoji, cp)
+      -1
+    } else {
+      let slot = if cell_width.of(cp) != 2 or sfnt.glyph_id(r.layer.fonts[0], cp) != 0 then -1 else {
+        let img = emoji.bitmap(cp, r.cell_w * 2, r.cell_h)
+        if bytes.len(img) <= 8 then -1 else {
+          let before = list.len(r.layer.color_rects)
+          let device = r.device
+          r.layer = text.place_color(device, r.layer, cp, img, 8, bytes.read_u32_le(img, 0), bytes.read_u32_le(img, 4))
+          // The atlas started over: every slot known before is gone.
+          if list.len(r.layer.color_rects) <= before then map.clear(r.emojis)
+          text.color_slot(r.layer, cp)
+        }
+      }
+      map.insert(r.emojis, cp, slot)
+      slot
+    }
+  }
+
+/// Quad drawing colour atlas slot `slot` over the two cells from (`x`, `top`).
+fn emoji_quad(r: surface.Renderer, slot: Int, x: Int, top: Int, alpha: Float, sx: Float, sy: Float) -> Unit = {
+  let o = slot * 4
+  let (ax, ay, w, h) = (r.layer.color_rects[o], r.layer.color_rects[o + 1], r.layer.color_rects[o + 2], r.layer.color_rects[o + 3])
+  let atlas = int.to_float(text.COLOR_ATLAS)
+  quad(r, int.to_float(x), int.to_float(top), int.to_float(x + w), int.to_float(top + h),
+    2.0 + int.to_float(ax) / atlas, int.to_float(ay) / atlas, 2.0 + int.to_float(ax + w) / atlas, int.to_float(ay + h) / atlas,
+    r.theme.fg, alpha, sx, sy)
+}
+
+/// The font (index into the layer's fonts) and glyph drawing `cp`: the grid
+/// face or its bold, else the first fallback that has it, reading fallbacks
+/// until one does. (0, 0) when none has it.
+fn face_for(mut r: surface.Renderer, cp: Int, bold: Bool) -> (Int, Int) = {
+  let face = if bold then bold_face(r) else 0
+  let g = sfnt.glyph_id(r.layer.fonts[face], cp)
+  if g != 0 then (face, g)
+  else {
+    var found = (0, 0)
+    for fi in r.fallback_indices {
+      if found.1 == 0 then {
+        let fg = sfnt.glyph_id(r.layer.fonts[fi], cp)
+        if fg != 0 then found = (fi, fg)
+      }
+    }
+    while found.1 == 0 and r.fallbacks_tried < list.len(r.fallback_paths) {
+      let path = r.fallback_paths[r.fallbacks_tried]
+      r.fallbacks_tried = r.fallbacks_tried + 1
+      match fonts.load(path) {
+        some(f) => {
+          let fi = add_font(r, f)
+          r.fallback_indices = r.fallback_indices + [fi]
+          let fg = sfnt.glyph_id(f, cp)
+          if fg != 0 then found = (fi, fg)
+        },
+        none => (),
+      }
+    }
+    found
+  }
+}
+
+/// Where the bold is in the layer's fonts, reading it the first time; the
+/// grid face when there is no bold.
+fn bold_face(mut r: surface.Renderer) -> Int = {
+  if r.bold_index == -1 then {
+    let path = r.bold_path
+    r.bold_index = match fonts.load(path) {
+      some(f) => add_font(r, f),
+      none => -2,
+    }
+  }
+  if r.bold_index >= 0 then r.bold_index else 0
+}
+
+/// Append `f` to the layer's fonts; its index.
+fn add_font(mut r: surface.Renderer, f: sfnt.Font) -> Int = {
+  let fi = list.len(r.layer.fonts)
+  r.layer = { ...r.layer, fonts: r.layer.fonts + [f] }
+  fi
+}
+
+/// The rectangles drawing box-drawing or block character `cp`, made once
+/// per character.
+fn sprite_pieces(mut r: surface.Renderer, cp: Int) -> List[sprite.Piece] =
+  match map.get(r.sprites, cp) {
+    some(ps) => ps,
+    none => {
+      let ps = sprite.pieces(cp, r.cell_w, r.cell_h, r.line_w)
+      map.insert(r.sprites, cp, ps)
+      ps
+    }
+  }
+
+/// Push one quad: pixels (x0, y0)-(x1, y1), atlas uv (u0, v0)-(u1, v1),
+/// colour 0xRRGGBB at `alpha`.
+fn quad(r: surface.Renderer, x0: Float, y0: Float, x1: Float, y1: Float,
+        u0: Float, v0: Float, u1: Float, v1: Float, rgb: Int, alpha: Float,
+        sx: Float, sy: Float) -> Unit = {
+  let cr = int.to_float(int.band(int.bshr(rgb, 16), 0xFF)) / 255.0
+  let cg = int.to_float(int.band(int.bshr(rgb, 8), 0xFF)) / 255.0
+  let cb = int.to_float(int.band(rgb, 0xFF)) / 255.0
+  let nx0 = x0 * sx - 1.0
+  let nx1 = x1 * sx - 1.0
+  let ny0 = 1.0 - y0 * sy
+  let ny1 = 1.0 - y1 * sy
+  vertex(nx0, ny0, u0, v0, cr, cg, cb, alpha)
+  vertex(nx1, ny0, u1, v0, cr, cg, cb, alpha)
+  vertex(nx0, ny1, u0, v1, cr, cg, cb, alpha)
+  vertex(nx0, ny1, u0, v1, cr, cg, cb, alpha)
+  vertex(nx1, ny0, u1, v0, cr, cg, cb, alpha)
+  vertex(nx1, ny1, u1, v1, cr, cg, cb, alpha)
+}
+
+fn vertex(x: Float, y: Float, u: Float, v: Float, cr: Float, cg: Float, cb: Float, a: Float) -> Unit = {
+  gpu.push_f32(x)
+  gpu.push_f32(y)
+  gpu.push_f32(u)
+  gpu.push_f32(v)
+  gpu.push_f32(cr)
+  gpu.push_f32(cg)
+  gpu.push_f32(cb)
+  gpu.push_f32(a)
+}
+
+/// A filled rectangle, sampling the atlas's solid texel.
+fn rect(r: surface.Renderer, x0: Int, y0: Int, x1: Int, y1: Int, rgb: Int, alpha: Float, sx: Float, sy: Float) -> Unit = {
+  let slot = map.get(r.layer.keys, text.SOLID) ?? 0
+  let atlas = int.to_float(text.ATLAS)
+  let u = (int.to_float(r.layer.rects[slot * 6]) + 0.5) / atlas
+  let v = (int.to_float(r.layer.rects[slot * 6 + 1]) + 0.5) / atlas
+  quad(r, int.to_float(x0), int.to_float(y0), int.to_float(x1), int.to_float(y1), u, v, u, v, rgb, alpha, sx, sy)
+}
+
+/// The glyph in `slot` with its pen at `x` on the baseline `y`.
+/// One quad for glyph `slot` — always one: a glyph with nothing to draw (an
+/// ideographic space) gets an empty quad, as every caller counts one, and a
+/// quad counted but not written draws whatever an earlier frame left in the
+/// vertex buffer there.
+fn glyph_quad(r: surface.Renderer, slot: Int, x: Int, y: Int, rgb: Int, alpha: Float, sx: Float, sy: Float) -> Unit = {
+  let o = slot * 6
+  let w = r.layer.rects[o + 2]
+  let h = r.layer.rects[o + 3]
+  if w <= 0 or h <= 0 then quad(r, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, rgb, 0.0, sx, sy)
+  else {
+    let left = x + r.layer.rects[o + 4]
+    let top = y - r.layer.rects[o + 5]
+    let atlas = int.to_float(text.ATLAS)
+    let ax = int.to_float(r.layer.rects[o])
+    let ay = int.to_float(r.layer.rects[o + 1])
+    quad(r, int.to_float(left), int.to_float(top), int.to_float(left + w), int.to_float(top + h),
+      ax / atlas, ay / atlas, (ax + int.to_float(w)) / atlas, (ay + int.to_float(h)) / atlas,
+      rgb, alpha, sx, sy)
+  }
+}

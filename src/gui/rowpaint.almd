@@ -1,0 +1,104 @@
+// One row of cells: backgrounds, glyphs, lines, marks, find matches and
+// the selection.
+
+import snaidhm.text as text
+import self.cell
+import self.gui.sprite
+import self.record
+import self.view
+import self.gui.surface
+import self.gui.ink
+
+/// Quads of one row at pixel row `top`: background runs, glyphs, marks and
+/// lines. Returns how many it pushed.
+fn draw_row(mut r: surface.Renderer, row: record.Row, line: Int, sel: Option[view.Selection], lit: Lit,
+            top: Int, cols: Int, sx: Float, sy: Float) -> Int = {
+  var n = 0
+  var x = 0
+  while x < cols {
+    let bg = colors(r, row, line, x, sel, lit).1
+    var end = x + 1
+    while end < cols and colors(r, row, line, end, sel, lit).1 == bg {
+      end = end + 1
+    }
+    if bg != r.theme.bg then {
+      ink.rect(r, r.pad_x + x * r.cell_w, top, r.pad_x + end * r.cell_w, top + r.cell_h, bg, 1.0, sx, sy)
+      n = n + 1
+    }
+    x = end
+  }
+  for cx in 0..<cols {
+    let o = cx * cell.SIZE
+    let cp = bytes.read_u32_le(row.cells, o + cell.OFF_CP)
+    let attrs = bytes.read_u16_le(row.cells, o + cell.OFF_ATTRS)
+    let fg = colors(r, row, line, cx, sel, lit).0
+    let alpha = if int.band(attrs, cell.ATTR_FAINT) != 0 then 0.6 else 1.0
+    let bold = int.band(attrs, cell.ATTR_BOLD) != 0
+    let left = r.pad_x + cx * r.cell_w
+    let w = r.cell_w * int.max(1, bytes.read_u8(row.cells, o + cell.OFF_WIDTH))
+    if sprite.is_sprite(cp) and int.band(attrs, cell.ATTR_HIDDEN) == 0 then {
+      for p in ink.sprite_pieces(r, cp) {
+        ink.rect(r, left + p.x0, top + p.y0, left + p.x1, top + p.y1, fg, alpha * p.alpha, sx, sy)
+        n = n + 1
+      }
+    } else if cp > 32 and int.band(attrs, cell.ATTR_HIDDEN) == 0 and ink.emoji_slot(r, cp) >= 0 then {
+      let slot = ink.emoji_slot(r, cp)
+      ink.emoji_quad(r, slot, left, top, alpha, sx, sy)
+      n = n + 1
+    } else if cp > 32 and int.band(attrs, cell.ATTR_HIDDEN) == 0 then {
+      let slot = ink.glyph(r, cp, bold)
+      if slot >= 0 then {
+        ink.glyph_quad(r, slot, left, top + r.baseline, fg, alpha, sx, sy)
+        n = n + 1
+      }
+      // Combining marks have no advance of their own: fonts draw them back
+      // from the pen, which stands after the base character.
+      for mark in marks(row, cx) {
+        let ms = ink.glyph(r, mark, bold)
+        if ms >= 0 then {
+          ink.glyph_quad(r, ms, left + w, top + r.baseline, fg, alpha, sx, sy)
+          n = n + 1
+        }
+      }
+    }
+    if int.band(attrs, cell.ATTR_UNDERLINE + cell.ATTR_DOUBLE_UNDERLINE) != 0 then {
+      let uy = top + r.baseline + r.line_w
+      ink.rect(r, left, uy, left + w, uy + r.line_w, fg, alpha, sx, sy)
+      n = n + 1
+    }
+    if int.band(attrs, cell.ATTR_STRIKE) != 0 then {
+      let y0 = top + r.baseline - r.size_px * 3 / 10
+      ink.rect(r, left, y0, left + w, y0 + r.line_w, fg, alpha, sx, sy)
+      n = n + 1
+    }
+  }
+  n
+}
+
+/// The combining marks on cell `x` worth drawing (joiners and variation
+/// selectors only steer how the base is shown).
+fn marks(row: record.Row, x: Int) -> List[Int] =
+  if int.band(bytes.read_u8(row.cells, x * cell.SIZE + cell.OFF_FLAGS), cell.FLAG_GRAPHEME) == 0 then []
+  else text.code_points(map.get_or(row.extras, x, ""))
+    |> list.filter((cp) => cp != 0x200D and (cp < 0xFE00 or cp > 0xFE0F))
+
+/// A row's find matches: their columns, and the current one's (`from` -1
+/// when it isn't on the row).
+type Lit = { spans: List[(Int, Int)], from: Int, to: Int }
+
+/// Foreground and background of cell `x` as 0xRRGGBB: inverse and hidden
+/// applied, and a find match's or the selection's colour over it.
+fn colors(r: surface.Renderer, row: record.Row, line: Int, x: Int, sel: Option[view.Selection], lit: Lit) -> (Int, Int) = {
+  let o = x * cell.SIZE
+  let fg = surface.resolve(r, bytes.read_u32_le(row.cells, o + cell.OFF_FG), r.theme.fg)
+  let bg = surface.resolve(r, bytes.read_u32_le(row.cells, o + cell.OFF_BG), r.theme.bg)
+  let attrs = bytes.read_u16_le(row.cells, o + cell.OFF_ATTRS)
+  let (f, b) = if int.band(attrs, cell.ATTR_INVERSE) != 0 then (bg, fg) else (fg, bg)
+  let (f2, b2) = if int.band(attrs, cell.ATTR_HIDDEN) != 0 then (b, b) else (f, b)
+  if x >= lit.from and x < lit.to then (r.theme.match_fg, r.theme.match_current)
+  else if list.any(lit.spans, (s) => x >= s.0 and x < s.1) then (f2, r.theme.match_bg)
+  else match sel {
+    some(s) => if view.selected(s, line, x) then (f2, r.theme.selection) else (f2, b2),
+    none => (f2, b2),
+  }
+}

@@ -1,0 +1,193 @@
+// The renderer: its GPU objects, theme and metrics, and where things go in
+// the window.
+
+import snaidhm.sfnt as sfnt
+import snaidhm.text as text
+import self.gui.fonts
+import self.gui.emoji
+import self.gui.sprite
+import self.theme
+
+/// Floats per vertex of the text pipeline: position 2, uv 2, colour 4.
+let VERTEX_FLOATS = 8
+
+type Renderer = {
+  device: Int,
+  // The layer's fonts: the grid face first, then the bold and the fallbacks
+  // in the order they were first needed.
+  layer: text.TextLayer,
+  // Where the bold is in the layer's fonts: -1 not read yet, -2 none.
+  bold_index: Int,
+  bold_path: String,
+  fallback_paths: List[String],
+  // Where each fallback read so far is in the layer's fonts, and how many of
+  // `fallback_paths` have been tried.
+  fallback_indices: List[Int],
+  fallbacks_tried: Int,
+  size_px: Int,
+  cell_w: Int,
+  cell_h: Int,
+  baseline: Int,
+  pad_x: Int,
+  pad_y: Int,
+  line_w: Int,
+  // The colours: the theme's, and its 256-colour palette.
+  theme: theme.Theme,
+  // The cursor's shape when the program sets none (DECSCUSR numbers; 0 a
+  // steady bar), whether the window has the focus, and whether a blinking
+  // cursor is in its off phase.
+  cursor_default: Int,
+  focused: Bool,
+  blink_off: Bool,
+  // The visual bell: the screen lit for a moment.
+  flash: Bool,
+  palette: List[Int],
+  // (code point * 2 + bold) -> glyph cache slot, -1 for no glyph.
+  glyphs: Map[Int, Int],
+  // Colour emoji: code point -> colour atlas slot, -1 when it has none.
+  emojis: Map[Int, Int],
+  // Box drawing and block elements, as rectangles for this cell size.
+  sprites: Map[Int, List[sprite.Piece]],
+  vtx: Int,
+  capacity: Int,
+  count: Int,
+  // Pushing a frame's quads: a glyph or emoji not in the atlas yet can't be
+  // made now — uploading it goes through the same staging buffer and would
+  // wipe the quads pushed so far — so it is left out, and `missed` asks for
+  // another frame, which makes it first.
+  pushing: Bool,
+  missed: Bool,
+  // What was left out, made first thing next frame: (code point, bold), and
+  // emoji.
+  wanted: List[(Int, Bool)],
+  wanted_emoji: List[Int],
+}
+
+/// `r` in the colours of `t`.
+fn with_theme(r: Renderer, t: theme.Theme) -> Renderer = { ...r, theme: t, palette: palette256(t.ansi) }
+
+/// The 256-colour palette: the 16 of the theme, the 6x6x6 cube, 24 greys.
+fn palette256(ansi: List[Int]) -> List[Int] = {
+  var p = ansi
+  let steps = [0, 95, 135, 175, 215, 255]
+  for i in 0..<216 {
+    let r = steps[i / 36]
+    let g = steps[(i / 6) % 6]
+    let b = steps[i % 6]
+    list.push(p, r * 65536 + g * 256 + b)
+  }
+  for i in 0..<24 {
+    let v = 8 + i * 10
+    list.push(p, v * 65536 + v * 256 + v)
+  }
+  p
+}
+
+/// A renderer drawing `faces` at `size_px` pixels per em, the grid inset by
+/// `pad_x` x `pad_y` pixels.
+fn new(device: Int, faces: fonts.Faces, size_px: Int, pad_x: Int, pad_y: Int, cell_height: Float) -> Renderer = {
+  let r = Renderer {
+    device: device,
+    layer: text.new_buffer_layer(device, [faces.regular]),
+    bold_index: if faces.bold_path == "" then -2 else -1,
+    bold_path: faces.bold_path,
+    fallback_paths: faces.fallback_paths,
+    fallback_indices: [],
+    fallbacks_tried: 0,
+    size_px: 0,
+    cell_w: 1,
+    cell_h: 1,
+    baseline: 0,
+    pad_x: 0,
+    pad_y: 0,
+    line_w: 1,
+    theme: theme.default(),
+    cursor_default: 0,
+    focused: true,
+    blink_off: false,
+    flash: false,
+    palette: palette256(theme.default().ansi),
+    glyphs: [:],
+    emojis: [:],
+    sprites: [:],
+    vtx: 0,
+    capacity: 0,
+    count: 0,
+    pushing: false,
+    missed: false,
+    wanted: [],
+    wanted_emoji: [],
+  }
+  with_size(r, size_px, pad_x, pad_y, cell_height)
+}
+
+/// `r` drawing at `size_px` pixels per em, inset by `pad_x` x `pad_y`: the
+/// cell measured anew, and what was cached for the old cell dropped. The
+/// layer, its fonts and its atlas stay — glyphs are cached by size, so going
+/// back to a size finds them still there.
+fn with_size(r: Renderer, size_px: Int, pad_x: Int, pad_y: Int, cell_height: Float) -> Renderer = {
+  let size = int.to_float(size_px)
+  let grid = r.layer.fonts[0]
+  let cell_w = int.max(1, float.to_int(float.round(text.advance_px(r.layer, 0, sfnt.glyph_id(grid, 0x4D), size))))
+  let ascent = text.ascent(r.layer, size)
+  let natural = ascent + text.descent(r.layer, size)
+  let cell_h = int.max(1, float.to_int(float.ceil(natural * cell_height)))
+  // Extra line height goes half above, half below.
+  let baseline = float.to_int(float.round(ascent + (int.to_float(cell_h) - natural) / 2.0))
+  let glyphs: Map[Int, Int] = [:]
+  let emojis: Map[Int, Int] = [:]
+  let sprites: Map[Int, List[sprite.Piece]] = [:]
+  {
+    ...r,
+    size_px: size_px,
+    cell_w: cell_w,
+    cell_h: cell_h,
+    baseline: baseline,
+    pad_x: pad_x,
+    pad_y: pad_y,
+    line_w: int.max(1, size_px / 14),
+    glyphs: glyphs,
+    emojis: emojis,
+    sprites: sprites,
+  }
+}
+
+/// Cell width and height in pixels for `faces` at `size_px`: what `new`
+/// works out, without a GPU, so a window can be sized to a grid before it
+/// opens.
+fn cell_size(faces: fonts.Faces, size_px: Int, cell_height: Float) -> (Int, Int) = {
+  let f = faces.regular
+  let size = int.to_float(size_px)
+  let upem = int.to_float(f.units_per_em)
+  let w = int.max(1, float.to_int(float.round(int.to_float(sfnt.advance(f, sfnt.glyph_id(f, 0x4D))) * size / upem)))
+  let natural = (int.to_float(f.ascent) - int.to_float(f.descent)) * size / upem
+  (w, int.max(1, float.to_int(float.ceil(natural * cell_height))))
+}
+
+/// Columns and rows that fit a `width` x `height` drawable with `tabs` tabs
+/// open (the tab bar shows from two on).
+fn grid_size(r: Renderer, width: Int, height: Int, tabs: Int) -> (Int, Int) =
+  (int.max(1, (width - 2 * r.pad_x) / r.cell_w), int.max(1, (height - grid_top(r, tabs) - r.pad_y) / r.cell_h))
+
+/// Height of the tab bar.
+fn bar_height(r: Renderer) -> Int = r.cell_h + r.pad_y
+
+/// Pixel row the grid starts at: below the tab bar when there is one.
+fn grid_top(r: Renderer, tabs: Int) -> Int = r.pad_y + (if tabs > 1 then bar_height(r) else 0)
+
+/// The tab under pixel `x` of the tab bar, for `tabs` tabs across `width`.
+fn tab_at(r: Renderer, x: Int, width: Int, tabs: Int) -> Int = int.clamp(x * tabs / int.max(1, width), 0, tabs - 1)
+
+/// 0xRRGGBB of a cell colour; `fallback` for the default colour.
+fn resolve(r: Renderer, color: Int, fallback: Int) -> Int = {
+  let kind = int.bshr(color, 24)
+  if kind == 1 then r.palette[int.band(color, 0xFF)]
+  else if kind == 2 then int.band(color, 0xFFFFFF)
+  else fallback
+}
+
+fn rgb_floats(rgb: Int) -> (Float, Float, Float) = (
+  int.to_float(int.band(int.bshr(rgb, 16), 0xFF)) / 255.0,
+  int.to_float(int.band(int.bshr(rgb, 8), 0xFF)) / 255.0,
+  int.to_float(int.band(rgb, 0xFF)) / 255.0,
+)

@@ -20,6 +20,8 @@ import snaidhm.text as text
 import snaidhm.web.gpu as gpu
 import self.gui.dialog
 import self.gui.fonts
+import self.gui.composition
+import self.gui.findbar
 import self.gui.render
 import self.keys
 import self.pty
@@ -1322,7 +1324,7 @@ fn app_mouse(t: terminal.Terminal, ui: Ui, r: render.Renderer, scale: Float, tab
 }
 
 /// The find bar as drawn.
-fn bar(ui: Ui) -> render.Bar = render.Bar { find: ui.find, field: ui.field, focused: ui.find_focus }
+fn bar(ui: Ui) -> render.Bar = findbar.Bar { find: ui.find, field: ui.field, focused: ui.find_focus }
 
 fn bar_of(ui: Ui) -> Option[render.Bar] = if ui.finding then some(bar(ui)) else none
 
@@ -1444,7 +1446,7 @@ fn follow(mut cur: Tab, f: search.Find) -> Unit = {
 
 /// The input method's composition, as drawn.
 fn compose_of(ui: Ui) -> render.Compose =
-  render.Compose { cps: ui.preedit, caret: ui.preedit_caret, from: ui.preedit_from, to: ui.preedit_to }
+  composition.Compose { cps: ui.preedit, caret: ui.preedit_caret, from: ui.preedit_from, to: ui.preedit_to }
 
 /// Whether the cursor of the tab in front blinks: a blinking DECSCUSR shape,
 /// the program's or the config's, shown.
