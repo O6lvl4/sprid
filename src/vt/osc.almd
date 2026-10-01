@@ -1,5 +1,5 @@
-// OSC strings: titles, the working directory, links, notifications, the
-// clipboard.
+// OSC strings: titles, the working directory, links, prompts,
+// notifications, the clipboard.
 
 import base64
 import bytes
@@ -16,13 +16,18 @@ fn osc_byte(mut t: core.Terminal, b: Int) -> Unit = {
 fn osc_dispatch(mut t: core.Terminal) -> Unit = {
   let s = bytes.to_string_lossy(t.osc)
   let (cmd, arg) = string.split_once(s, ";") ?? (s, "")
-  if cmd == "0" or cmd == "2" then { t.title = arg }
-  else if cmd == "7" then { t.cwd = file_url_path(arg) }
-  else if cmd == "8" then hyperlink(t, arg)
-  else if cmd == "9" then message_notice(t, arg)
-  else if cmd == "777" then rxvt_notice(t, arg)
-  else if cmd == "99" then kitty_notice(t, arg)
-  else if cmd == "52" then clipboard(t, arg)
+  match cmd {
+    "0" => { t.title = arg },
+    "2" => { t.title = arg },
+    "7" => { t.cwd = file_url_path(arg) },
+    "8" => hyperlink(t, arg),
+    "133" => prompt_mark(t, arg),
+    "9" => message_notice(t, arg),
+    "777" => rxvt_notice(t, arg),
+    "99" => kitty_notice(t, arg),
+    "52" => clipboard(t, arg),
+    _ => (),
+  }
   if bytes.len(t.osc) > core.OSC_KEEP then t.osc = bytes.new(0) else bytes.clear(t.osc)
 }
 
@@ -34,7 +39,17 @@ fn hyperlink(mut t: core.Terminal, arg: String) -> Unit = {
   let named = string.split(params, ":") |> list.filter_map((kv) => string.split_once(kv, "=")) |> list.filter((e) => e.0 == "id") |> list.last
   let name = named |> option.map((e) => e.1) ?? ""
   let link = if uri == "" then 0 else cell.link_bits(link_id(t, name, uri))
-  t.attrs = int.bor(int.band(t.attrs, cell.ATTR_MASK), link)
+  t.attrs = int.bor(int.band(t.attrs, int.bnot(cell.LINK_MASK)), link)
+}
+
+/// `133;A` starts a shell's prompt (as do `N` and `P`), `133;B` ends it —
+/// the command typed follows — `133;C` starts the command's output and
+/// `133;D;status` ends it. What is printed from a start to the next of the
+/// others is marked as prompt.
+fn prompt_mark(mut t: core.Terminal, arg: String) -> Unit = {
+  let kind = string.take(arg, 1)
+  if kind != "" and string.contains("ANP", kind) then t.attrs = int.bor(t.attrs, cell.PROMPT_BIT)
+  else if kind != "" and string.contains("BCD", kind) then t.attrs = int.band(t.attrs, int.bnot(cell.PROMPT_BIT))
 }
 
 /// The id of link (`name`, `uri`): the one it was given, or the next free

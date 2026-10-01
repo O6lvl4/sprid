@@ -8,23 +8,25 @@
 //   u16 columns used   u8 wrapped (the row continued onto the next)
 //   runs, each:  u32 fg  u32 bg  u16 attrs  u32 text length  UTF-8 text
 //
-// A run's link (OSC 8) rides in bits its header leaves free, as in a cell:
-// the low 6 in the attributes' top bits, the high 7 in the text length's
-// top byte (a run's text is far below 16 MB).
+// A run's link (OSC 8) and prompt mark (OSC 133) ride in bits its header
+// leaves free, as in a cell: the link's low 6 in the attributes' top bits;
+// the flags' top 7 — the link's high bits and the mark — in the text
+// length's top byte (a run's text is far below 16 MB).
 
 import bytes
 import self.cell
 import self.width
 
 /// The bits of a cell's second 8 bytes (`cell.OFF_BG` on) a run shares:
-/// background, attributes and link — all but width and the flags proper.
+/// background, attributes, link and prompt mark — all but width and the
+/// grapheme flag.
 /// (0xFE00FFFFFFFFFFFF as a signed 64-bit integer.)
 let STYLE_MASK = -143833713099145217
 
 /// A run's bytes before its text.
 let RUN_HEADER = 14
 
-/// The text length's bits of a run's last header word; the link's are above.
+/// The text length's bits of a run's last header word; the flags' are above.
 let LEN_MASK = 0xFFFFFF
 
 /// A blank cell's bytes from `cell.OFF_BG` up to its flags: default
@@ -97,7 +99,7 @@ fn write_run(mut out: Bytes, at: Int, grid: Bytes, off: Int, from: Int, used: In
     }
   }
   // The text length overwrites the 4 bytes past the style that the 8-byte
-  // write above spilled into, with the link's high bits from the flags.
+  // write above spilled into, with the flags' top 7 bits.
   bytes.set_u32_le(out, at + 10, int.bor(p - text_start, int.bshl(int.band(int.bshr(style, 57), 0x7F), 24)))
   (p, x)
 }
@@ -198,6 +200,18 @@ fn text(block: Bytes, start: Int, end: Int) -> String = {
   s
 }
 
+/// Whether the record whose payload is `start`..`end` of `block` holds part
+/// of a prompt (`cell.FLAG_PROMPT`, the top bit of a run's flags byte).
+fn has_prompt(block: Bytes, start: Int, end: Int) -> Bool = {
+  var p = start + 3
+  var found = false
+  while not found and p < end {
+    found = int.band(bytes.read_u8(block, p + 13), 0x40) != 0
+    p = p + RUN_HEADER + int.band(bytes.read_u32_le(block, p + 10), LEN_MASK)
+  }
+  found
+}
+
 /// Columns the line of the record at `start` uses.
 fn used(block: Bytes, start: Int) -> Int = bytes.read_u16_le(block, start)
 
@@ -222,7 +236,8 @@ fn decode(block: Bytes, start: Int, end: Int, cols: Int) -> Row = {
 /// Decode the run at `p` with `n` bytes of text into `row`, from (next
 /// column, last character's column) `at`; where it leaves them.
 fn decode_run(mut row: Row, block: Bytes, p: Int, n: Int, cols: Int, at: (Int, Int)) -> (Int, Int) = {
-  // The attributes with the link's low bits as in a cell, and its high bits.
+  // The attributes with the link's low bits as in a cell, and the flags' top
+  // 7 bits.
   let word = int.bor(bytes.read_u16_le(block, p + 8), int.bshl(bytes.read_u8(block, p + 13), 25))
   let style = (bytes.read_u32_le(block, p), bytes.read_u32_le(block, p + 4), word)
   // FIXME(almide#3149): `var (x, last) = at` once var destructures.

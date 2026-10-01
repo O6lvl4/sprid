@@ -10,6 +10,7 @@ import self.field
 import self.sys
 import self.terminal
 import self.view
+import self.prompts
 import self.gui.tabset
 import self.gui.uistate
 import self.gui.findkeys
@@ -155,12 +156,13 @@ fn scroll_target(cur: tabset.Tab, k: Key) -> Option[Int] =
   else none
 
 /// Cmd+Home / End to the top and the bottom, Cmd+PageUp / PageDown by
-/// pages, Cmd+Up / Down by lines.
+/// pages, Cmd+Up / Down from prompt to prompt where the shell marks them,
+/// else by lines.
 fn command_scroll(cur: tabset.Tab, code: Int) -> Option[Int] =
   if code == window.KEY_HOME then some(view.max_back(cur.t))
   else if code == window.KEY_END then some(0)
-  else if code == window.KEY_UP then some(cur.back + 1)
-  else if code == window.KEY_DOWN then some(cur.back - 1)
+  else if code == window.KEY_UP then some(prompts.up(cur.t, cur.back) ?? cur.back + 1)
+  else if code == window.KEY_DOWN then some(prompts.down(cur.t, cur.back) ?? cur.back - 1)
   else page_scroll(cur, code)
 
 /// PageUp / PageDown: by pages.

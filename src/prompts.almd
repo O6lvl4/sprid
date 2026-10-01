@@ -1,0 +1,48 @@
+// Prompts the shell marks (OSC 133): the lines they start on, and where
+// Cmd+Up and Cmd+Down take the view to show one at its top.
+
+import self.cell
+import self.record
+import self.scrollback
+import self.terminal
+import self.view
+
+/// The lines prompts start on (OSC 133), oldest first: a line with part of
+/// a prompt after one without.
+fn starts(t: terminal.Terminal) -> List[Int] = {
+  let kept = if t.alt then [] else scrollback.records(t.sb) |> list.map(((b, s, e)) => record.has_prompt(b, s, e))
+  let flags = kept + list.map(0..<t.rows, (y) => row_marked(t, y))
+  let base = view.screen_line(t) - list.len(kept)
+  list.range(0, list.len(flags))
+    |> list.filter((i) => flags[i] and (i == 0 or not flags[i - 1]))
+    |> list.map((i) => base + i)
+}
+
+fn row_marked(t: terminal.Terminal, y: Int) -> Bool = {
+  let off = terminal.row_off(t, y)
+  list.any(0..<t.cols, (x) => cell.is_prompt(t.grid, off + x * cell.SIZE))
+}
+
+/// Where the view goes, lines back, to show the prompt before the one at
+/// its top — the nearest that scrolls it up — or none when there is none.
+fn up(t: terminal.Terminal, back: Int) -> Option[Int] =
+  starts(t) |> list.map((s) => view.screen_line(t) - s) |> list.filter((b) => b > back) |> list.last
+
+/// Where the view goes to show the next prompt below its top — at most to
+/// the bottom — or none when that doesn't scroll it down.
+fn down(t: terminal.Terminal, back: Int) -> Option[Int] =
+  starts(t) |> list.map((s) => int.max(0, view.screen_line(t) - s)) |> list.filter((b) => b < back) |> list.first
+
+test "prompts the shell marks, through scrollback; Cmd+Up and Down go between them" {
+  var t = terminal.new(20, 4)
+  let prompt = "\x1b]133;A\x07$ \x1b[0m\x1b]133;B\x07"
+  terminal.feed_string(t, prompt + "ls\r\n\x1b]133;C\x07a\r\nb\r\n\x1b]133;D;0\x07" + prompt + "echo\r\nc\r\n\x1b]133;D;0\x07" + prompt)
+  // Lines 0 and 1 have scrolled off; prompts start on 0, 3 and 5.
+  assert_eq((view.screen_line(t), starts(t)), (2, [0, 3, 5]))
+  // The prompt marked, through the style reset; the command typed not.
+  assert_eq((terminal.cell_attrs(t, 0, 1), row_marked(t, 1), row_marked(t, 2)), (0, true, false))
+  assert_eq(up(t, 0), some(2))
+  assert_eq(up(t, 2), none)
+  assert_eq(down(t, 2), some(0))
+  assert_eq(down(t, 0), none)
+}
