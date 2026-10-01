@@ -16,16 +16,6 @@ import self.gui.uistate
 import self.gui.prefs
 import self.gui.session
 
-/// The login shell, from $SHELL — started from Finder there is none: from
-/// the password database then.
-effect fn login_command() -> String = {
-  let shell = match env.get("SHELL") {
-    some(s) => s,
-    none => if sys.login_shell() != "" then sys.login_shell() else "/bin/zsh",
-  }
-  "exec ${shell} -l"
-}
-
 /// The session as the window opens, its first tab on `first_fd`.
 effect fn start(capture: Option[String], faces: fonts.Faces, st: settings.Settings, login: String, first_fd: Int, expected: (Int, Int)) -> session.Session = {
   let scale = window.scale_factor()
@@ -42,7 +32,7 @@ effect fn start(capture: Option[String], faces: fonts.Faces, st: settings.Settin
   if (cols, rows) != expected then { let _ = pty.resize(first_fd, cols, rows) } else ()
   let home = env.get("HOME") ?? ""
   var a = session.Session {
-    capture: capture, login: login, home: home,
+    capture: capture, home: home,
     // Questions in Japanese on a Japanese system.
     ja: string.starts_with(env.get("LANG") ?? "", "ja"),
     scale: scale, device: device,

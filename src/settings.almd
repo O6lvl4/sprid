@@ -38,6 +38,8 @@ type Settings = {
   // What a selection made with the pointer is copied to: "true" the PRIMARY
   // selection (X11, Wayland), "clipboard" the clipboard, "false" nowhere.
   copy_on_select: String,
+  // Load sprid's shell integration into zsh, bash and fish.
+  shell_integration: Bool,
   // The file as parsed, for the colours it sets over the theme.
   file: config.Config,
   problems: List[String],
@@ -54,7 +56,7 @@ fn defaults() -> Settings = {
     font_family: "", font_size: DEFAULT_FONT_SIZE, cell_height: DEFAULT_CELL_HEIGHT, pad_x: 12.0, pad_y: 8.0,
     theme_light: DEFAULT_THEME, theme_dark: DEFAULT_THEME, scrollback: DEFAULT_SCROLLBACK,
     cursor_shape: 0, option_as_alt: 0, clipboard_write: true, clipboard_read: "ask",
-    bell_flash: true, bell_attention: true, bell_title: true, bell_system: false, paste_protection: true, copy_on_select: "true", file: config.empty(), problems: problems,
+    bell_flash: true, bell_attention: true, bell_title: true, bell_system: false, paste_protection: true, copy_on_select: "true", shell_integration: true, file: config.empty(), problems: problems,
   }
 }
 
@@ -83,6 +85,7 @@ fn from(c: config.Config) -> Settings = {
     bell_system: bell(bells, "system", d.bell_system),
     paste_protection: read(c, "clipboard-paste-protection", config.flag) ?? d.paste_protection,
     copy_on_select: read(c, "copy-on-select", (v) => one_of(v, ["true", "false", "clipboard"])) ?? d.copy_on_select,
+    shell_integration: read(c, "shell-integration", (v) => one_of(v, ["detect", "none"])) |> option.map((v) => v == "detect") ?? d.shell_integration,
     file: c,
     problems: problems_in(c, bells),
   }
@@ -106,6 +109,7 @@ fn checks() -> List[(String, (String) -> Bool)] = [
   ("clipboard-read", (v) => one_of(v, ["ask", "allow", "deny"]) != none),
   ("clipboard-paste-protection", (v) => config.flag(v) != none),
   ("copy-on-select", (v) => one_of(v, ["true", "false", "clipboard"]) != none),
+  ("shell-integration", (v) => one_of(v, ["detect", "none"]) != none),
 ]
 
 /// What is wrong with `c`: the parser's complaints, keys sprid doesn't
@@ -209,4 +213,9 @@ test "the theme for each appearance, with the file's colours over it" {
   assert_eq(theme_for(s, false, none_loaded).bg, 0x000000)
   let unknown = from(config.parse("theme = Nonesuch"))
   assert_eq(theme_for(unknown, true, none_loaded).name, "Tokyo Night Storm")
+}
+
+test "shell integration is on unless turned off" {
+  assert_eq((defaults().shell_integration, from(config.parse("shell-integration = none")).shell_integration), (true, false))
+  assert_eq(from(config.parse("shell-integration = zsh")).problems, ["shell-integration: can't use \"zsh\""])
 }

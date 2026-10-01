@@ -17,6 +17,7 @@ import snaidhm.web.gpu as gpu
 import self.gui.fonts
 import self.gui.render
 import self.pty
+import self.shell
 import self.search
 import self.field
 import self.settings
@@ -61,7 +62,7 @@ effect fn run_with(opts: Options, faces: fonts.Faces, st: settings.Settings) -> 
   let (win_w, win_h) = if opts.cols > 0 and opts.rows > 0 then
     ((opts.cols * cw) / 2 + pad_x / 2 + 1, (opts.rows * ch) / 2 + pad_y / 2 + 1)
   else (960, 620)
-  let login = setup.login_command()!
+  let login = shell.command(st.shell_integration)!
   let first = match opts.command {
     some(c) => c,
     none => if opts.capture != none then env.get("SPRID_CAPTURE_CMD") ?? login else login,
@@ -73,7 +74,7 @@ effect fn run_with(opts: Options, faces: fonts.Faces, st: settings.Settings) -> 
   // expected to hold; it is told the actual one if that differs.
   let expected = (int.max(1, (win_w * 2 - 2 * pad_x) / cw), int.max(1, (win_h * 2 - 2 * pad_y) / ch))
   let first_fd = pty.spawn(first, start_dir, expected.0, expected.1)
-  guard first_fd >= 0 else println("sprid: could not start ${login}")
+  guard first_fd >= 0 else println("sprid: could not start ${first}")
   guard window.open("sprid", win_w, win_h) else println("sprid: could not open a window")
   window.set_ime(true)
   // A key's echo shows as soon as it is drawn, not a display refresh or two

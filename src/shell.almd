@@ -1,0 +1,228 @@
+// Shell integration: the login shell started with a few lines of sprid's
+// loaded before the user's own startup files have run — for zsh, bash and
+// fish — so that it marks its prompts (OSC 133: Cmd+Up and Cmd+Down go from
+// one to the next) and reports its directory (OSC 7: a new tab opens there).
+//
+// The scripts are part of the binary and written to a cache directory when
+// they are missing or differ, so a build run from anywhere has them. Each
+// shell is pointed at them without touching a file of the user's: zsh
+// through ZDOTDIR, bash through --rcfile, fish through XDG_DATA_DIRS; each
+// script puts things back as they would have been first.
+
+import env
+import fs
+import self.sys
+
+/// The command that starts the user's login shell, with sprid's scripts
+/// unless `integrate` is off.
+effect fn command(integrate: Bool) -> String = login_command(login_shell()!, if integrate then install()! else "")
+
+/// The login shell, from $SHELL — started from Finder there is none: from
+/// the password database then.
+effect fn login_shell() -> String = match env.get("SHELL") {
+  some(s) => s,
+  none => if sys.login_shell() != "" then sys.login_shell() else "/bin/zsh",
+}
+
+/// The command that starts `shell` as a login shell, with sprid's scripts
+/// in `dir` loaded if it is one of the shells they are for.
+fn login_command(shell: String, dir: String) -> String = {
+  let name = string.split(shell, "/") |> list.last ?? shell
+  let q = quote(shell)
+  if dir == "" then "exec ${q} -l"
+  else if name == "zsh" then r"SPRID_ZDOTDIR=${ZDOTDIR-} ZDOTDIR=" + quote(dir + "/zsh") + " exec ${q} -l"
+  else if name == "bash" then "SPRID_BASH_INJECT=1 exec ${q} --rcfile ${quote(dir + "/bash/sprid.bash")}"
+  else if name == "fish" then
+    r"SPRID_XDG_DATA_DIRS=${XDG_DATA_DIRS-} XDG_DATA_DIRS=" + quote(dir) + r":${XDG_DATA_DIRS:-/usr/local/share:/usr/share}" + " exec ${q} -l"
+  else "exec ${q} -l"
+}
+
+/// `s` in single quotes for /bin/sh.
+fn quote(s: String) -> String = "'" + string.replace(s, "'", "'\\''") + "'"
+
+/// The scripts written under the cache directory; that directory, or ""
+/// when they can't be.
+effect fn install() -> String = {
+  let dir = cache_dir()! + "/shell-integration"
+  // FIXME(almide#3163): `list.all(SCRIPTS, (f) => write_if_changed(...)!)`
+  // once list.all takes a fallible callback.
+  var written = true
+  for f in SCRIPTS {
+    written = write_if_changed(dir + "/" + f.0, f.1)! and written
+  }
+  if written then dir else ""
+}
+
+effect fn cache_dir() -> String = {
+  let home = env.get("HOME") ?? ""
+  if sys.is_linux() then {
+    let xdg = env.get("XDG_CACHE_HOME") ?? ""
+    (if xdg != "" then xdg else home + "/.cache") + "/sprid"
+  } else home + "/Library/Caches/sprid"
+}
+
+/// `text` at `path` unless it is there already; whether it is.
+effect fn write_if_changed(path: String, text: String) -> Bool = {
+  let have = match fs.read_text_if_exists(path) {
+    ok(found) => found,
+    err(_) => none,
+  }
+  if have == some(text) then true
+  else {
+    let parts = string.split(path, "/")
+    let parent = list.take(parts, list.len(parts) - 1) |> list.join("/")
+    let made = match fs.mkdir_p(parent) {
+      ok(_) => true,
+      err(_) => false,
+    }
+    made and (match fs.write(path, text) {
+      ok(_) => true,
+      err(_) => false,
+    })
+  }
+}
+
+/// (path under the directory, text).
+// FIXME(almide#3164): drop the annotation once a let referring to later
+// lets is typed.
+let SCRIPTS: List[(String, String)] = [
+  ("zsh/.zshenv", ZSHENV),
+  ("zsh/sprid.zsh", ZSH),
+  ("bash/sprid.bash", BASH),
+  ("fish/vendor_conf.d/sprid.fish", FISH),
+]
+
+let ZSHENV = r"""
+# sprid's shell integration for zsh, found through ZDOTDIR: ZDOTDIR is put
+# back, the user's own .zshenv read, and in an interactive shell the prompt
+# marked. The user's .zprofile, .zshrc and the rest are read from there on.
+if [[ -n "${SPRID_ZDOTDIR-}" ]]; then
+  ZDOTDIR=$SPRID_ZDOTDIR
+else
+  unset ZDOTDIR
+fi
+unset SPRID_ZDOTDIR
+typeset -g _sprid_dir=${${(%):-%x}:A:h}
+[[ -f "${ZDOTDIR-$HOME}/.zshenv" ]] && builtin source "${ZDOTDIR-$HOME}/.zshenv"
+[[ -o interactive ]] && builtin source "$_sprid_dir/sprid.zsh"
+unset _sprid_dir
+"""
+
+let ZSH = r"""
+# sprid's shell integration for zsh: the prompt marked (OSC 133) and the
+# directory reported (OSC 7).
+[[ -n "${_sprid_hooked-}" ]] && return
+typeset -g _sprid_hooked=1 _sprid_ran=
+autoload -Uz add-zsh-hook
+
+_sprid_precmd() {
+  local ret=$?
+  if [[ -n "$_sprid_ran" ]]; then
+    builtin printf '\e]133;D;%s\a' "$ret"
+    _sprid_ran=
+  fi
+  local p=${PWD//\%/%25}
+  builtin printf '\e]7;file://%s%s\a' "$HOST" "${p// /%20}"
+  # Last among the hooks from the next prompt on, so a prompt another sets
+  # is marked too.
+  if [[ "${precmd_functions[-1]}" != _sprid_precmd ]]; then
+    precmd_functions=(${precmd_functions:#_sprid_precmd} _sprid_precmd)
+  fi
+  [[ "$PS1" == *$'\e]133;A'* ]] || PS1=$'%{\e]133;A\a%}'"$PS1"$'%{\e]133;B\a%}'
+}
+
+_sprid_preexec() {
+  _sprid_ran=1
+  builtin printf '\e]133;C\a'
+}
+
+add-zsh-hook precmd _sprid_precmd
+add-zsh-hook preexec _sprid_preexec
+"""
+
+let BASH = r"""
+# sprid's shell integration for bash, run as the --rcfile of an interactive
+# bash in place of ~/.bashrc: the files a login shell reads are read, then
+# the prompt marked (OSC 133) and the directory reported (OSC 7).
+if [[ -n "${SPRID_BASH_INJECT-}" ]]; then
+  builtin unset SPRID_BASH_INJECT
+  [[ -r /etc/profile ]] && builtin source /etc/profile
+  for _sprid_f in ~/.bash_profile ~/.bash_login ~/.profile; do
+    if [[ -r "$_sprid_f" ]]; then
+      builtin source "$_sprid_f"
+      break
+    fi
+  done
+  builtin unset _sprid_f
+fi
+
+if [[ $- == *i* && -z "${_sprid_hooked-}" ]]; then
+  _sprid_hooked=1
+  _sprid_status() {
+    _sprid_ret=$?
+    return $_sprid_ret
+  }
+  _sprid_prompt() {
+    if [[ -n "${_sprid_ran-}" ]]; then
+      builtin printf '\e]133;D;%s\a' "$_sprid_ret"
+    fi
+    _sprid_ran=1
+    local p=${PWD//\%/%25}
+    builtin printf '\e]7;file://%s%s\a' "$HOSTNAME" "${p// /%20}"
+    [[ "$PS1" == *'133;A'* ]] || PS1='\[\e]133;A\a\]'"$PS1"'\[\e]133;B\a\]'
+    if (( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4) )); then
+      [[ "${PS0-}" == *'133;C'* ]] || PS0="${PS0-}"$'\e]133;C\a'
+    fi
+  }
+  PROMPT_COMMAND="_sprid_status;${PROMPT_COMMAND:+$PROMPT_COMMAND;}_sprid_prompt"
+fi
+"""
+
+let FISH = r"""
+# sprid's shell integration for fish, found through XDG_DATA_DIRS, which is
+# put back: the prompt marked (OSC 133) and the directory reported (OSC 7).
+if set -q SPRID_XDG_DATA_DIRS
+    if test -n "$SPRID_XDG_DATA_DIRS"
+        set -gx XDG_DATA_DIRS $SPRID_XDG_DATA_DIRS
+    else
+        set -e XDG_DATA_DIRS
+    end
+    set -e SPRID_XDG_DATA_DIRS
+end
+status is-interactive; or exit
+
+function __sprid_cwd --on-variable PWD
+    printf '\e]7;file://%s%s\a' $hostname (string replace -a ' ' '%20' -- (string replace -a '%' '%25' -- $PWD))
+end
+__sprid_cwd
+
+function __sprid_preexec --on-event fish_preexec
+    printf '\e]133;C\a'
+end
+
+function __sprid_postexec --on-event fish_postexec
+    printf '\e]133;D;%s\a' $status
+end
+
+# The prompt wrapped once it is about to be shown, after config.fish has
+# defined it.
+function __sprid_wrap --on-event fish_prompt
+    functions -e __sprid_wrap
+    functions -q fish_prompt; or return
+    functions -c fish_prompt __sprid_prompt
+    function fish_prompt
+        printf '\e]133;A\a'
+        __sprid_prompt
+        printf '\e]133;B\a'
+    end
+end
+"""
+
+test "a shell is pointed at its script, others started as they are" {
+  assert_eq(login_command("/bin/zsh", "/c/s"), r"SPRID_ZDOTDIR=${ZDOTDIR-} ZDOTDIR='/c/s/zsh' exec '/bin/zsh' -l")
+  assert_eq(login_command("/usr/bin/fish", "/c/s"), r"SPRID_XDG_DATA_DIRS=${XDG_DATA_DIRS-} XDG_DATA_DIRS='/c/s':${XDG_DATA_DIRS:-/usr/local/share:/usr/share} exec '/usr/bin/fish' -l")
+  assert_eq(login_command("/opt/homebrew/bin/bash", "/c/s"), "SPRID_BASH_INJECT=1 exec '/opt/homebrew/bin/bash' --rcfile '/c/s/bash/sprid.bash'")
+  assert_eq(login_command("/bin/tcsh", "/c/s"), "exec '/bin/tcsh' -l")
+  assert_eq(login_command("/bin/zsh", ""), "exec '/bin/zsh' -l")
+  assert_eq(quote("it's"), "'it'\\''s'")
+}

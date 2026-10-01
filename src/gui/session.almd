@@ -45,7 +45,6 @@ type Session = {
   // command new tabs run, $HOME, whether to ask in Japanese, the display's
   // scale, the GPU device, the config file's watch.
   capture: Option[String],
-  login: String,
   home: String,
   ja: Bool,
   scale: Float,

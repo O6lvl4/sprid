@@ -9,6 +9,7 @@ import self.gui.prefs
 import self.gui.session
 import self.keys
 import self.pty
+import self.shell
 import self.sys
 import self.gui.dialog
 import self.gui.shortcuts
@@ -60,7 +61,7 @@ fn go_to(mut a: session.Session, i: Int) -> Unit = {
 /// A tab in the directory of the one in front, brought to the front.
 effect fn new_tab(mut a: session.Session) -> Unit = {
   let cwd = tabset.cwd_of(a.tabs, a.active, env.get("HOME") ?? "")
-  match tabset.open_tab(a.r, a.width, a.height, list.len(a.tabs) + 1, a.login, cwd, a.st.scrollback) {
+  match tabset.open_tab(a.r, a.width, a.height, list.len(a.tabs) + 1, shell.command(a.st.shell_integration)!, cwd, a.st.scrollback) {
     some(tb) => {
       list.push(a.tabs, tb)
       a.active = list.len(a.tabs) - 1
