@@ -73,30 +73,28 @@ effect fn font_dirs() -> List[String] = [
 /// regular as `path#face`, and the bold's, "" when it has none.
 effect fn by_family(family: String) -> Option[(String, String)] = {
   var found: List[(String, fontname.Face)] = []
-  for dir in font_dirs()! {
-    if fs.is_dir(dir) then {
-      let files = match fs.walk(dir) {
-        ok(fs_) => fs_,
-        err(_) => [],
-      }
-      for f in files {
-        let lower = string.to_lower(f)
-        if string.ends_with(lower, ".ttf") or string.ends_with(lower, ".otf") or string.ends_with(lower, ".ttc") then {
-          let data = sys.read_file(f)
-          for face in fontname.faces(data) {
-            list.push(found, (f, face))
-          }
-        }
-      }
+  for f in font_files()! {
+    for face in fontname.faces(sys.read_file(f)) {
+      list.push(found, (f, face))
     }
   }
-  match fontname.choose(found, family) {
-    some(((path, face), bold)) => some(("${path}#${int.to_string(face)}", match bold {
-      some((bp, bf)) => "${bp}#${int.to_string(bf)}",
-      none => "",
-    })),
-    none => none,
-  }
+  fontname.choose(found, family) |> option.map(((regular, bold)) =>
+    (face_path(regular), bold |> option.map((b) => face_path(b)) ?? ""))
+}
+
+/// `path#face`, as `load` takes it.
+fn face_path(at: (String, Int)) -> String = "${at.0}#${int.to_string(at.1)}"
+
+/// Every TrueType and OpenType file in the font directories.
+effect fn font_files() -> List[String] =
+  font_dirs()!
+    |> list.filter((dir) => fs.is_dir(dir))
+    |> list.flat_map((dir) => fs.walk(dir) ?? [])
+    |> list.filter((f) => is_font_file(f))
+
+fn is_font_file(path: String) -> Bool = {
+  let lower = string.to_lower(path)
+  list.any([".ttf", ".otf", ".ttc"], (ext) => string.ends_with(lower, ext))
 }
 
 /// The first monospace face this system has, with the path of its bold.
@@ -113,30 +111,25 @@ effect fn mono(i: Int) -> Option[(sfnt.Font, String)] =
 /// The faces to draw with: `family` when it is set and found (else a word
 /// on stderr), `SPRID_FONT` when set, else the first monospace face here.
 effect fn find(family: String) -> Option[Faces] = {
-  let named = if family == "" then none else match by_family(family)! {
-    some((regular, bold)) => match load(regular) {
-      some(f) => some((f, bold)),
-      none => none,
+  let grid = match named(family)! {
+    some(n) => some(n),
+    none => match env.get("SPRID_FONT") |> option.flat_map((p) => load(p)) {
+      some(f) => some((f, "")),
+      none => mono(0)!,
     },
+  }
+  let fallbacks = list.filter(FALLBACK, (path) => fs.exists(path))
+  grid |> option.map(((f, bold)) => Faces { regular: f, bold_path: bold, fallback_paths: fallbacks })
+}
+
+/// The faces of `family` as `find` takes them, none (with a word on stderr
+/// when it was asked for) when it isn't found.
+effect fn named(family: String) -> Option[(sfnt.Font, String)] =
+  if family == "" then none
+  else match by_family(family)! {
+    some((regular, bold)) => load(regular) |> option.map((f) => (f, bold)),
     none => {
       eprintln("sprid: no font family \"${family}\" found; using the default")
       none
     },
   }
-  let custom = match named {
-    some(n) => some(n),
-    none => match env.get("SPRID_FONT") {
-      some(p) => match load(p) { some(f) => some((f, "")), none => none },
-      none => none,
-    },
-  }
-  let grid = match custom { some(c) => some(c), none => mono(0)! }
-  var fallbacks: List[String] = []
-  for path in FALLBACK {
-    if fs.exists(path) then list.push(fallbacks, path)
-  }
-  match grid {
-    some((f, bold)) => some(Faces { regular: f, bold_path: bold, fallback_paths: fallbacks }),
-    none => none,
-  }
-}

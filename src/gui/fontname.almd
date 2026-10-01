@@ -10,23 +10,19 @@ import snaidhm.sfnt as sfnt
 type Face = { index: Int, family: String, style: String }
 
 /// Every face in `data` with its names; none for data that isn't a font.
-fn faces(data: Bytes) -> List[Face] = {
-  var out: List[Face] = []
-  if bytes.len(data) >= 12 then {
+fn faces(data: Bytes) -> List[Face] =
+  if bytes.len(data) < 12 then []
+  else {
     let collection = bytes.read_u32_be(data, 0) == sfnt.tag("ttcf")
-    let n = sfnt.face_count(data)
-    for i in 0..<int.min(n, 64) {
-      let dir = if collection then bytes.read_u32_be(data, 12 + i * 4) else 0
-      if dir >= 0 and dir + 12 <= bytes.len(data) then {
-        let at = sfnt.table(data, dir, sfnt.tag("name"))
-        if at > 0 then {
-          let family = pick(data, at, 16, 1)
-          if family != "" then list.push(out, Face { index: i, family: family, style: pick(data, at, 17, 2) })
-        }
-      }
-    }
+    list.range(0, int.min(sfnt.face_count(data), 64)) |> list.filter_map((i) => face_at(data, i, collection))
   }
-  out
+
+/// Face `i` of `data`, when it has a family name.
+fn face_at(data: Bytes, i: Int, collection: Bool) -> Option[Face] = {
+  let dir = if collection then bytes.read_u32_be(data, 12 + i * 4) else 0
+  let at = if dir >= 0 and dir + 12 <= bytes.len(data) then sfnt.table(data, dir, sfnt.tag("name")) else 0
+  let family = if at > 0 then pick(data, at, 16, 1) else ""
+  if family == "" then none else some(Face { index: i, family: family, style: pick(data, at, 17, 2) })
 }
 
 /// Name `id` of the name table at `at`, else name `fallback`: in English
@@ -36,39 +32,39 @@ fn pick(data: Bytes, at: Int, id: Int, fallback: Int) -> String = {
   if first != "" then first else lookup(data, at, fallback)
 }
 
-fn lookup(data: Bytes, at: Int, id: Int) -> String = {
-  let size = bytes.len(data)
-  if at + 6 > size then ""
+/// The best of the name table's records for name `id`, "" when it has none.
+fn lookup(data: Bytes, at: Int, id: Int) -> String =
+  if at + 6 > bytes.len(data) then ""
   else {
     let count = bytes.read_u16_be(data, at + 2)
     let strings = at + bytes.read_u16_be(data, at + 4)
-    var best = ""
-    var best_rank = 0
-    for i in 0..<count {
-      let rec = at + 6 + i * 12
-      if rec + 12 <= size and bytes.read_u16_be(data, rec + 6) == id then {
-        let platform = bytes.read_u16_be(data, rec)
-        let language = bytes.read_u16_be(data, rec + 4)
-        let len = bytes.read_u16_be(data, rec + 8)
-        let off = strings + bytes.read_u16_be(data, rec + 10)
-        // English (US) on Windows first, then any Windows / Unicode name,
-        // then a Mac Roman one.
-        let rank = if platform == 3 and language == 0x409 then 4
-          else if platform == 3 or platform == 0 then 3
-          else if platform == 1 and language == 0 then 2
-          else 0
-        if rank > best_rank and off + len <= size then {
-          let s = if platform == 1 then latin(data, off, len) else utf16(data, off, len)
-          if s != "" then {
-            best = s
-            best_rank = rank
-          }
-        }
-      }
-    }
-    best
+    list.range(0, count)
+      |> list.filter_map((i) => record(data, at + 6 + i * 12, strings, id))
+      |> list.fold((0, ""), (best, r) => if r.0 > best.0 then r else best)
+      |> (best) => best.1
   }
-}
+
+/// The name record at `rec` when it is name `id` and readable: (how good a
+/// record it is, its text).
+fn record(data: Bytes, rec: Int, strings: Int, id: Int) -> Option[(Int, String)] =
+  if rec + 12 > bytes.len(data) or bytes.read_u16_be(data, rec + 6) != id then none
+  else {
+    let platform = bytes.read_u16_be(data, rec)
+    let rank = rank_of(platform, bytes.read_u16_be(data, rec + 4))
+    let len = bytes.read_u16_be(data, rec + 8)
+    let off = strings + bytes.read_u16_be(data, rec + 10)
+    let text = if rank == 0 or off + len > bytes.len(data) then ""
+      else if platform == 1 then latin(data, off, len) else utf16(data, off, len)
+    if text == "" then none else some((rank, text))
+  }
+
+/// English (US) on Windows first, then any Windows / Unicode name, then a
+/// Mac Roman one in English; 0 for the rest.
+fn rank_of(platform: Int, language: Int) -> Int =
+  if platform == 3 and language == 0x409 then 4
+  else if platform == 3 or platform == 0 then 3
+  else if platform == 1 and language == 0 then 2
+  else 0
 
 fn utf16(data: Bytes, off: Int, len: Int) -> String = {
   var s = ""

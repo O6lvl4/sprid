@@ -62,29 +62,25 @@ fn quadrants(q: Int, w: Int, h: Int) -> List[Piece] = {
 
 fn shade(w: Int, h: Int, a: Float) -> List[Piece] = [Piece { x0: 0, y0: 0, x1: w, y1: h, alpha: a }]
 
-fn block(cp: Int, w: Int, h: Int) -> List[Piece] = match cp {
-  0x2580 => [piece(0, 0, w, h / 2)],
-  0x2588 => [piece(0, 0, w, h)],
-  0x2590 => [piece(w / 2, 0, w, h)],
-  0x2591 => shade(w, h, 0.25),
-  0x2592 => shade(w, h, 0.5),
-  0x2593 => shade(w, h, 0.75),
-  0x2594 => [piece(0, 0, w, eighths(h, 1))],
-  0x2595 => [piece(w - eighths(w, 1), 0, w, h)],
-  0x2596 => quadrants(4, w, h),
-  0x2597 => quadrants(8, w, h),
-  0x2598 => quadrants(1, w, h),
-  0x2599 => quadrants(1 + 4 + 8, w, h),
-  0x259A => quadrants(1 + 8, w, h),
-  0x259B => quadrants(1 + 2 + 4, w, h),
-  0x259C => quadrants(1 + 2 + 8, w, h),
-  0x259D => quadrants(2, w, h),
-  0x259E => quadrants(2 + 4, w, h),
-  0x259F => quadrants(2 + 4 + 8, w, h),
-  // U+2581..U+2587: lower k eighths; U+2589..U+258F: left 7..1 eighths.
-  _ => if cp < 0x2588 then [piece(0, h - eighths(h, cp - 0x2580), w, h)]
-       else [piece(0, 0, eighths(w, 8 - (cp - 0x2588)), h)],
-}
+/// Which quadrants U+2596..U+259F fill (1 upper left, 2 upper right, 4
+/// lower left, 8 lower right).
+let QUADRANTS = [4, 8, 1, 1 + 4 + 8, 1 + 8, 1 + 2 + 4, 1 + 2 + 8, 2, 2 + 4, 2 + 4 + 8]
+
+fn block(cp: Int, w: Int, h: Int) -> List[Piece] =
+  if cp >= 0x2596 then quadrants(QUADRANTS[cp - 0x2596], w, h)
+  // ░ ▒ ▓
+  else if cp >= 0x2591 and cp <= 0x2593 then shade(w, h, int.to_float(cp - 0x2590) * 0.25)
+  else [edge_block(cp, w, h)]
+
+/// ▀ ▐ ▔ ▕, U+2581..U+2587 (lower k eighths) and U+2588..U+258F (full,
+/// then left 7..1 eighths).
+fn edge_block(cp: Int, w: Int, h: Int) -> Piece =
+  if cp == 0x2580 then piece(0, 0, w, h / 2)
+  else if cp == 0x2590 then piece(w / 2, 0, w, h)
+  else if cp == 0x2594 then piece(0, 0, w, eighths(h, 1))
+  else if cp == 0x2595 then piece(w - eighths(w, 1), 0, w, h)
+  else if cp < 0x2588 then piece(0, h - eighths(h, cp - 0x2580), w, h)
+  else piece(0, 0, eighths(w, 8 - (cp - 0x2588)), h)
 
 // ── Box drawing ───────────────────────────────────────────────────────────
 
@@ -106,31 +102,16 @@ fn box(u: Int, r: Int, d: Int, l: Int, w: Int, h: Int, lw: Int) -> List[Piece] =
   // so corners and junctions are filled.
   let vt = int.max(thickness(u, lw), thickness(d, lw))
   let ht = int.max(thickness(l, lw), thickness(r, lw))
-  let vx0 = cx - vt / 2
-  let hy0 = cy - ht / 2
-  var ps: List[Piece] = []
-  if u > 0 then {
-    for s in strokes(u, cx - thickness(u, lw) / 2, lw) {
-      list.push(ps, piece(s.0, 0, s.1, if ht > 0 then hy0 + ht else cy))
-    }
-  }
-  if d > 0 then {
-    for s in strokes(d, cx - thickness(d, lw) / 2, lw) {
-      list.push(ps, piece(s.0, if ht > 0 then hy0 else cy, s.1, h))
-    }
-  }
-  if l > 0 then {
-    for s in strokes(l, cy - thickness(l, lw) / 2, lw) {
-      list.push(ps, piece(0, s.0, if vt > 0 then vx0 + vt else cx, s.1))
-    }
-  }
-  if r > 0 then {
-    for s in strokes(r, cy - thickness(r, lw) / 2, lw) {
-      list.push(ps, piece(if vt > 0 then vx0 else cx, s.0, w, s.1))
-    }
-  }
-  ps
+  let (up_end, down_start) = if ht > 0 then (cy - ht / 2 + ht, cy - ht / 2) else (cy, cy)
+  let (left_end, right_start) = if vt > 0 then (cx - vt / 2 + vt, cx - vt / 2) else (cx, cx)
+  let vertical = (k: Int, y0: Int, y1: Int) => arm(k, cx, lw) |> list.map((s) => piece(s.0, y0, s.1, y1))
+  let horizontal = (k: Int, x0: Int, x1: Int) => arm(k, cy, lw) |> list.map((s) => piece(x0, s.0, x1, s.1))
+  vertical(u, 0, up_end) + vertical(d, down_start, h) + horizontal(l, 0, left_end) + horizontal(r, right_start, w)
 }
+
+/// The strokes of an arm of weight `k` centred on `mid`; none for no arm.
+fn arm(k: Int, mid: Int, lw: Int) -> List[(Int, Int)] =
+  if k == 0 then [] else strokes(k, mid - thickness(k, lw) / 2, lw)
 
 /// ╭ ╮ ╯ ╰: a quarter circle joining a vertical and a horizontal light arm,
 /// drawn as squares along the arc.
