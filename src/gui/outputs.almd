@@ -1,0 +1,102 @@
+// What the tabs' programs wrote: read, and what it asks of the window —
+// replies, the clipboard, bells, notifications — done.
+
+import snaidhm.native.window as window
+import self.gui.dialog
+import self.gui.tabset
+import self.gui.session
+import self.gui.uistate
+import self.pty
+import self.sys
+import self.terminal
+
+/// Every tab's output, the active tab's with the longer budget.
+effect fn read_all(mut a: session.Session) -> Unit = {
+  a.streaming = false
+  for i in 0..<list.len(a.tabs) {
+    match tabset.take(a.tabs, i) {
+      some(tb) => {
+        var cur = tb
+        read_tab(a, cur, i)!
+        list.push(a.tabs, cur)
+        a.tabs = list.swap(a.tabs, i, list.len(a.tabs) - 1)
+      },
+      none => (),
+    }
+  }
+}
+
+effect fn read_tab(mut a: session.Session, mut cur: tabset.Tab, i: Int) -> Unit = {
+  let title_before = (cur.t.title, cur.t.cwd)
+  let bells_before = cur.t.bells
+  let (got, more) = tabset.drain(cur, if i == a.active then session.STREAM_DRAIN_MS else session.DRAIN_MS)
+  if got then asks(a, cur, i, cur.t.bells != bells_before)!
+  // A tab in the back retitled itself: the tab bar shows it.
+  if got and i != a.active and (cur.t.title, cur.t.cwd) != title_before then uistate.touch(a.ui)
+  if got and a.stats.trace then eprintln("out ${int.to_string(sys.now_ms())} tab ${int.to_string(i)} cursor ${int.to_string(cur.t.x)},${int.to_string(cur.t.y)}")
+  if i == a.active then {
+    if got then uistate.touch(a.ui)
+    if more then a.streaming = true
+  }
+  let replies = terminal.take_replies(cur.t)
+  if replies != "" then {
+    let _ = pty.write(cur.fd, replies)
+  }
+}
+
+/// What the program in tab `i` asked of the window: the clipboard set or
+/// read, a bell (`bell`), notifications.
+effect fn asks(mut a: session.Session, mut cur: tabset.Tab, i: Int, bell: Bool) -> Unit = {
+  match terminal.take_clipboard(cur.t) {
+    some(text) => if a.st.clipboard_write then { let _ = sys.clipboard_set(text) },
+    none => (),
+  }
+  let asked = terminal.take_clipboard_ask(cur.t)
+  if asked != "" and may_read_clipboard(a, cur)! then {
+    let _ = pty.write(cur.fd, terminal.clipboard_reply(asked, tabset.clipboard()!))
+  }
+  let notices = terminal.take_notices(cur.t)
+  let looked_at = i == a.active and a.r.focused
+  // A bell: the screen lit where it is being looked at, a sound if asked
+  // for.
+  if bell and looked_at and a.st.bell_flash then {
+    session.set_flash(a.r, true)
+    a.flash_until = sys.now_ms() + session.FLASH_MS
+    uistate.touch(a.ui)
+  }
+  if bell and a.st.bell_system then dialog.beep()
+  // Marked where it isn't being looked at; the Dock asked to show it when
+  // the window is in the background, and notifications shown there.
+  let noticed = list.len(notices) > 0
+  if (bell and a.st.bell_title or noticed) and not looked_at and not cur.alert then {
+    cur.alert = true
+    uistate.touch(a.ui)
+  }
+  if not a.r.focused and (bell and a.st.bell_attention or noticed) then window.request_attention()
+  if not a.r.focused then for (title, body) in notices {
+    dialog.notify(if title != "" then title else tabset.title_of(cur, a.home), body)
+  }
+}
+
+/// Whether a program may read the clipboard: as the config says, asking
+/// the user by default — and refused on Linux while there is no dialog to
+/// ask with.
+effect fn may_read_clipboard(a: session.Session, cur: tabset.Tab) -> Bool =
+  if a.st.clipboard_read == "allow" then true
+  else if a.st.clipboard_read == "ask" and not sys.is_linux() then tabset.clipboard_read_ok(tabset.title_of(cur, a.home), a.ja)!
+  else false
+
+/// Tabs whose program has exited close; the window closes with the last.
+fn close_exited(mut a: session.Session) -> Unit = {
+  var i = 0
+  while i < list.len(a.tabs) {
+    if pty.eof(tabset.fd_of(a.tabs, i)) and a.capture == none then {
+      tabset.close_tab(a.tabs, i)
+      if a.active >= i and a.active > 0 then a.active = a.active - 1
+      tabset.relayout(a.tabs, a.r, a.width, a.height)
+      uistate.touch(a.ui)
+    } else i = i + 1
+  }
+  pty.reap()
+  if list.len(a.tabs) == 0 then a.alive = false
+}

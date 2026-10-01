@@ -1,0 +1,150 @@
+// Frames: the tab in front drawn when it changed — held while its program
+// is part way through drawing a screen — and the input method told where
+// typing goes; and a capture, one frame saved as a PNG.
+
+import env
+import snaidhm.native.window as window
+import snaidhm.native.frame as frame
+import snaidhm.text as text
+import self.gui.render
+import self.gui.tabset
+import self.gui.uistate
+import self.gui.findkeys
+import self.gui.session
+import self.field
+import self.pty
+import self.sys
+import self.view
+
+/// Draw the tab in front if it changed and a frame is due.
+fn draw_due(mut a: session.Session) -> Unit = {
+  let clock = sys.now_ms()
+  if a.alive and a.ui.dirty and clock - a.last_frame >= session.frame_ms(a) then {
+    retitle(a)
+    // With every tab still in the list: taken out, the tab in front would
+    // be missing from the tab bar.
+    let titles = tabset.tab_titles(a.tabs, a.active, a.ui, a.home)
+    match tabset.take(a.tabs, a.active) {
+      some(tb) => {
+        var cur = tb
+        // The program is mid-update (mode 2026, or its cursor hidden while
+        // it draws): show the screen when it is done, or after a limit if
+        // it never says so.
+        tabset.note_updates(cur, clock)
+        let left = tabset.hold_left(cur, clock)
+        if a.stats.trace and left > 0 then eprintln("held ${int.to_string(clock)} for ${int.to_string(left)} ms")
+        if left <= 0 then draw(a, cur, titles, clock)
+        list.push(a.tabs, cur)
+        a.tabs = list.swap(a.tabs, a.active, list.len(a.tabs) - 1)
+      },
+      none => (),
+    }
+  }
+}
+
+/// The window's title: the tab in front's.
+fn retitle(mut a: session.Session) -> Unit = {
+  let shown = match list.get(a.tabs, a.active) {
+    some(tb) => tabset.title_of(tb, a.home),
+    none => "",
+  }
+  if shown != a.window_title then {
+    window.set_title(if shown == "" then "sprid" else shown)
+    a.window_title = shown
+  }
+}
+
+fn draw(mut a: session.Session, cur: tabset.Tab, titles: List[String], clock: Int) -> Unit = {
+  let t0 = sys.now_ms()
+  render.draw(a.r, cur.t, cur.back, cur.shift, cur.sel, uistate.compose_of(a.ui), a.width, a.height, titles, a.active,
+    uistate.bar_of(a.ui))
+  if a.stats.trace then eprintln("frame ${int.to_string(sys.now_ms())} cursor ${int.to_string(cur.t.x)},${int.to_string(cur.t.y)} shown ${if cur.t.cursor_visible then "yes" else "no"}"
+    + " preedit ${int.to_string(list.len(a.ui.preedit))} line ${view.text_of(cur.t, view.screen_line(cur.t) + cur.t.y)}")
+  session.count_frame(a.stats, sys.now_ms() - t0)
+  place_ime(a, cur, list.len(titles))
+  a.last_frame = clock
+  session.shown(a.stats, sys.now_ms())
+  // A glyph the frame couldn't make in time is made by the next.
+  uistate.set_dirty(a.ui, a.r.missed)
+}
+
+/// Tell the input method where it composes: the find bar while it has the
+/// focus, else at the input method's caret in the composition, so its
+/// candidates follow the typing. Told only when it moves: each time it is
+/// told, it lays out its candidate window again, which shows as a flicker
+/// while typing.
+fn place_ime(mut a: session.Session, cur: tabset.Tab, tabs: Int) -> Unit = {
+  let r = a.r
+  let ui = a.ui
+  let (ix, iy) = if ui.finding and ui.find_focus then render.find_caret(r, uistate.bar(ui), ui.preedit, tabs, a.width)
+    else (r.pad_x + render.compose_caret(uistate.compose_of(ui), cur.t.x, cur.t.cols) * r.cell_w, render.grid_top(r, tabs) + cur.t.y * r.cell_h)
+  if a.stats.trace and list.len(ui.preedit) > 0 then trace_compose(a, cur, ix, iy)
+  if (ix, iy) != (ui.ime_x, ui.ime_y) then {
+    window.set_ime_area(int.to_float(ix) / a.scale, int.to_float(iy) / a.scale,
+      int.to_float(r.cell_w) / a.scale, int.to_float(r.cell_h) / a.scale)
+    uistate.set_ime(a.ui, ix, iy)
+  }
+}
+
+fn trace_compose(a: session.Session, cur: tabset.Tab, ix: Int, iy: Int) -> Unit = {
+  let ui = a.ui
+  let (x0, ca, cb) = render.compose_span(uistate.compose_of(ui), cur.t.x, cur.t.cols)
+  eprintln("compose ${int.to_string(sys.now_ms())} x ${int.to_string(cur.t.x)} cols ${int.to_string(cur.t.cols)} span ${int.to_string(x0)} ${int.to_string(ca)}..${int.to_string(cb)}"
+    + " caret ${int.to_string(ui.preedit_caret)} sel ${int.to_string(ui.preedit_from)}..${int.to_string(ui.preedit_to)} ime_px ${int.to_string(ix)},${int.to_string(iy)} cell_w ${int.to_string(a.r.cell_w)} pad ${int.to_string(a.r.pad_x)}"
+    + " text \"${list.join(list.map(ui.preedit, (c) => string.from_codepoint(c)), "")}\"")
+}
+
+/// Capturing: once the first tab's program has ended or SPRID_CAPTURE_MS
+/// passed, the frame as SPRID_CAPTURE_* set it up, saved to `path`.
+effect fn capture_due(mut a: session.Session, path: String) -> Unit = {
+  let clock = sys.now_ms()
+  let ended = list.len(a.tabs) > 0 and pty.eof(tabset.fd_of(a.tabs, 0))
+  if ended or clock > (int.parse(env.get("SPRID_CAPTURE_MS") ?? "3000") ?? 3000) then {
+    if a.stats.debug then eprintln("sprid: ${int.to_string(a.stats.frames)} frames, draw ${int.to_string(a.stats.draw_ms)} ms")
+    let titles = tabset.tab_titles(a.tabs, a.active, a.ui, a.home)
+    match tabset.take(a.tabs, a.active) {
+      some(tb) => {
+        var cur = tb
+        stage(a.ui, cur, a.r.cell_h)!
+        render.draw(a.r, cur.t, cur.back, cur.shift, cur.sel, uistate.compose_of(a.ui), a.width, a.height, titles, a.active,
+          uistate.bar_of(a.ui))
+        list.push(a.tabs, cur)
+      },
+      none => (),
+    }
+    println(if frame.save_png(path) then "saved ${path}" else "capture failed")
+    a.alive = false
+  }
+}
+
+/// The view, a composition and the find bar as SPRID_CAPTURE_BACK, _SHIFT,
+/// _PREEDIT, _FIND (stepped up _FIND_UP times, _FIND_STATE "selected" or
+/// "blurred") ask.
+effect fn stage(mut ui: uistate.Ui, mut cur: tabset.Tab, cell_h: Int) -> Unit = {
+  cur.back = int.clamp(int.parse(env.get("SPRID_CAPTURE_BACK") ?? "0") ?? 0, 0, view.max_back(cur.t))
+  cur.shift = int.clamp(int.parse(env.get("SPRID_CAPTURE_SHIFT") ?? "0") ?? 0, 0, cell_h - 1)
+  match env.get("SPRID_CAPTURE_PREEDIT") {
+    some(p) => {
+      ui.preedit = text.code_points(p)
+      ui.preedit_caret = list.len(ui.preedit)
+    },
+    none => (),
+  }
+  match env.get("SPRID_CAPTURE_FIND") {
+    some(q) => stage_find(ui, cur, q)!,
+    none => (),
+  }
+}
+
+effect fn stage_find(mut ui: uistate.Ui, mut cur: tabset.Tab, q: String) -> Unit = {
+  ui.finding = true
+  ui.find_focus = true
+  ui.field = field.of(q)
+  findkeys.set_query(cur, ui, q, true)
+  let state = env.get("SPRID_CAPTURE_FIND_STATE") ?? ""
+  if state == "selected" then ui.field = field.select_all(ui.field)
+  if state == "blurred" then ui.find_focus = false
+  for _ in 0..<(int.parse(env.get("SPRID_CAPTURE_FIND_UP") ?? "0") ?? 0) {
+    findkeys.find_step(cur, ui, -1)
+  }
+}

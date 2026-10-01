@@ -1,0 +1,138 @@
+// A window's session: everything the main loop keeps from one turn to the
+// next — the tabs and which is in front, the renderer, the input state, the
+// settings — and what it was started with.
+
+import self.gui.render
+import self.gui.tabset
+import self.gui.uistate
+import self.settings
+
+/// How often a blinking cursor turns on or off, ms.
+let BLINK_MS = 530
+
+/// How long the visual bell lights the screen, ms.
+let FLASH_MS = 120
+
+/// Cmd+Minus and Cmd+Plus go no further than these, points.
+let MIN_FONT_SIZE = 6.0
+
+let MAX_FONT_SIZE = 72.0
+
+/// Least time between two frames, ms: short while the program answers keys —
+/// a shell echoes a key and then redraws the line in colour a few ms later,
+/// and the second must not wait a whole refresh — and longer while its output
+/// streams in, time the parser can use.
+let FRAME_MS = 8
+
+let STREAM_FRAME_MS = 50
+
+/// Longest spent draining the active tab's PTY before the window gets a
+/// turn, ms; background tabs get the short budget.
+let DRAIN_MS = 12
+
+let STREAM_DRAIN_MS = 40
+
+/// How long the window's size must hold before scrollback is reflowed to it,
+/// ms: reflowing a full scrollback takes about 0.2 s, too long for every step
+/// of a drag.
+let SETTLE_MS = 300
+
+/// How soon input a program hasn't taken is offered again, ms.
+let WRITE_RETRY_MS = 5
+
+type Session = {
+  // As started: a PNG to capture one frame to instead of a window, the
+  // command new tabs run, $HOME, whether to ask in Japanese, the display's
+  // scale, the GPU device, the config file's watch.
+  capture: Option[String],
+  login: String,
+  home: String,
+  ja: Bool,
+  scale: Float,
+  device: Int,
+  config_fd: Int,
+  st: settings.Settings,
+  r: render.Renderer,
+  tabs: List[tabset.Tab],
+  active: Int,
+  ui: uistate.Ui,
+  // The drawable's size, pixels; the font size now (Cmd+Plus / Minus).
+  width: Int,
+  height: Int,
+  font_size: Float,
+  // A blinking cursor: when it next turns on or off, -1 when it doesn't
+  // blink. When the visual bell's light goes out, -1 when it is not lit.
+  blink_at: Int,
+  flash_until: Int,
+  alive: Bool,
+  last_frame: Int,
+  streaming: Bool,
+  // When the window last changed size, while scrollback waits to be
+  // reflowed; -1 when it doesn't.
+  resized_at: Int,
+  // The PTY of the tab in front, to tell when another comes to the front;
+  // the window's title, the tab in front's.
+  front: Int,
+  window_title: String,
+  stats: Stats,
+}
+
+/// Debugging: SPRID_DEBUG's counts of frames, wakes and input-to-frame
+/// latency; SPRID_TRACE's log of reads and frames; SPRID_AUTOSCROLL="dy,start
+/// ms,end ms,every ms", which turns the wheel by itself, for measuring
+/// scrolling without a hand on the trackpad.
+type Stats = {
+  debug: Bool,
+  trace: Bool,
+  frames: Int,
+  draw_ms: Int,
+  wakes: Int,
+  wake_report: Int,
+  // From an input being taken to the frame showing it, ms.
+  input_at: Int,
+  latency_max: Int,
+  latency_sum: Int,
+  latency_n: Int,
+  auto: List[Float],
+  auto_next: Int,
+}
+
+/// The sooner of two waits, ms; -1 is no limit.
+fn sooner(a: Int, b: Int) -> Int = if a < 0 then b else if b < 0 then a else int.min(a, b)
+
+/// The least time between frames now.
+fn frame_ms(a: Session) -> Int = if a.streaming then STREAM_FRAME_MS else FRAME_MS
+
+// FIXME(almide#3064): the setters below stand in for assignments two fields
+// deep (`a.r.flash = false`, `a.stats.wakes = ...`), which the compiler in
+// use doesn't parse yet (fixed on develop).
+
+fn set_flash(mut r: render.Renderer, on: Bool) -> Unit = { r.flash = on }
+
+fn set_blink_off(mut r: render.Renderer, off: Bool) -> Unit = { r.blink_off = off }
+
+fn set_focused(mut r: render.Renderer, on: Bool) -> Unit = { r.focused = on }
+
+/// A frame drawn, taking `ms`.
+fn count_frame(mut s: Stats, ms: Int) -> Unit = {
+  s.frames = s.frames + 1
+  s.draw_ms = s.draw_ms + ms
+}
+
+/// An input taken now, if none is waiting to be shown.
+fn note_input(mut s: Stats, now: Int) -> Unit = { if s.input_at < 0 then s.input_at = now }
+
+/// The input waiting to be shown shown now.
+fn shown(mut s: Stats, now: Int) -> Unit = {
+  if s.input_at >= 0 then {
+    let lat = now - s.input_at
+    s.latency_max = int.max(s.latency_max, lat)
+    s.latency_sum = s.latency_sum + lat
+    s.latency_n = s.latency_n + 1
+    s.input_at = -1
+  }
+}
+
+fn count_wake(mut s: Stats) -> Unit = { s.wakes = s.wakes + 1 }
+
+fn set_auto_next(mut s: Stats, at: Int) -> Unit = { s.auto_next = at }

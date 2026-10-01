@@ -94,3 +94,18 @@ fn leave_tab(mut ui: Ui) -> Unit = {
   ui.field_drag = false
   ui.dirty = true
 }
+
+// FIXME(almide#3064): the setters below stand in for `a.ui.dirty = true` and
+// the like — assignments two fields deep — which the compiler in use doesn't
+// parse yet (fixed on develop).
+
+/// Something changed that the next frame shows.
+fn touch(mut ui: Ui) -> Unit = { ui.dirty = true }
+
+fn set_dirty(mut ui: Ui, dirty: Bool) -> Unit = { ui.dirty = dirty }
+
+/// Where the input method was told the caret is.
+fn set_ime(mut ui: Ui, x: Int, y: Int) -> Unit = {
+  ui.ime_x = x
+  ui.ime_y = y
+}

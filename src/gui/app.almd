@@ -13,59 +13,25 @@
 
 import env
 import snaidhm.native.window as window
-import snaidhm.native.frame as frame
-import snaidhm.text as text
 import snaidhm.web.gpu as gpu
-import self.gui.dialog
 import self.gui.fonts
 import self.gui.render
-import self.keys
 import self.pty
 import self.search
 import self.field
 import self.settings
 import self.sys
 import self.terminal
-import self.view
 import self.gui.tabset
 import self.gui.uistate
 import self.gui.prefs
 import self.gui.findkeys
 import self.gui.pointer
 import self.gui.input
-
-/// How often a blinking cursor turns on or off, ms.
-let BLINK_MS = 530
-
-/// How long the visual bell lights the screen, ms.
-let FLASH_MS = 120
-
-/// Cmd+Minus and Cmd+Plus go no further than these, points.
-let MIN_FONT_SIZE = 6.0
-
-let MAX_FONT_SIZE = 72.0
-
-/// Least time between two frames, ms: short while the program answers keys —
-/// a shell echoes a key and then redraws the line in colour a few ms later,
-/// and the second must not wait a whole refresh — and longer while its output
-/// streams in, time the parser can use.
-let FRAME_MS = 8
-
-let STREAM_FRAME_MS = 50
-
-/// Longest spent draining the active tab's PTY before the window gets a
-/// turn, ms; background tabs get the short budget.
-let DRAIN_MS = 12
-
-let STREAM_DRAIN_MS = 40
-
-/// How long the window's size must hold before scrollback is reflowed to it,
-/// ms: reflowing a full scrollback takes about 0.2 s, too long for every step
-/// of a drag.
-let SETTLE_MS = 300
-
-/// How soon input a program hasn't taken is offered again, ms.
-let WRITE_RETRY_MS = 5
+import self.gui.session
+import self.gui.acts
+import self.gui.outputs
+import self.gui.paint
 
 /// How the window starts: a command for the first tab instead of the login
 /// shell (the window closes when it exits), and the grid to size the window
@@ -85,9 +51,17 @@ effect fn run_fonts(opts: Options, st: settings.Settings) -> Unit = match fonts.
   none => println("sprid: no font found"),
 }
 
-effect fn run_with(opts: Options, faces: fonts.Faces, s: settings.Settings) -> Unit = {
-  let capture = opts.capture
-  var st = s
+/// The login shell, from $SHELL — started from Finder there is none: from
+/// the password database then.
+effect fn login_command() -> String = {
+  let shell = match env.get("SHELL") {
+    some(s) => s,
+    none => if sys.login_shell() != "" then sys.login_shell() else "/bin/zsh",
+  }
+  "exec ${shell} -l"
+}
+
+effect fn run_with(opts: Options, faces: fonts.Faces, st: settings.Settings) -> Unit = {
   // Sized to a grid, the window is measured before it opens, for a Retina
   // display (the scale is only known once it is open).
   let (cw, ch) = render.cell_size(faces, float.to_int(float.round(st.font_size * 2.0)), st.cell_height)
@@ -95,31 +69,36 @@ effect fn run_with(opts: Options, faces: fonts.Faces, s: settings.Settings) -> U
   let (win_w, win_h) = if opts.cols > 0 and opts.rows > 0 then
     ((opts.cols * cw) / 2 + pad_x / 2 + 1, (opts.rows * ch) / 2 + pad_y / 2 + 1)
   else (960, 620)
-  // Started from Finder there is no $SHELL and the directory is /: take the
-  // shell from the password database and start at home.
-  let shell = match env.get("SHELL") {
-    some(s) => s,
-    none => if sys.login_shell() != "" then sys.login_shell() else "/bin/zsh",
-  }
-  let login = "exec ${shell} -l"
+  let login = login_command()!
   let first = match opts.command {
     some(c) => c,
-    none => match capture { some(_) => env.get("SPRID_CAPTURE_CMD") ?? login, none => login },
+    none => if opts.capture != none then env.get("SPRID_CAPTURE_CMD") ?? login else login,
   }
+  // Started from Finder the directory is /: start at home.
   let start_dir = if sys.cwd() == "/" or sys.cwd() == "" then env.get("HOME") ?? "" else ""
   // The first program starts before the window opens and the GPU is set up —
   // a login shell's startup files run meanwhile — on the grid the window is
   // expected to hold; it is told the actual one if that differs.
   let expected = (int.max(1, (win_w * 2 - 2 * pad_x) / cw), int.max(1, (win_h * 2 - 2 * pad_y) / ch))
   let first_fd = pty.spawn(first, start_dir, expected.0, expected.1)
-  guard first_fd >= 0 else println("sprid: could not start ${shell}")
-
+  guard first_fd >= 0 else println("sprid: could not start ${login}")
   guard window.open("sprid", win_w, win_h) else println("sprid: could not open a window")
   window.set_ime(true)
   // A key's echo shows as soon as it is drawn, not a display refresh or two
   // later.
   gpu.set_low_latency(true)
   window.set_option_as_alt(st.option_as_alt)
+  var a = start(opts, faces, st, login, first_fd, expected)!
+  while a.alive {
+    turn(a)!
+  }
+  for tb in a.tabs {
+    pty.close(tb.fd)
+  }
+}
+
+/// The session as the window opens, its first tab on `first_fd`.
+effect fn start(opts: Options, faces: fonts.Faces, st: settings.Settings, login: String, first_fd: Int, expected: (Int, Int)) -> session.Session = {
   let scale = window.scale_factor()
   let device = 1
   // The theme also colours what a window being resized uncovers, until it is
@@ -128,519 +107,272 @@ effect fn run_with(opts: Options, faces: fonts.Faces, s: settings.Settings) -> U
     float.to_int(st.pad_x * scale), float.to_int(st.pad_y * scale), st.cell_height), st)!
   // Opened behind another app's window, it has no focus until clicked.
   r.focused = window.focused()
-  var width = window.width()
-  var height = window.height()
-  var font_size = st.font_size
-  // The config file, watched: saved, it applies at once.
-  let config_fd = if capture == none then sys.watch(prefs.config_path()!) else -1
-  // A blinking cursor: when it next turns on or off, -1 when it doesn't blink.
-  var blink_at = -1
-  // When the visual bell's light goes out; -1 when it is not lit.
-  var flash_until = -1
-
+  let width = window.width()
+  let height = window.height()
   let (cols, rows) = render.grid_size(r, width, height, 1)
   if (cols, rows) != expected then { let _ = pty.resize(first_fd, cols, rows) } else ()
-  var tabs: List[tabset.Tab] = [tabset.Tab { t: terminal.with_scrollback(cols, rows, st.scrollback), fd: first_fd, back: 0, shift: 0, sel: none, up: tabset.Updates { syncs: 0, sync_at: 0, hides: 0, hide_at: 0 }, name: "", alert: false }]
-  var active = 0
-  // For captures of the tab bar: more tabs running the login shell.
-  let extra = match capture { some(_) => int.parse(env.get("SPRID_CAPTURE_TABS") ?? "1") ?? 1, none => 1 }
-  for _ in 1..<extra {
-    match tabset.open_tab(r, width, height, list.len(tabs) + 1, login, "", st.scrollback) {
-      some(tb) => {
-        list.push(tabs, tb)
-        tabset.relayout(tabs, r, width, height)
-      },
-      none => (),
-    }
-  }
-
   let home = env.get("HOME") ?? ""
-  // Questions in Japanese on a Japanese system.
-  let ja = string.starts_with(env.get("LANG") ?? "", "ja")
-  var ui = uistate.Ui { preedit: [], preedit_caret: 0, preedit_from: 0, preedit_to: 0, wheel_acc: 0.0, dragging: false, unit: 0, anchor_line: 0, anchor_col: 0,
-                anchor_end_line: 0, anchor_end_col: 0, clicks: 0, click_line: 0, click_col: 0, dirty: true,
-                renaming: false, draft: "", click_ms: 0, click_tab: -1, home: home, finding: false, find: search.empty(),
-                field: field.of(""), find_focus: false, field_drag: false, scroll_drag: false, scroll_grab: 0,
-                ime_x: -1, ime_y: -1,
-                app_button: -1, report_col: -1, report_row: -1 }
-  var alive = true
-  var last_frame = 0
-  var streaming = false
-  let debug = env.get("SPRID_DEBUG") != none
-  let trace = env.get("SPRID_TRACE") != none
-  var frames = 0
-  var draw_ms = 0
-  var wakes = 0
-  var wake_report = 0
-  // Debug: from an input being taken to the frame showing it, ms.
-  var input_at = -1
-  var latency_max = 0
-  var latency_sum = 0
-  var latency_n = 0
-  // When the window last changed size, while scrollback waits to be
-  // reflowed; -1 when it doesn't.
-  var resized_at = -1
-  // The PTY of the tab in front, to tell when another comes to the front.
-  var front = first_fd
-  // The window's title: the tab in front's.
-  var window_title = ""
-  // Debug: SPRID_AUTOSCROLL="dy,start ms,end ms,every ms" turns the wheel by
-  // itself, for measuring scrolling without a hand on the trackpad.
-  let auto = list.map(string.split(env.get("SPRID_AUTOSCROLL") ?? "", ","), (x) => float.parse(x) ?? 0.0)
-  var auto_next = if list.len(auto) == 4 then float.to_int(auto[1]) else -1
-  while alive {
-    // Sleep until input, output on any tab, or the next frame is due: with
-    // nothing to draw that is indefinitely, so an idle window costs nothing.
-    let now = sys.now_ms()
-    let frame_wait = int.max(0, last_frame + (if streaming then STREAM_FRAME_MS else FRAME_MS) - now)
-    let idle = if capture == none then -1 else 50
-    let settle_wait = if resized_at < 0 then -1 else int.max(0, resized_at + SETTLE_MS - now)
-    let drawn_wait = if ui.dirty then int.max(frame_wait, tabset.sync_wait(tabs, active, now)) else idle
-    let auto_wait = if auto_next < 0 then -1 else int.max(0, auto_next - now)
-    // Input a program hasn't taken yet (a big paste) is offered again soon.
-    let write_wait = if list.any(tabs, (tb) => pty.pending(tb.fd)) then WRITE_RETRY_MS else -1
-    // A blinking cursor turns on and off while the window has the focus.
-    if r.focused and tabset.cursor_blinks(tabs, active, r) then {
-      if blink_at < 0 then blink_at = now + BLINK_MS
-      else if now >= blink_at then {
-        r.blink_off = not r.blink_off
-        blink_at = now + BLINK_MS
-        ui.dirty = true
-      }
-    } else {
-      blink_at = -1
-      r.blink_off = false
-    }
-    let blink_wait = if blink_at < 0 then -1 else int.max(0, blink_at - now)
-    if flash_until >= 0 and now >= flash_until then {
-      r.flash = false
-      flash_until = -1
-      ui.dirty = true
-    }
-    let flash_wait = if flash_until < 0 then -1 else int.max(0, flash_until - now)
-    let timeout = sooner(sooner(sooner(sooner(sooner(drawn_wait, settle_wait), auto_wait), write_wait), blink_wait), flash_wait)
-    // With no time to wait, just take the window's events: arming the fd
-    // watcher on every turn of a streaming loop costs more than it saves.
-    alive = if timeout == 0 then window.pump() else window.wait_fds(list.map(tabs, (tb) => tb.fd) + (if config_fd >= 0 then [config_fd] else []), timeout)
-    // The config file was saved: it applies now — the theme, the font and
-    // its size, the cursor, Option — over what was set before.
-    // (One save can be seen more than once — the file, then its directory.)
-    let saved = sys.watch_changed(config_fd)
-    let fresh = if saved then prefs.read_settings()! else st
-    if saved and fresh != st then {
-      prefs.report(fresh)!
-      let new_faces = fresh.font_family != st.font_family
-      let resize = new_faces or (fresh.font_size, fresh.pad_x, fresh.pad_y, fresh.cell_height) != (st.font_size, st.pad_x, st.pad_y, st.cell_height)
-      st = fresh
-      window.set_option_as_alt(st.option_as_alt)
-      if new_faces then {
-        match fonts.find(st.font_family)! {
-          some(f) => {
-            r = { ...render.new(device, f, float.to_int(float.round(st.font_size * scale)),
-              float.to_int(st.pad_x * scale), float.to_int(st.pad_y * scale), st.cell_height), focused: r.focused }
-          },
-          none => (),
-        }
-      }
-      r = prefs.styled(r, st)!
-      if resize then {
-        font_size = st.font_size
-        r = render.with_size(r, float.to_int(float.round(font_size * scale)),
-          float.to_int(st.pad_x * scale), float.to_int(st.pad_y * scale), st.cell_height)
-        tabset.relayout_live(tabs, r, width, height)
-        resized_at = sys.now_ms()
-      }
-      ui.dirty = true
-    }
-    // The window's close button: asked first when a program is running.
-    if not alive and list.len(tabs) > 0 and capture == none and not tabset.may_close_window(tabs, ja) then {
-      window.keep_open()
-      alive = true
-    }
-    wakes = wakes + 1
-    if debug and sys.now_ms() - wake_report >= 2000 then {
-      eprintln("sprid: ${int.to_string(wakes)} wakes in 2 s (dirty ${if ui.dirty then "yes" else "no"}, timeout ${int.to_string(timeout)})"
-        + ", input to frame avg ${int.to_string(latency_sum / int.max(1, latency_n))} max ${int.to_string(latency_max)} ms over ${int.to_string(latency_n)}")
-      latency_max = 0
-      latency_sum = 0
-      latency_n = 0
-      wakes = 0
-      wake_report = sys.now_ms()
-    }
-    if window.resized() then {
-      width = window.width()
-      height = window.height()
-      tabset.relayout_live(tabs, r, width, height)
-      resized_at = sys.now_ms()
-      ui.dirty = true
-    }
-    // Once the size has held for a moment, scrollback is reflowed too.
-    if resized_at >= 0 and sys.now_ms() - resized_at >= SETTLE_MS then {
-      tabset.settle_all(tabs)
-      resized_at = -1
-      ui.dirty = true
-      // Lines are numbered anew: the search is run again.
-      match tabset.take(tabs, active) {
-        some(tb) => {
-          var cur = tb
-          findkeys.refresh_find(cur, ui)
-          list.push(tabs, cur)
-          tabs = list.swap(tabs, active, list.len(tabs) - 1)
-        },
-        none => (),
-      }
-    }
-
-    // Input goes to the active tab; what it asks of the tabs is done after
-    // the tab is back in the list.
-    var kind = window.next_event()
-    // Typing shows the cursor at once and starts its blink over.
-    if kind == window.KEY or kind == window.TEXT then {
-      r.blink_off = false
-      if blink_at >= 0 then blink_at = sys.now_ms() + BLINK_MS
-    }
-    if kind != window.NONE and input_at < 0 then input_at = sys.now_ms()
-    while kind != window.NONE {
-      var act = uistate.Stay
-      if trace and (kind == window.COMPOSE or kind == window.TEXT or kind == window.KEY) then
-        eprintln("input ${int.to_string(sys.now_ms())} kind ${int.to_string(kind)} code ${int.to_string(window.event_code())} end ${int.to_string(window.event_end())} text \"${window.event_text()}\" preedit ${int.to_string(list.len(ui.preedit))}")
-      // Counted before the active tab is taken out of the list: with it out,
-      // two tabs looked like one — no tab bar to click, and every click
-      // below it placed a tab bar's height too low.
-      let open = list.len(tabs)
-      match tabset.take(tabs, active) {
-        some(tb) => {
-          var cur = tb
-          act = input.handle(cur, ui, kind, r, scale, open, width)!
-          list.push(tabs, cur)
-          tabs = list.swap(tabs, active, list.len(tabs) - 1)
-        },
-        none => (),
-      }
-      match act {
-        uistate.NewTab => {
-          let cwd = tabset.cwd_of(tabs, active, env.get("HOME") ?? "")
-          match tabset.open_tab(r, width, height, list.len(tabs) + 1, login, cwd, st.scrollback) {
-            some(tb) => {
-              list.push(tabs, tb)
-              active = list.len(tabs) - 1
-              tabset.relayout(tabs, r, width, height)
-            },
-            none => (),
-          }
-          ui.dirty = true
-        },
-        uistate.CloseTab => if tabset.may_close_tab(tabs, active, ja) then {
-          tabset.close_tab(tabs, active)
-          active = int.min(active, list.len(tabs) - 1)
-          tabset.relayout(tabs, r, width, height)
-          ui.dirty = true
-        },
-        uistate.NextTab => {
-          active = (active + 1) % list.len(tabs)
-          ui.dirty = true
-        },
-        uistate.PrevTab => {
-          active = (active + list.len(tabs) - 1) % list.len(tabs)
-          ui.dirty = true
-        },
-        uistate.GoTo(i) => if i < list.len(tabs) and i != active then {
-          active = i
-          ui.dirty = true
-        },
-        uistate.NewWindow => {
-          let _ = sys.open_window(tabset.cwd_of(tabs, active, home))
-        },
-        uistate.CloseWindow => if tabset.may_close_window(tabs, ja) then alive = false,
-        uistate.Zoom(step) => {
-          let size = if step == 0 then st.font_size
-            else float.clamp(font_size + int.to_float(step), MIN_FONT_SIZE, MAX_FONT_SIZE)
-          if size != font_size then {
-            font_size = size
-            r = render.with_size(r, float.to_int(float.round(font_size * scale)),
-              float.to_int(st.pad_x * scale), float.to_int(st.pad_y * scale), st.cell_height)
-            // As for a resize: the screen now, scrollback once the size
-            // holds, so holding Cmd+Plus stays quick.
-            tabset.relayout_live(tabs, r, width, height)
-            resized_at = sys.now_ms()
-            ui.dirty = true
-          }
-        },
-        uistate.Restyle => {
-          r = prefs.styled(r, st)!
-          ui.dirty = true
-        },
-        uistate.Focus(on) => {
-          r.focused = on
-          // Programs that asked (mode 1004) are told: CSI I, CSI O.
-          match tabset.take(tabs, active) {
-            some(tb) => {
-              var cur = tb
-              if cur.t.focus_events then {
-                let _ = pty.write(cur.fd, if on then "\x1b[I" else "\x1b[O")
-              }
-              list.push(tabs, cur)
-              tabs = list.swap(tabs, active, list.len(tabs) - 1)
-            },
-            none => (),
-          }
-          ui.dirty = true
-        },
-        uistate.Paste => {
-          match tabset.take(tabs, active) {
-            some(tb) => {
-              var cur = tb
-              let text = tabset.clipboard()!
-              // Lines pasted where nothing marks them as pasted run one by
-              // one as they arrive: asked first.
-              if text != "" and (not st.paste_protection or cur.t.bracketed_paste or not keys.multiline(text) or tabset.paste_ok(text, ja)!) then {
-                let _ = pty.write(cur.fd, keys.paste(text, cur.t.bracketed_paste))
-                if cur.back != 0 then ui.dirty = true
-                tabset.scroll_to(cur, 0)
-              }
-              list.push(tabs, cur)
-              tabs = list.swap(tabs, active, list.len(tabs) - 1)
-            },
-            none => (),
-          }
-        },
-        uistate.Stay => (),
-      }
-      // What belongs to the tab in front — find, a rename, a drag — ends
-      // when another tab comes to the front, before its next input.
-      if tabset.fd_of(tabs, active) != front then {
-        uistate.leave_tab(ui)
-        front = tabset.fd_of(tabs, active)
-      }
-      kind = if list.len(tabs) == 0 then window.NONE else window.next_event()
-    }
-    if list.len(tabs) == 0 then alive = false
-    if auto_next >= 0 and sys.now_ms() >= auto_next then {
-      match tabset.take(tabs, active) {
-        some(tb) => {
-          var cur = tb
-          pointer.wheel(cur, ui, r, scale, auto[0], 40, 10)
-          if trace then eprintln("wheel ${int.to_string(sys.now_ms())}")
-          list.push(tabs, cur)
-          tabs = list.swap(tabs, active, list.len(tabs) - 1)
-        },
-        none => (),
-      }
-      auto_next = if sys.now_ms() >= float.to_int(auto[2]) then -1 else auto_next + float.to_int(auto[3])
-    }
-
-    for tb in tabs {
-      if pty.pending(tb.fd) then {
-        let _ = pty.flush(tb.fd)
-      }
-    }
-
-    // Every tab's output, the active tab's with the longer budget.
-    streaming = false
-    for i in 0..<list.len(tabs) {
-      match tabset.take(tabs, i) {
-        some(tb) => {
-          var cur = tb
-          let title_before = (cur.t.title, cur.t.cwd)
-          let bells_before = cur.t.bells
-          let (got, more) = tabset.drain(cur, if i == active then STREAM_DRAIN_MS else DRAIN_MS)
-          if got then {
-            match terminal.take_clipboard(cur.t) {
-              some(text) => if st.clipboard_write then { let _ = sys.clipboard_set(text) },
-              none => (),
-            }
-            let asked = terminal.take_clipboard_ask(cur.t)
-            if asked != "" and (st.clipboard_read == "allow" or (st.clipboard_read == "ask" and not sys.is_linux() and tabset.clipboard_read_ok(tabset.title_of(cur, home), ja)!)) then {
-              let _ = pty.write(cur.fd, terminal.clipboard_reply(asked, tabset.clipboard()!))
-            }
-            let notices = terminal.take_notices(cur.t)
-            let bell = cur.t.bells != bells_before
-            let looked_at = i == active and r.focused
-            // A bell: the screen lit where it is being looked at, a sound if
-            // asked for.
-            if bell and looked_at and st.bell_flash then {
-              r.flash = true
-              flash_until = sys.now_ms() + FLASH_MS
-              ui.dirty = true
-            }
-            if bell and st.bell_system then dialog.beep()
-            // Marked where it isn't being looked at; the Dock asked to show
-            // it when the window is in the background, and notifications
-            // shown there.
-            if (bell and st.bell_title or list.len(notices) > 0) and not looked_at and not cur.alert then {
-              cur.alert = true
-              ui.dirty = true
-            }
-            if not r.focused and (bell and st.bell_attention or list.len(notices) > 0) then window.request_attention()
-            if not r.focused then for (title, body) in notices {
-              dialog.notify(if title != "" then title else tabset.title_of(cur, home), body)
-            }
-          }
-          // A tab in the back retitled itself: the tab bar shows it.
-          if got and i != active and (cur.t.title, cur.t.cwd) != title_before then ui.dirty = true
-          if got and trace then eprintln("out ${int.to_string(sys.now_ms())} tab ${int.to_string(i)} cursor ${int.to_string(cur.t.x)},${int.to_string(cur.t.y)}")
-          if i == active then {
-            if got then ui.dirty = true
-            if more then streaming = true
-          }
-          let replies = terminal.take_replies(cur.t)
-          if replies != "" then {
-            let _ = pty.write(cur.fd, replies)
-          }
-          list.push(tabs, cur)
-          tabs = list.swap(tabs, i, list.len(tabs) - 1)
-        },
-        none => (),
-      }
-    }
-
-    // Tabs whose program has exited close; the window closes with the last.
-    var i = 0
-    while i < list.len(tabs) {
-      if pty.eof(tabset.fd_of(tabs, i)) and capture == none then {
-        tabset.close_tab(tabs, i)
-        if active >= i and active > 0 then active = active - 1
-        tabset.relayout(tabs, r, width, height)
-        ui.dirty = true
-      } else i = i + 1
-    }
-    pty.reap()
-    if list.len(tabs) == 0 then alive = false
-    if tabset.fd_of(tabs, active) != front then {
-      uistate.leave_tab(ui)
-      front = tabset.fd_of(tabs, active)
-    }
-
-    // The tab in front, in a window with the focus, is being looked at.
-    if r.focused and (list.get(tabs, active) |> option.map((tb) => tb.alert) ?? false) then {
-      tabs = list.set(tabs, active, { ...tabs[active], alert: false })
-      ui.dirty = true
-    }
-
-    let clock = sys.now_ms()
-    if alive and ui.dirty and clock - last_frame >= (if streaming then STREAM_FRAME_MS else FRAME_MS) then {
-      let titles = tabset.tab_titles(tabs, active, ui, home)
-      let shown = match list.get(tabs, active) {
-        some(tb) => tabset.title_of(tb, home),
-        none => "",
-      }
-      if shown != window_title then {
-        window.set_title(if shown == "" then "sprid" else shown)
-        window_title = shown
-      }
-      match tabset.take(tabs, active) {
-        some(tb) => {
-          var cur = tb
-          // The program is mid-update (mode 2026, or its cursor hidden while
-          // it draws): show the screen when it is done, or after a limit if
-          // it never says so.
-          tabset.note_updates(cur, clock)
-          let held = tabset.hold_left(cur, clock) > 0
-          if trace and held then eprintln("held ${int.to_string(clock)} for ${int.to_string(tabset.hold_left(cur, clock))} ms")
-          if not held then {
-            let t0 = sys.now_ms()
-            render.draw(r, cur.t, cur.back, cur.shift, cur.sel, uistate.compose_of(ui), width, height, titles, active,
-              uistate.bar_of(ui))
-            if trace then eprintln("frame ${int.to_string(sys.now_ms())} cursor ${int.to_string(cur.t.x)},${int.to_string(cur.t.y)} shown ${if cur.t.cursor_visible then "yes" else "no"}"
-              + " preedit ${int.to_string(list.len(ui.preedit))} line ${view.text_of(cur.t, view.screen_line(cur.t) + cur.t.y)}")
-            frames = frames + 1
-            draw_ms = draw_ms + sys.now_ms() - t0
-            // The input method composes where typing goes: the find bar
-            // while it is open, else the cursor.
-            let gy = render.grid_top(r, list.len(titles))
-            let (ix, iy) = if ui.finding and ui.find_focus then render.find_caret(r, uistate.bar(ui), ui.preedit, list.len(titles), width)
-              else {
-                // At the input method's caret in the composition, so its
-                // candidates follow the typing.
-                (r.pad_x + render.compose_caret(uistate.compose_of(ui), cur.t.x, cur.t.cols) * r.cell_w, gy + cur.t.y * r.cell_h)
-              }
-            // Told only when it moves: each time the input method is told,
-            // it lays out its candidate window again, which shows as a
-            // flicker while typing.
-            if trace and list.len(ui.preedit) > 0 then {
-              let (x0, ca, cb) = render.compose_span(uistate.compose_of(ui), cur.t.x, cur.t.cols)
-              eprintln("compose ${int.to_string(sys.now_ms())} x ${int.to_string(cur.t.x)} cols ${int.to_string(cur.t.cols)} span ${int.to_string(x0)} ${int.to_string(ca)}..${int.to_string(cb)}"
-                + " caret ${int.to_string(ui.preedit_caret)} sel ${int.to_string(ui.preedit_from)}..${int.to_string(ui.preedit_to)} ime_px ${int.to_string(ix)},${int.to_string(iy)} cell_w ${int.to_string(r.cell_w)} pad ${int.to_string(r.pad_x)}"
-                + " text \"${list.join(list.map(ui.preedit, (c) => string.from_codepoint(c)), "")}\"")
-            }
-            if (ix, iy) != (ui.ime_x, ui.ime_y) then {
-              window.set_ime_area(int.to_float(ix) / scale, int.to_float(iy) / scale,
-                int.to_float(r.cell_w) / scale, int.to_float(r.cell_h) / scale)
-              ui.ime_x = ix
-              ui.ime_y = iy
-            }
-            last_frame = clock
-            if input_at >= 0 then {
-              let lat = sys.now_ms() - input_at
-              latency_max = int.max(latency_max, lat)
-              latency_sum = latency_sum + lat
-              latency_n = latency_n + 1
-              input_at = -1
-            }
-            // A glyph the frame couldn't make in time is made by the next.
-            ui.dirty = r.missed
-          }
-          list.push(tabs, cur)
-          tabs = list.swap(tabs, active, list.len(tabs) - 1)
-        },
-        none => (),
-      }
-    }
-
-    match capture {
-      some(path) => if (list.len(tabs) > 0 and pty.eof(tabset.fd_of(tabs, 0))) or clock > (int.parse(env.get("SPRID_CAPTURE_MS") ?? "3000") ?? 3000) then {
-        if debug then eprintln("sprid: ${int.to_string(frames)} frames, draw ${int.to_string(draw_ms)} ms")
-        let titles = tabset.tab_titles(tabs, active, ui, home)
-        match tabset.take(tabs, active) {
-          some(tb) => {
-            var cur = tb
-            cur.back = int.clamp(int.parse(env.get("SPRID_CAPTURE_BACK") ?? "0") ?? 0, 0, view.max_back(cur.t))
-            cur.shift = int.clamp(int.parse(env.get("SPRID_CAPTURE_SHIFT") ?? "0") ?? 0, 0, r.cell_h - 1)
-            // A composition at the cursor, as the input method shows one.
-            match env.get("SPRID_CAPTURE_PREEDIT") {
-              some(p) => {
-                ui.preedit = text.code_points(p)
-                ui.preedit_caret = list.len(ui.preedit)
-              },
-              none => (),
-            }
-            // The find bar searching for this, stepped up SPRID_CAPTURE_FIND_UP times.
-            match env.get("SPRID_CAPTURE_FIND") {
-              some(q) => {
-                ui.finding = true
-                ui.find_focus = true
-                ui.field = field.of(q)
-                findkeys.set_query(cur, ui, q, true)
-                // The bar's field with its text selected, or without the focus.
-                match env.get("SPRID_CAPTURE_FIND_STATE") {
-                  some(st) => {
-                    if st == "selected" then ui.field = field.select_all(ui.field)
-                    if st == "blurred" then ui.find_focus = false
-                  },
-                  none => (),
-                }
-                for _ in 0..<(int.parse(env.get("SPRID_CAPTURE_FIND_UP") ?? "0") ?? 0) {
-                  findkeys.find_step(cur, ui, -1)
-                }
-              },
-              none => (),
-            }
-            render.draw(r, cur.t, cur.back, cur.shift, cur.sel, uistate.compose_of(ui), width, height, titles, active,
-              uistate.bar_of(ui))
-            list.push(tabs, cur)
-          },
-          none => (),
-        }
-        println(if frame.save_png(path) then "saved ${path}" else "capture failed")
-        alive = false
+  var a = session.Session {
+    capture: opts.capture, login: login, home: home,
+    // Questions in Japanese on a Japanese system.
+    ja: string.starts_with(env.get("LANG") ?? "", "ja"),
+    scale: scale, device: device,
+    // The config file, watched: saved, it applies at once.
+    config_fd: if opts.capture == none then sys.watch(prefs.config_path()!) else -1,
+    st: st, r: r,
+    tabs: [tabset.Tab { t: terminal.with_scrollback(cols, rows, st.scrollback), fd: first_fd, back: 0, shift: 0, sel: none,
+      up: tabset.Updates { syncs: 0, sync_at: 0, hides: 0, hide_at: 0 }, name: "", alert: false }],
+    active: 0, ui: fresh_ui(home), width: width, height: height, font_size: st.font_size,
+    blink_at: -1, flash_until: -1, alive: true, last_frame: 0, streaming: false, resized_at: -1,
+    front: first_fd, window_title: "", stats: fresh_stats()!,
+  }
+  // For captures of the tab bar: more tabs running the login shell.
+  let extra = if opts.capture != none then int.parse(env.get("SPRID_CAPTURE_TABS") ?? "1") ?? 1 else 1
+  for _ in 1..<extra {
+    match tabset.open_tab(a.r, width, height, list.len(a.tabs) + 1, login, "", st.scrollback) {
+      some(tb) => {
+        list.push(a.tabs, tb)
+        tabset.relayout(a.tabs, a.r, width, height)
       },
       none => (),
     }
   }
-  for tb in tabs {
-    pty.close(tb.fd)
+  a
+}
+
+fn fresh_ui(home: String) -> uistate.Ui = uistate.Ui {
+  preedit: [], preedit_caret: 0, preedit_from: 0, preedit_to: 0, wheel_acc: 0.0, dragging: false, unit: 0, anchor_line: 0, anchor_col: 0,
+  anchor_end_line: 0, anchor_end_col: 0, clicks: 0, click_line: 0, click_col: 0, dirty: true,
+  renaming: false, draft: "", click_ms: 0, click_tab: -1, home: home, finding: false, find: search.empty(),
+  field: field.of(""), find_focus: false, field_drag: false, scroll_drag: false, scroll_grab: 0,
+  ime_x: -1, ime_y: -1,
+  app_button: -1, report_col: -1, report_row: -1,
+}
+
+effect fn fresh_stats() -> session.Stats = {
+  let auto = list.map(string.split(env.get("SPRID_AUTOSCROLL") ?? "", ","), (x) => float.parse(x) ?? 0.0)
+  session.Stats {
+    debug: env.get("SPRID_DEBUG") != none, trace: env.get("SPRID_TRACE") != none,
+    frames: 0, draw_ms: 0, wakes: 0, wake_report: 0,
+    input_at: -1, latency_max: 0, latency_sum: 0, latency_n: 0,
+    auto: auto, auto_next: if list.len(auto) == 4 then float.to_int(auto[1]) else -1,
   }
 }
 
-/// The sooner of two waits, ms; -1 is no limit.
-fn sooner(a: Int, b: Int) -> Int = if a < 0 then b else if b < 0 then a else int.min(a, b)
+/// One turn of the loop: sleep until something is to be done, then do it —
+/// the config reloaded, the window resized, input, output, a frame.
+effect fn turn(mut a: session.Session) -> Unit = {
+  let timeout = wait_for(a)
+  // With no time to wait, just take the window's events: arming the fd
+  // watcher on every turn of a streaming loop costs more than it saves.
+  a.alive = if timeout == 0 then window.pump() else window.wait_fds(watched(a), timeout)
+  reload(a)!
+  // The window's close button: asked first when a program is running.
+  if not a.alive and list.len(a.tabs) > 0 and a.capture == none and not tabset.may_close_window(a.tabs, a.ja) then {
+    window.keep_open()
+    a.alive = true
+  }
+  report_wakes(a, timeout)
+  resized(a)
+  events(a)!
+  if list.len(a.tabs) == 0 then a.alive = false
+  autoscroll(a)
+  for tb in a.tabs {
+    if pty.pending(tb.fd) then {
+      let _ = pty.flush(tb.fd)
+    }
+  }
+  outputs.read_all(a)!
+  outputs.close_exited(a)
+  front_changed(a)
+  // The tab in front, in a window with the focus, is being looked at.
+  if a.r.focused and (list.get(a.tabs, a.active) |> option.map((tb) => tb.alert) ?? false) then {
+    a.tabs = list.set(a.tabs, a.active, { ...a.tabs[a.active], alert: false })
+    uistate.touch(a.ui)
+  }
+  paint.draw_due(a)
+  match a.capture {
+    some(path) => paint.capture_due(a, path)!,
+    none => (),
+  }
+}
+
+/// The PTYs, and the config file's watch.
+fn watched(a: session.Session) -> List[Int] =
+  list.map(a.tabs, (tb) => tb.fd) + (if a.config_fd >= 0 then [a.config_fd] else [])
+
+/// How long to sleep: until input, output on any tab, or the next frame is
+/// due — with nothing to draw that is indefinitely, so an idle window costs
+/// nothing — or the next thing timed: settling after a resize, the cursor's
+/// blink, the bell's light going out, a write to retry, a turn of the
+/// autoscroll. -1 for no limit.
+fn wait_for(mut a: session.Session) -> Int = {
+  let now = sys.now_ms()
+  blink(a, now)
+  if a.flash_until >= 0 and now >= a.flash_until then {
+    session.set_flash(a.r, false)
+    a.flash_until = -1
+    uistate.touch(a.ui)
+  }
+  let frame_wait = int.max(0, a.last_frame + session.frame_ms(a) - now)
+  let idle = if a.capture == none then -1 else 50
+  let drawn = if a.ui.dirty then int.max(frame_wait, tabset.sync_wait(a.tabs, a.active, now)) else idle
+  let until = (at: Int) => if at < 0 then -1 else int.max(0, at - now)
+  // Input a program hasn't taken yet (a big paste) is offered again soon.
+  let write = if list.any(a.tabs, (tb) => pty.pending(tb.fd)) then session.WRITE_RETRY_MS else -1
+  let settle = if a.resized_at < 0 then -1 else a.resized_at + session.SETTLE_MS
+  list.fold([until(settle), until(a.stats.auto_next), write, until(a.blink_at), until(a.flash_until)], drawn,
+    (acc, w) => session.sooner(acc, w))
+}
+
+/// A blinking cursor turns on and off while the window has the focus.
+fn blink(mut a: session.Session, now: Int) -> Unit =
+  if a.r.focused and tabset.cursor_blinks(a.tabs, a.active, a.r) then {
+    if a.blink_at < 0 then a.blink_at = now + session.BLINK_MS
+    else if now >= a.blink_at then {
+      session.set_blink_off(a.r, not a.r.blink_off)
+      a.blink_at = now + session.BLINK_MS
+      uistate.touch(a.ui)
+    }
+  } else {
+    a.blink_at = -1
+    session.set_blink_off(a.r, false)
+  }
+
+/// The config file was saved: it applies now — the theme, the font and its
+/// size, the cursor, Option — over what was set before. (One save can be
+/// seen more than once — the file, then its directory.)
+effect fn reload(mut a: session.Session) -> Unit = {
+  let saved = sys.watch_changed(a.config_fd)
+  let fresh = if saved then prefs.read_settings()! else a.st
+  if saved and fresh != a.st then {
+    prefs.report(fresh)!
+    let new_faces = fresh.font_family != a.st.font_family
+    let resize = new_faces or (fresh.font_size, fresh.pad_x, fresh.pad_y, fresh.cell_height) != (a.st.font_size, a.st.pad_x, a.st.pad_y, a.st.cell_height)
+    a.st = fresh
+    window.set_option_as_alt(fresh.option_as_alt)
+    if new_faces then new_font(a)!
+    a.r = prefs.styled(a.r, fresh)!
+    if resize then {
+      a.font_size = fresh.font_size
+      a.r = render.with_size(a.r, float.to_int(float.round(a.font_size * a.scale)),
+        float.to_int(fresh.pad_x * a.scale), float.to_int(fresh.pad_y * a.scale), fresh.cell_height)
+      tabset.relayout_live(a.tabs, a.r, a.width, a.height)
+      a.resized_at = sys.now_ms()
+    }
+    uistate.touch(a.ui)
+  }
+}
+
+/// A renderer for the config's font family, when it is found.
+effect fn new_font(mut a: session.Session) -> Unit = match fonts.find(a.st.font_family)! {
+  some(f) => {
+    let st = a.st
+    a.r = { ...render.new(a.device, f, float.to_int(float.round(st.font_size * a.scale)),
+      float.to_int(st.pad_x * a.scale), float.to_int(st.pad_y * a.scale), st.cell_height), focused: a.r.focused }
+  },
+  none => (),
+}
+
+/// SPRID_DEBUG: every 2 s, how often the loop woke and how long input took
+/// to show.
+fn report_wakes(mut a: session.Session, timeout: Int) -> Unit = {
+  session.count_wake(a.stats)
+  if a.stats.debug and sys.now_ms() - a.stats.wake_report >= 2000 then {
+    let s = a.stats
+    eprintln("sprid: ${int.to_string(s.wakes)} wakes in 2 s (dirty ${if a.ui.dirty then "yes" else "no"}, timeout ${int.to_string(timeout)})"
+      + ", input to frame avg ${int.to_string(s.latency_sum / int.max(1, s.latency_n))} max ${int.to_string(s.latency_max)} ms over ${int.to_string(s.latency_n)}")
+    a.stats = { ...s, latency_max: 0, latency_sum: 0, latency_n: 0, wakes: 0, wake_report: sys.now_ms() }
+  }
+}
+
+/// The window changed size: the screens follow now, scrollback once the
+/// size has held for a moment — and then the search is run again, the
+/// lines being numbered anew.
+fn resized(mut a: session.Session) -> Unit = {
+  if window.resized() then {
+    a.width = window.width()
+    a.height = window.height()
+    tabset.relayout_live(a.tabs, a.r, a.width, a.height)
+    a.resized_at = sys.now_ms()
+    uistate.touch(a.ui)
+  }
+  if a.resized_at >= 0 and sys.now_ms() - a.resized_at >= session.SETTLE_MS then {
+    tabset.settle_all(a.tabs)
+    a.resized_at = -1
+    uistate.touch(a.ui)
+    match tabset.take(a.tabs, a.active) {
+      some(tb) => {
+        var cur = tb
+        findkeys.refresh_find(cur, a.ui)
+        list.push(a.tabs, cur)
+        a.tabs = list.swap(a.tabs, a.active, list.len(a.tabs) - 1)
+      },
+      none => (),
+    }
+  }
+}
+
+/// The window's input, each to the active tab; what it asks of the tabs is
+/// done after the tab is back in the list.
+effect fn events(mut a: session.Session) -> Unit = {
+  var kind = window.next_event()
+  // Typing shows the cursor at once and starts its blink over.
+  if kind == window.KEY or kind == window.TEXT then {
+    session.set_blink_off(a.r, false)
+    if a.blink_at >= 0 then a.blink_at = sys.now_ms() + session.BLINK_MS
+  }
+  if kind != window.NONE then session.note_input(a.stats, sys.now_ms())
+  while kind != window.NONE {
+    if a.stats.trace and (kind == window.COMPOSE or kind == window.TEXT or kind == window.KEY) then
+      eprintln("input ${int.to_string(sys.now_ms())} kind ${int.to_string(kind)} code ${int.to_string(window.event_code())} end ${int.to_string(window.event_end())} text \"${window.event_text()}\" preedit ${int.to_string(list.len(a.ui.preedit))}")
+    acts.apply(a, event(a, kind)!)!
+    front_changed(a)
+    kind = if list.len(a.tabs) == 0 then window.NONE else window.next_event()
+  }
+}
+
+/// Input `kind` applied to the active tab; what it asks of the tabs.
+effect fn event(mut a: session.Session, kind: Int) -> uistate.Act = {
+  // Counted before the active tab is taken out of the list: with it out,
+  // two tabs looked like one — no tab bar to click, and every click below
+  // it placed a tab bar's height too low.
+  let open = list.len(a.tabs)
+  match tabset.take(a.tabs, a.active) {
+    some(tb) => {
+      var cur = tb
+      let act = input.handle(cur, a.ui, kind, a.r, a.scale, open, a.width)!
+      list.push(a.tabs, cur)
+      a.tabs = list.swap(a.tabs, a.active, list.len(a.tabs) - 1)
+      act
+    },
+    none => uistate.Stay,
+  }
+}
+
+/// What belongs to the tab in front — find, a rename, a drag — ends when
+/// another tab comes to the front, before its next input.
+fn front_changed(mut a: session.Session) -> Unit =
+  if tabset.fd_of(a.tabs, a.active) != a.front then {
+    uistate.leave_tab(a.ui)
+    a.front = tabset.fd_of(a.tabs, a.active)
+  }
+
+/// SPRID_AUTOSCROLL's turn of the wheel, when one is due.
+fn autoscroll(mut a: session.Session) -> Unit = {
+  let next = a.stats.auto_next
+  if next >= 0 and sys.now_ms() >= next then {
+    let auto = a.stats.auto
+    match tabset.take(a.tabs, a.active) {
+      some(tb) => {
+        var cur = tb
+        pointer.wheel(cur, a.ui, a.r, a.scale, auto[0], 40, 10)
+        if a.stats.trace then eprintln("wheel ${int.to_string(sys.now_ms())}")
+        list.push(a.tabs, cur)
+        a.tabs = list.swap(a.tabs, a.active, list.len(a.tabs) - 1)
+      },
+      none => (),
+    }
+    session.set_auto_next(a.stats, if sys.now_ms() >= float.to_int(auto[2]) then -1 else next + float.to_int(auto[3]))
+  }
+}

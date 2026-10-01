@@ -1,0 +1,108 @@
+// What an input asks of the tabs and the window, done once the tab it went
+// to is back in the list.
+
+import env
+import self.gui.render
+import self.gui.tabset
+import self.gui.uistate
+import self.gui.prefs
+import self.gui.session
+import self.keys
+import self.pty
+import self.sys
+
+effect fn apply(mut a: session.Session, act: uistate.Act) -> Unit = match act {
+  uistate.NewTab => new_tab(a)!,
+  uistate.CloseTab => if tabset.may_close_tab(a.tabs, a.active, a.ja) then {
+    tabset.close_tab(a.tabs, a.active)
+    a.active = int.min(a.active, list.len(a.tabs) - 1)
+    tabset.relayout(a.tabs, a.r, a.width, a.height)
+    uistate.touch(a.ui)
+  },
+  uistate.NextTab => go_to(a, (a.active + 1) % list.len(a.tabs)),
+  uistate.PrevTab => go_to(a, (a.active + list.len(a.tabs) - 1) % list.len(a.tabs)),
+  uistate.GoTo(i) => if i < list.len(a.tabs) and i != a.active then go_to(a, i),
+  uistate.NewWindow => {
+    let _ = sys.open_window(tabset.cwd_of(a.tabs, a.active, a.home))
+  },
+  uistate.CloseWindow => if tabset.may_close_window(a.tabs, a.ja) then { a.alive = false },
+  uistate.Zoom(step) => zoom(a, step),
+  uistate.Restyle => {
+    a.r = prefs.styled(a.r, a.st)!
+    uistate.touch(a.ui)
+  },
+  uistate.Focus(on) => focus(a, on),
+  uistate.Paste => paste(a)!,
+  uistate.Stay => (),
+}
+
+fn go_to(mut a: session.Session, i: Int) -> Unit = {
+  a.active = i
+  uistate.touch(a.ui)
+}
+
+/// A tab in the directory of the one in front, brought to the front.
+effect fn new_tab(mut a: session.Session) -> Unit = {
+  let cwd = tabset.cwd_of(a.tabs, a.active, env.get("HOME") ?? "")
+  match tabset.open_tab(a.r, a.width, a.height, list.len(a.tabs) + 1, a.login, cwd, a.st.scrollback) {
+    some(tb) => {
+      list.push(a.tabs, tb)
+      a.active = list.len(a.tabs) - 1
+      tabset.relayout(a.tabs, a.r, a.width, a.height)
+    },
+    none => (),
+  }
+  uistate.touch(a.ui)
+}
+
+/// The font `step` points larger, or with 0 back to the config's size. As
+/// for a resize: the screen now, scrollback once the size holds, so holding
+/// Cmd+Plus stays quick.
+fn zoom(mut a: session.Session, step: Int) -> Unit = {
+  let size = if step == 0 then a.st.font_size
+    else float.clamp(a.font_size + int.to_float(step), session.MIN_FONT_SIZE, session.MAX_FONT_SIZE)
+  if size != a.font_size then {
+    a.font_size = size
+    a.r = render.with_size(a.r, float.to_int(float.round(size * a.scale)),
+      float.to_int(a.st.pad_x * a.scale), float.to_int(a.st.pad_y * a.scale), a.st.cell_height)
+    tabset.relayout_live(a.tabs, a.r, a.width, a.height)
+    a.resized_at = sys.now_ms()
+    uistate.touch(a.ui)
+  }
+}
+
+/// The window gained or lost the keyboard. Programs that asked (mode 1004)
+/// are told: CSI I, CSI O.
+fn focus(mut a: session.Session, on: Bool) -> Unit = {
+  session.set_focused(a.r, on)
+  match tabset.take(a.tabs, a.active) {
+    some(tb) => {
+      var cur = tb
+      if cur.t.focus_events then {
+        let _ = pty.write(cur.fd, if on then "\x1b[I" else "\x1b[O")
+      }
+      list.push(a.tabs, cur)
+      a.tabs = list.swap(a.tabs, a.active, list.len(a.tabs) - 1)
+    },
+    none => (),
+  }
+  uistate.touch(a.ui)
+}
+
+/// The clipboard into the tab in front. Lines pasted where nothing marks
+/// them as pasted run one by one as they arrive: asked first.
+effect fn paste(mut a: session.Session) -> Unit = match tabset.take(a.tabs, a.active) {
+  some(tb) => {
+    var cur = tb
+    let text = tabset.clipboard()!
+    let protect = a.st.paste_protection and not cur.t.bracketed_paste and keys.multiline(text)
+    if text != "" and (not protect or tabset.paste_ok(text, a.ja)!) then {
+      let _ = pty.write(cur.fd, keys.paste(text, cur.t.bracketed_paste))
+      if cur.back != 0 then uistate.touch(a.ui)
+      tabset.scroll_to(cur, 0)
+    }
+    list.push(a.tabs, cur)
+    a.tabs = list.swap(a.tabs, a.active, list.len(a.tabs) - 1)
+  },
+  none => (),
+}
