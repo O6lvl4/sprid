@@ -35,6 +35,9 @@ type Settings = {
   bell_system: Bool,
   // Ask before pasting line breaks where they would run each line.
   paste_protection: Bool,
+  // What a selection made with the pointer is copied to: "true" the PRIMARY
+  // selection (X11, Wayland), "clipboard" the clipboard, "false" nowhere.
+  copy_on_select: String,
   // The file as parsed, for the colours it sets over the theme.
   file: config.Config,
   problems: List[String],
@@ -51,7 +54,7 @@ fn defaults() -> Settings = {
     font_family: "", font_size: DEFAULT_FONT_SIZE, cell_height: DEFAULT_CELL_HEIGHT, pad_x: 12.0, pad_y: 8.0,
     theme_light: DEFAULT_THEME, theme_dark: DEFAULT_THEME, scrollback: DEFAULT_SCROLLBACK,
     cursor_shape: 0, option_as_alt: 0, clipboard_write: true, clipboard_read: "ask",
-    bell_flash: true, bell_attention: true, bell_title: true, bell_system: false, paste_protection: true, file: config.empty(), problems: problems,
+    bell_flash: true, bell_attention: true, bell_title: true, bell_system: false, paste_protection: true, copy_on_select: "true", file: config.empty(), problems: problems,
   }
 }
 
@@ -79,6 +82,7 @@ fn from(c: config.Config) -> Settings = {
     bell_title: bell(bells, "title", d.bell_title),
     bell_system: bell(bells, "system", d.bell_system),
     paste_protection: read(c, "clipboard-paste-protection", config.flag) ?? d.paste_protection,
+    copy_on_select: read(c, "copy-on-select", (v) => one_of(v, ["true", "false", "clipboard"])) ?? d.copy_on_select,
     file: c,
     problems: problems_in(c, bells),
   }
@@ -101,6 +105,7 @@ fn checks() -> List[(String, (String) -> Bool)] = [
   ("clipboard-write", (v) => one_of(v, ["allow", "deny"]) != none),
   ("clipboard-read", (v) => one_of(v, ["ask", "allow", "deny"]) != none),
   ("clipboard-paste-protection", (v) => config.flag(v) != none),
+  ("copy-on-select", (v) => one_of(v, ["true", "false", "clipboard"]) != none),
 ]
 
 /// What is wrong with `c`: the parser's complaints, keys sprid doesn't
@@ -190,6 +195,8 @@ test "values from the file, problems for the rest" {
   let b = from(config.parse("bell-features = no-flash, system,bogus\nclipboard-read = allow"))
   assert_eq((b.bell_flash, b.bell_attention, b.bell_title, b.bell_system, b.clipboard_read), (false, true, true, true, "allow"))
   assert_eq(b.problems, ["bell-features: can't use \"bogus\""])
+  let sel = from(config.parse("copy-on-select = clipboard"))
+  assert_eq((sel.copy_on_select, b.copy_on_select, from(config.parse("copy-on-select = maybe")).problems), ("clipboard", "true", ["copy-on-select: can't use \"maybe\""]))
 }
 
 test "the theme for each appearance, with the file's colours over it" {

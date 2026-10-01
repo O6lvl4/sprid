@@ -13,3 +13,9 @@ fn notify(title: String, body: String) -> Unit = _
 /// The system's alert sound (macOS; nothing elsewhere).
 @extern(rust, "crate::dialog", "beep")
 fn beep() -> Unit = _
+
+/// A menu at the pointer: one item per line of `items` (`!` first:
+/// disabled, `-`: a separator); the index picked, -1 for none (and on
+/// Linux, which has no menu yet). Waits until it closes.
+@extern(rust, "crate::dialog", "context_menu")
+fn context_menu(items: String) -> Int = _

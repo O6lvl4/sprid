@@ -21,6 +21,8 @@ type Ui = {
   // from what the press took — its first and last cell.
   dragging: Bool,
   unit: Int,
+  // Option was held at the press: a rectangle is selected.
+  rect: Bool,
   anchor_line: Int,
   anchor_col: Int,
   anchor_end_line: Int,
@@ -70,7 +72,7 @@ type Ui = {
 /// `Zoom` changes the font size by that many points, or with 0 resets it;
 /// `Restyle` follows the system's light or dark appearance; `Focus` the
 /// window gaining or losing the keyboard.
-type Act = | Stay | NewTab | CloseTab | NextTab | PrevTab | GoTo(Int) | NewWindow | CloseWindow | Zoom(Int) | Restyle | Focus(Bool) | Paste
+type Act = | Stay | NewTab | CloseTab | NextTab | PrevTab | GoTo(Int) | NewWindow | CloseWindow | Zoom(Int) | Restyle | Focus(Bool) | Paste | PastePrimary | Selected | Menu
 
 /// The find bar as drawn.
 // FIXME(almide#3153): `render.Bar { ... }` once a record literal works through a

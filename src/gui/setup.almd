@@ -70,7 +70,7 @@ effect fn start(capture: Option[String], faces: fonts.Faces, st: settings.Settin
 }
 
 fn fresh_ui(home: String) -> uistate.Ui = uistate.Ui {
-  preedit: [], preedit_caret: 0, preedit_from: 0, preedit_to: 0, wheel_acc: 0.0, dragging: false, unit: 0, anchor_line: 0, anchor_col: 0,
+  preedit: [], preedit_caret: 0, preedit_from: 0, preedit_to: 0, wheel_acc: 0.0, dragging: false, unit: 0, rect: false, anchor_line: 0, anchor_col: 0,
   anchor_end_line: 0, anchor_end_col: 0, clicks: 0, click_line: 0, click_col: 0, dirty: true,
   renaming: false, draft: "", click_ms: 0, click_tab: -1, home: home, finding: false, find: search.empty(),
   field: field.of(""), find_focus: false, field_drag: false, scroll_drag: false, scroll_grab: 0,

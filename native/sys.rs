@@ -113,21 +113,25 @@ fn system_locale() -> Option<String> { None }
 
 /// The commands that write the clipboard from their stdin and print it:
 /// pbcopy / pbpaste on macOS; on Linux wl-copy / wl-paste under Wayland,
-/// else xclip or xsel under X11, whichever is installed.
-fn clipboard_tools() -> Option<(&'static [&'static str], &'static [&'static str])> {
+/// else xclip or xsel under X11, whichever is installed. With `primary`,
+/// those for the PRIMARY selection — X11's and Wayland's, which macOS
+/// doesn't have.
+fn clipboard_tools(primary: bool) -> Option<(Vec<&'static str>, Vec<&'static str>)> {
     if cfg!(target_os = "macos") {
-        return Some((&["pbcopy"], &["pbpaste"]));
+        return if primary { None } else { Some((vec!["pbcopy"], vec!["pbpaste"])) };
     }
     let on_path = |cmd: &str| {
         std::env::var_os("PATH").map_or(false, |p| std::env::split_paths(&p).any(|d| d.join(cmd).is_file()))
     };
     let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
+    let (sel, xsel) = if primary { ("primary", "--primary") } else { ("clipboard", "--clipboard") };
     if wayland && on_path("wl-copy") && on_path("wl-paste") {
-        Some((&["wl-copy"], &["wl-paste", "--no-newline"]))
+        let extra: &[&'static str] = if primary { &["--primary"] } else { &[] };
+        Some(([&["wl-copy"][..], extra].concat(), [&["wl-paste", "--no-newline"][..], extra].concat()))
     } else if on_path("xclip") {
-        Some((&["xclip", "-selection", "clipboard"], &["xclip", "-selection", "clipboard", "-o"]))
+        Some((vec!["xclip", "-selection", sel], vec!["xclip", "-selection", sel, "-o"]))
     } else if on_path("xsel") {
-        Some((&["xsel", "--clipboard", "--input"], &["xsel", "--clipboard", "--output"]))
+        Some((vec!["xsel", xsel, "--input"], vec!["xsel", xsel, "--output"]))
     } else {
         None
     }
@@ -139,30 +143,49 @@ fn command(argv: &[&str]) -> std::process::Command {
     cmd
 }
 
-/// Put `text` on the clipboard; `false` when there is no way to.
-pub fn clipboard_set(text: &str) -> bool {
+fn set_selection(text: &str, primary: bool) -> bool {
     use std::io::Write;
     use std::process::Stdio;
-    let Some((copy, _)) = clipboard_tools() else { return false };
+    let Some((copy, _)) = clipboard_tools(primary) else { return false };
     // The X11 and Wayland tools stay behind to serve the selection: their
     // output goes nowhere, or reading it would wait for them to exit.
-    let Ok(mut child) = command(copy).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() else {
+    let Ok(mut child) = command(&copy).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() else {
         return false;
     };
     let wrote = child.stdin.take().map_or(false, |mut i| i.write_all(text.as_bytes()).is_ok());
     child.wait().map_or(false, |s| s.success()) && wrote
 }
 
-/// The clipboard's text; empty when there is none, or no way to read it.
-pub fn clipboard_get() -> String {
-    let Some((_, paste)) = clipboard_tools() else { return String::new() };
-    command(paste)
+fn get_selection(primary: bool) -> String {
+    let Some((_, paste)) = clipboard_tools(primary) else { return String::new() };
+    command(&paste)
         .stderr(std::process::Stdio::null())
         .output()
         .ok()
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
         .unwrap_or_default()
+}
+
+/// Put `text` on the clipboard; `false` when there is no way to.
+pub fn clipboard_set(text: &str) -> bool {
+    set_selection(text, false)
+}
+
+/// The clipboard's text; empty when there is none, or no way to read it.
+pub fn clipboard_get() -> String {
+    get_selection(false)
+}
+
+/// Put `text` in the PRIMARY selection (X11, Wayland); `false` where there
+/// is none — macOS — or no way to.
+pub fn primary_set(text: &str) -> bool {
+    set_selection(text, true)
+}
+
+/// The PRIMARY selection's text, for a middle click to paste.
+pub fn primary_get() -> String {
+    get_selection(true)
 }
 
 /// Start another sprid — a window of its own — in `cwd` (the inherited

@@ -45,8 +45,9 @@ fn max_back(t: terminal.Terminal) -> Int = if t.alt then 0 else scrollback.line_
 // ── Selection ─────────────────────────────────────────────────────────────
 
 /// Cells from (anchor_line, anchor_col) to (head_line, head_col), both ends
-/// included, in reading order whichever way it was dragged.
-type Selection = { anchor_line: Int, anchor_col: Int, head_line: Int, head_col: Int }
+/// included, in reading order whichever way it was dragged — or, `rect`,
+/// the rectangle with those corners (Option+drag).
+type Selection = { anchor_line: Int, anchor_col: Int, head_line: Int, head_col: Int, rect: Bool }
 
 /// The selection's ends in reading order: (start line, start col, end line,
 /// end col).
@@ -58,6 +59,7 @@ fn ordered(s: Selection) -> (Int, Int, Int, Int) =
 fn selected(s: Selection, line: Int, col: Int) -> Bool = {
   let (l0, c0, l1, c1) = ordered(s)
   if line < l0 or line > l1 then false
+  else if s.rect then col >= int.min(s.anchor_col, s.head_col) and col <= int.max(s.anchor_col, s.head_col)
   else if l0 == l1 then col >= c0 and col <= c1
   else if line == l0 then col >= c0
   else if line == l1 then col <= c1
@@ -66,7 +68,21 @@ fn selected(s: Selection, line: Int, col: Int) -> Bool = {
 
 /// The selected text. Lines end in a newline unless they wrapped onto the
 /// next; trailing blanks of a line are dropped.
-fn selected_text(t: terminal.Terminal, s: Selection) -> String = {
+fn selected_text(t: terminal.Terminal, s: Selection) -> String =
+  if s.rect then rect_text(t, s) else span_text(t, s)
+
+/// A rectangle's text: its columns of each line, trailing blanks dropped,
+/// a line each.
+fn rect_text(t: terminal.Terminal, s: Selection) -> String = {
+  let (l0, _, l1, _) = ordered(s)
+  let c0 = int.min(s.anchor_col, s.head_col)
+  let c1 = int.min(int.max(s.anchor_col, s.head_col), t.cols - 1)
+  list.range(l0, l1 + 1)
+    |> list.map((n) => line_at(t, n) |> option.map((row) => line_text({ ...row, wrapped: false }, c0, c1, true)) ?? "")
+    |> list.join("\n")
+}
+
+fn span_text(t: terminal.Terminal, s: Selection) -> String = {
   let (l0, c0, l1, c1) = ordered(s)
   var out = ""
   for n in l0...l1 {
@@ -232,18 +248,18 @@ test "evicted lines are gone but numbers stay" {
 
 test "a selection reads across scrollback and screen" {
   let t = run(10, 2, "hello\r\nworld\r\nagain")
-  let s = Selection { anchor_line: 2, anchor_col: 2, head_line: 0, head_col: 1 }
+  let s = Selection { anchor_line: 2, anchor_col: 2, head_line: 0, head_col: 1, rect: false }
   assert_eq(selected_text(t, s), "ello\nworld\naga")
 }
 
 test "wrapped lines copy as one" {
   let t = run(4, 3, "abcdefg")
-  let s = Selection { anchor_line: 0, anchor_col: 0, head_line: 1, head_col: 3 }
+  let s = Selection { anchor_line: 0, anchor_col: 0, head_line: 1, head_col: 3, rect: false }
   assert_eq(selected_text(t, s), "abcdefg")
 }
 
 test "selected is inclusive at both ends" {
-  let s = Selection { anchor_line: 1, anchor_col: 5, head_line: 3, head_col: 2 }
+  let s = Selection { anchor_line: 1, anchor_col: 5, head_line: 3, head_col: 2, rect: false }
   assert(selected(s, 1, 5))
   assert(not selected(s, 1, 4))
   assert(selected(s, 2, 0))
@@ -253,7 +269,7 @@ test "selected is inclusive at both ends" {
 
 test "a double click takes a word, a path whole, and Japanese by script" {
   let t = run(40, 2, "ls ~/src/app.almd:12 done\r\n漢字をひらがなカタカナ")
-  let span = (l, c) => { let (l0, c0, l1, c1) = word_span(t, l, c); selected_text(t, Selection { anchor_line: l0, anchor_col: c0, head_line: l1, head_col: c1 }) }
+  let span = (l, c) => { let (l0, c0, l1, c1) = word_span(t, l, c); selected_text(t, Selection { anchor_line: l0, anchor_col: c0, head_line: l1, head_col: c1, rect: false }) }
   assert_eq(span(0, 0), "ls")
   assert_eq(span(0, 8), "~/src/app.almd:12")
   assert_eq(span(1, 1), "漢字")
@@ -271,4 +287,12 @@ test "a triple click takes the whole line, wrapped rows included" {
   assert_eq(line_span(t, 2), (1, 0, 2, 3))
   assert_eq(line_span(t, 1), (1, 0, 2, 3))
   assert_eq(line_span(t, 0), (0, 0, 0, 3))
+}
+
+test "a rectangle selects the same columns of every line" {
+  let t = run(10, 3, "abcdef\r\nghijkl\r\nmn")
+  let top = screen_line(t)
+  let s = Selection { anchor_line: top, anchor_col: 3, head_line: top + 2, head_col: 1, rect: true }
+  assert_eq(selected_text(t, s), "bcd\nhij\nn")
+  assert_eq((selected(s, top + 1, 2), selected(s, top + 1, 4), selected(s, top + 3, 2)), (true, false, false))
 }

@@ -60,7 +60,8 @@ fn all(c: Config, key: String) -> List[String] =
 let KEYS = ["font-family", "font-size", "adjust-cell-height", "theme", "background", "foreground",
   "cursor-color", "selection-background", "palette", "scrollback-limit", "cursor-style",
   "cursor-style-blink", "macos-option-as-alt", "window-padding-x", "window-padding-y",
-  "clipboard-write", "clipboard-read", "clipboard-paste-protection", "bell-features"]
+  "clipboard-write", "clipboard-read", "clipboard-paste-protection", "bell-features",
+  "copy-on-select"]
 
 /// The keys in `c` sprid doesn't know.
 fn unknown(c: Config) -> List[String] =

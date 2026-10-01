@@ -34,11 +34,20 @@ effect fn mouse(mut cur: tabset.Tab, mut ui: uistate.Ui, kind: Int, p: Place) ->
   if kind == window.MOUSE_DOWN and window.event_code() == 0 and link_click() and open_link(cur, p)! then uistate.Stay
   else if off_grid(cur, ui, kind, p) then uistate.Stay
   else if kind == window.MOUSE_DOWN and window.event_code() == 0 then press(cur, ui, p)!
-  else {
-    if kind == window.MOUSE_MOVE and ui.dragging then drag_select(cur, ui, p)
-    else if kind == window.MOUSE_UP and window.event_code() == 0 then { ui.dragging = false }
+  // A right click: copy, paste, select all, find, clear.
+  else if kind == window.MOUSE_DOWN and window.event_code() == 1 then uistate.Menu
+  // A middle click pastes the PRIMARY selection, as X11 has it.
+  else if kind == window.MOUSE_DOWN and window.event_code() == 2 and sys.is_linux() then uistate.PastePrimary
+  else if kind == window.MOUSE_MOVE and ui.dragging then {
+    drag_select(cur, ui, p)
     uistate.Stay
   }
+  else if kind == window.MOUSE_UP and window.event_code() == 0 and ui.dragging then {
+    ui.dragging = false
+    // The selection made, for copy-on-select.
+    if cur.sel != none then uistate.Selected else uistate.Stay
+  }
+  else uistate.Stay
 
 /// The pointer moved: the link under it found while Cmd is held, and the
 /// pointer shaped for where it is — a hand on a link, the I-beam on the
@@ -224,6 +233,7 @@ effect fn press_grid(mut cur: tabset.Tab, mut ui: uistate.Ui, p: Place) -> Unit 
   ui.click_line = line
   ui.click_col = col
   ui.unit = ui.clicks - 1
+  ui.rect = ui.unit == 0 and int.band(window.event_mods(), window.MOD_ALT) != 0
   // SPRID_TRACE: where a press lands, to check it against the pointer.
   if env.get("SPRID_TRACE") != none then eprintln("press y ${float.to_string(window.event_y())} scale ${float.to_string(p.scale)} grid_top ${int.to_string(render.grid_top(p.r, p.tabs))} cell_h ${int.to_string(p.r.cell_h)} shift ${int.to_string(cur.shift)} back ${int.to_string(cur.back)} -> line ${int.to_string(line - view.top_line(cur.t, cur.back))} col ${int.to_string(col)}")
   let (l0, c0, l1, c1) = view.unit_span(cur.t, ui.unit, line, col)
@@ -233,7 +243,7 @@ effect fn press_grid(mut cur: tabset.Tab, mut ui: uistate.Ui, p: Place) -> Unit 
   ui.anchor_end_col = c1
   ui.dragging = true
   let sel = if ui.unit == 0 then none
-    else some(view.Selection { anchor_line: l0, anchor_col: c0, head_line: l1, head_col: c1 })
+    else some(view.Selection { anchor_line: l0, anchor_col: c0, head_line: l1, head_col: c1, rect: false })
   if sel != cur.sel then ui.dirty = true
   cur.sel = sel
 }
@@ -248,9 +258,9 @@ fn drag_select(mut cur: tabset.Tab, mut ui: uistate.Ui, p: Place) -> Unit = {
   let (h0, c0, h1, c1) = view.unit_span(cur.t, ui.unit, line, col)
   let before = h0 < ui.anchor_line or (h0 == ui.anchor_line and c0 < ui.anchor_col)
   let sel = if ui.unit == 0 and line == ui.anchor_line and col == ui.anchor_col then none
-    else if ui.unit == 0 then some(view.Selection { anchor_line: ui.anchor_line, anchor_col: ui.anchor_col, head_line: line, head_col: col })
-    else if before then some(view.Selection { anchor_line: ui.anchor_end_line, anchor_col: ui.anchor_end_col, head_line: h0, head_col: c0 })
-    else some(view.Selection { anchor_line: ui.anchor_line, anchor_col: ui.anchor_col, head_line: h1, head_col: c1 })
+    else if ui.unit == 0 then some(view.Selection { anchor_line: ui.anchor_line, anchor_col: ui.anchor_col, head_line: line, head_col: col, rect: ui.rect })
+    else if before then some(view.Selection { anchor_line: ui.anchor_end_line, anchor_col: ui.anchor_end_col, head_line: h0, head_col: c0, rect: false })
+    else some(view.Selection { anchor_line: ui.anchor_line, anchor_col: ui.anchor_col, head_line: h1, head_col: c1, rect: false })
   if sel != cur.sel then {
     cur.sel = sel
     ui.dirty = true

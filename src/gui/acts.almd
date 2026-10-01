@@ -10,6 +10,9 @@ import self.gui.session
 import self.keys
 import self.pty
 import self.sys
+import self.gui.dialog
+import self.gui.shortcuts
+import self.view
 
 effect fn apply(mut a: session.Session, act: uistate.Act) -> Unit = match act {
   uistate.NewTab => new_tab(a)!,
@@ -33,7 +36,10 @@ effect fn window_act(mut a: session.Session, act: uistate.Act) -> Unit = match a
     uistate.touch(a.ui)
   },
   uistate.Focus(on) => focus(a, on),
-  uistate.Paste => paste(a)!,
+  uistate.Paste => paste(a, tabset.clipboard()!)!,
+  uistate.PastePrimary => paste(a, sys.primary_get())!,
+  uistate.Selected => copy_selection(a)!,
+  uistate.Menu => menu(a)!,
   _ => (),
 }
 
@@ -99,12 +105,55 @@ fn focus(mut a: session.Session, on: Bool) -> Unit = {
   uistate.touch(a.ui)
 }
 
-/// The clipboard into the tab in front. Lines pasted where nothing marks
-/// them as pasted run one by one as they arrive: asked first.
-effect fn paste(mut a: session.Session) -> Unit = match tabset.take(a.tabs, a.active) {
+/// The menu a right click opens, and what was picked from it done.
+effect fn menu(mut a: session.Session) -> Unit = {
+  let has_sel = (list.get(a.tabs, a.active) |> option.flat_map((tb) => tb.sel)) != none
+  let names = if a.ja then ["コピー", "貼り付け", "-", "すべてを選択", "検索", "クリア"]
+    else ["Copy", "Paste", "-", "Select All", "Find", "Clear"]
+  let items = list.enumerate(names) |> list.map(((i, n)) => if i == 0 and not has_sel then "!" + n else n)
+  let picked = dialog.context_menu(list.join(items, "\n"))
+  if picked == 1 then paste(a, tabset.clipboard()!)!
+  else if picked >= 0 then menu_pick(a, picked)!
+}
+
+effect fn menu_pick(mut a: session.Session, picked: Int) -> Unit = match tabset.take(a.tabs, a.active) {
   some(tb) => {
     var cur = tb
-    let text = tabset.clipboard()!
+    if picked == 0 then match cur.sel {
+      some(s) => tabset.copy(view.selected_text(cur.t, s))!,
+      none => (),
+    }
+    else if picked == 3 then shortcuts.select_all(cur)
+    else if picked == 4 then shortcuts.open_find(cur, a.ui)
+    else if picked == 5 then shortcuts.clear(cur, a.ui)
+    uistate.touch(a.ui)
+    list.push(a.tabs, cur)
+    a.tabs = list.swap(a.tabs, a.active, list.len(a.tabs) - 1)
+  },
+  none => (),
+}
+
+/// The selection just made copied, as `copy-on-select` says: to the PRIMARY
+/// selection (`true`, X11's and Wayland's — macOS has none), to the
+/// clipboard (`clipboard`), or not (`false`).
+effect fn copy_selection(a: session.Session) -> Unit = match list.get(a.tabs, a.active) {
+  some(tb) => match tb.sel {
+    some(s) => {
+      let text = view.selected_text(tb.t, s)
+      if a.st.copy_on_select == "clipboard" then tabset.copy(text)!
+      else if a.st.copy_on_select == "true" then { let _ = sys.primary_set(text) }
+    },
+    none => (),
+  },
+  none => (),
+}
+
+/// `text` — the clipboard's, or the PRIMARY selection's — into the tab in
+/// front. Lines pasted where nothing marks them as pasted run one by one as
+/// they arrive: asked first.
+effect fn paste(mut a: session.Session, text: String) -> Unit = match tabset.take(a.tabs, a.active) {
+  some(tb) => {
+    var cur = tb
     let protect = a.st.paste_protection and not cur.t.bracketed_paste and keys.multiline(text)
     if text != "" and (not protect or tabset.paste_ok(text, a.ja)!) then {
       let _ = pty.write(cur.fd, keys.paste(text, cur.t.bracketed_paste))

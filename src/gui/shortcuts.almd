@@ -145,7 +145,7 @@ fn select_all(mut cur: tabset.Tab) -> Unit = {
   terminal.settle(cur.t)
   let screen = view.screen_line(cur.t)
   cur.sel = some(view.Selection { anchor_line: screen - view.max_back(cur.t), anchor_col: 0,
-                                  head_line: screen + (if cur.t.alt then cur.t.rows - 1 else cur.t.y), head_col: cur.t.cols - 1 })
+                                  head_line: screen + (if cur.t.alt then cur.t.rows - 1 else cur.t.y), head_col: cur.t.cols - 1, rect: false })
 }
 
 /// Where a scrolling key takes the view, lines back; none for another key.
@@ -195,16 +195,22 @@ effect fn command_key(mut cur: tabset.Tab, mut ui: uistate.Ui, k: Key) -> Bool =
 /// terminal: the last search goes on. Whether it was one.
 fn find_key(mut cur: tabset.Tab, mut ui: uistate.Ui, k: Key) -> Bool =
   if k.command and k.lower == 0x66 then {
-    ui.finding = true
-    ui.find_focus = true
-    ui.field = field.select_all(ui.field)
-    findkeys.set_query(cur, ui, field.text(ui.field), true)
+    open_find(cur, ui)
     true
   } else if (k.command or k.command_shift) and k.lower == 0x67 and ui.find.query != "" then {
     ui.finding = true
     findkeys.find_step(cur, ui, if k.command_shift then 1 else -1)
     true
   } else false
+
+/// The find bar opened, focused, its last query selected — typing replaces
+/// it — and searched again from the bottom.
+fn open_find(mut cur: tabset.Tab, mut ui: uistate.Ui) -> Unit = {
+  ui.finding = true
+  ui.find_focus = true
+  ui.field = field.select_all(ui.field)
+  findkeys.set_query(cur, ui, field.text(ui.field), true)
+}
 
 /// Cmd+K: clear. Scrollback always; the screen too when the shell waits at
 /// its prompt — it is sent Ctrl+L, and draws the prompt, with what was

@@ -46,6 +46,22 @@ pub fn beep() {
     }
 }
 
+/// A menu of `items` at the pointer — one per line of `items`, a line
+/// starting with `!` shown disabled, `-` a separator — and which was
+/// picked: its index, or -1 for none. Blocks until it closes. Elsewhere
+/// than macOS there is no menu: -1.
+pub fn context_menu(items: &str) -> i64 {
+    #[cfg(target_os = "macos")]
+    unsafe {
+        mac::context_menu(items)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = items;
+        -1
+    }
+}
+
 #[cfg(target_os = "macos")]
 mod mac {
     use std::ffi::{c_char, c_void, CString};
@@ -169,6 +185,85 @@ mod mac {
             let add: unsafe extern "C" fn(Id, Id, Id, Id) = std::mem::transmute(objc_msgSend as unsafe extern "C" fn());
             add(center, sel("addNotificationRequest:withCompletionHandler:"), request, std::ptr::null_mut());
             send(content, "release");
+        }
+    }
+
+    #[link(name = "objc")]
+    extern "C" {
+        fn objc_allocateClassPair(superclass: Id, name: *const c_char, extra: usize) -> Id;
+        fn objc_registerClassPair(cls: Id);
+        fn class_addMethod(cls: Id, name: Id, imp: *const c_void, types: *const c_char) -> bool;
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct Point {
+        x: f64,
+        y: f64,
+    }
+
+    /// The tag of the item picked from the last menu, -1 for none.
+    static PICKED: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(-1);
+
+    unsafe extern "C" fn pick(_this: Id, _cmd: Id, sender: Id) {
+        let f: unsafe extern "C" fn(Id, Id) -> isize = unsafe { std::mem::transmute(objc_msgSend as unsafe extern "C" fn()) };
+        let tag = unsafe { f(sender, sel("tag")) };
+        PICKED.store(tag as i64, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// An object whose `pick:` notes the sender's tag, the menu items' target.
+    unsafe fn target() -> Id {
+        static CLASS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+        let cls = *CLASS.get_or_init(|| unsafe {
+            let cls = objc_allocateClassPair(objc_getClass(c"NSObject".as_ptr()), c"SpridMenuTarget".as_ptr(), 0);
+            class_addMethod(cls, sel("pick:"), pick as *const c_void, c"v@:@".as_ptr());
+            objc_registerClassPair(cls);
+            cls as usize
+        });
+        unsafe { send(send(cls as Id, "alloc"), "init") }
+    }
+
+    pub unsafe fn context_menu(items: &str) -> i64 {
+        unsafe {
+            let pool = objc_autoreleasePoolPush();
+            let picked = popup(items);
+            objc_autoreleasePoolPop(pool);
+            picked
+        }
+    }
+
+    unsafe fn popup(items: &str) -> i64 {
+        unsafe {
+            PICKED.store(-1, std::sync::atomic::Ordering::Relaxed);
+            let menu = send(send(objc_getClass(c"NSMenu".as_ptr()), "alloc"), "init");
+            let set_bool: unsafe extern "C" fn(Id, Id, bool) = std::mem::transmute(objc_msgSend as unsafe extern "C" fn());
+            set_bool(menu, sel("setAutoenablesItems:"), false);
+            let target = target();
+            for (i, line) in items.lines().enumerate() {
+                if line == "-" {
+                    send_id(menu, "addItem:", send(objc_getClass(c"NSMenuItem".as_ptr()), "separatorItem"));
+                    continue;
+                }
+                let (title, enabled) = match line.strip_prefix('!') {
+                    Some(t) => (t, false),
+                    None => (line, true),
+                };
+                let init: unsafe extern "C" fn(Id, Id, Id, Id, Id) -> Id = std::mem::transmute(objc_msgSend as unsafe extern "C" fn());
+                let item = init(send(objc_getClass(c"NSMenuItem".as_ptr()), "alloc"), sel("initWithTitle:action:keyEquivalent:"),
+                    ns_string(title), sel("pick:"), ns_string(""));
+                send_id(item, "setTarget:", target);
+                send_int(item, "setTag:", i as isize);
+                set_bool(item, sel("setEnabled:"), enabled);
+                send_id(menu, "addItem:", item);
+                send(item, "release");
+            }
+            let at: unsafe extern "C" fn(Id, Id) -> Point = std::mem::transmute(objc_msgSend as unsafe extern "C" fn());
+            let location = at(objc_getClass(c"NSEvent".as_ptr()), sel("mouseLocation"));
+            let pop: unsafe extern "C" fn(Id, Id, Id, Point, Id) -> bool = std::mem::transmute(objc_msgSend as unsafe extern "C" fn());
+            pop(menu, sel("popUpMenuPositioningItem:atLocation:inView:"), std::ptr::null_mut(), location, std::ptr::null_mut());
+            send(menu, "release");
+            send(target, "release");
+            PICKED.load(std::sync::atomic::Ordering::Relaxed)
         }
     }
 
