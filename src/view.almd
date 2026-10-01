@@ -73,17 +73,24 @@ fn selected_text(t: terminal.Terminal, s: Selection) -> String = {
       some(row) => {
         let from = if n == l0 then c0 else 0
         let to = if n == l1 then int.min(c1, t.cols - 1) else t.cols - 1
-        var line = ""
-        for x in from...to {
-          line = line + scrollback.cell_text(row.cells, x, row.extras)
-        }
-        let last = n == l1
-        out = out + (if row.wrapped and not last then line else string.trim_end(line)) + (if last or row.wrapped then "" else "\n")
+        out = out + line_text(row, from, to, n == l1)
       },
       none => (),
     }
   }
   out
+}
+
+/// Columns `from` to `to` of `row` as selected text: with its newline
+/// unless it wrapped onto the next or is the `last` line, its trailing
+/// blanks dropped where it ends.
+fn line_text(row: scrollback.Row, from: Int, to: Int, last: Bool) -> String = {
+  var line = ""
+  for x in from...to {
+    line = line + scrollback.cell_text(row.cells, x, row.extras)
+  }
+  if row.wrapped and not last then line
+  else string.trim_end(line) + (if last then "" else "\n")
 }
 
 // ── Selecting by word and by line ──────────────────────────────────────────
@@ -116,29 +123,22 @@ fn line_span(t: terminal.Terminal, line: Int) -> (Int, Int, Int, Int) = {
 fn word_span(t: terminal.Terminal, line: Int, col: Int) -> (Int, Int, Int, Int) = {
   let k = kind_in(t, line, col)
   guard k >= 0 else (line, col, line, col)
-  // Left through the row, then onto the end of the row before when it
-  // wrapped onto this one; right likewise.
-  var l0 = line
-  var c0 = col
-  var going = true
-  while going {
-    let (l, c) = if c0 > 0 then (l0, c0 - 1) else if wraps_into(t, l0) then (l0 - 1, t.cols - 1) else (l0, -1)
-    if c >= 0 and kind_in(t, l, c) == k then {
-      l0 = l
-      c0 = c
-    } else going = false
-  }
-  var l1 = line
-  var c1 = col
-  going = true
-  while going {
-    let (l, c) = if c1 < t.cols - 1 then (l1, c1 + 1) else if wraps(t, l1) then (l1 + 1, 0) else (l1, -1)
-    if c >= 0 and kind_in(t, l, c) == k then {
-      l1 = l
-      c1 = c
-    } else going = false
-  }
+  let (l0, c0) = extend(t, k, line, col, (l, c) => if c > 0 then (l, c - 1) else if wraps_into(t, l) then (l - 1, t.cols - 1) else (l, -1))
+  let (l1, c1) = extend(t, k, line, col, (l, c) => if c < t.cols - 1 then (l, c + 1) else if wraps(t, l) then (l + 1, 0) else (l, -1))
   (l0, c0, l1, c1)
+}
+
+/// From (`line`, `col`), as far as `step` goes over characters of kind `k`
+/// — through the row, and onto the next or previous where it wrapped;
+/// `step` gives a column of -1 where there is nowhere to go.
+fn extend(t: terminal.Terminal, k: Int, line: Int, col: Int, step: (Int, Int) -> (Int, Int)) -> (Int, Int) = {
+  var at = (line, col)
+  var next = step(line, col)
+  while next.1 >= 0 and kind_in(t, next.0, next.1) == k {
+    at = next
+    next = step(next.0, next.1)
+  }
+  at
 }
 
 /// The kind of the character at (`line`, `col`), -1 where there is no line.
@@ -171,15 +171,23 @@ fn kind_at(row: scrollback.Row, x: Int) -> Int = {
 /// any other symbol (5), each kind apart from the others.
 fn kind_of(cp: Int) -> Int =
   if cp <= 32 or cp == 0x3000 then 0
-  else if (cp >= 0x30 and cp <= 0x39) or (cp >= 0x41 and cp <= 0x5A) or (cp >= 0x61 and cp <= 0x7A) then 1
-  else if cp < 0x80 then (if string.contains("_-./~:@%+#?&=", string.from_codepoint(cp)) then 1 else 5)
-  else if cp >= 0x3041 and cp <= 0x309F then 2
-  else if (cp >= 0x30A0 and cp <= 0x30FF) or (cp >= 0x31F0 and cp <= 0x31FF) or (cp >= 0xFF66 and cp <= 0xFF9F) then 3
-  else if (cp >= 0x4E00 and cp <= 0x9FFF) or (cp >= 0x3400 and cp <= 0x4DBF) or (cp >= 0xF900 and cp <= 0xFAFF) or cp == 0x3005 then 4
-  // Box drawing, blocks, CJK and fullwidth punctuation: symbols.
-  else if (cp >= 0x2500 and cp <= 0x259F) or (cp >= 0x3000 and cp <= 0x303F) or (cp >= 0xFF01 and cp <= 0xFF0F)
-    or (cp >= 0xFF1A and cp <= 0xFF20) or (cp >= 0xFF3B and cp <= 0xFF40) or (cp >= 0xFF5B and cp <= 0xFF65) then 5
-  else 1
+  else if cp < 0x80 then (if string.contains(WORD_ASCII, string.from_codepoint(cp)) then 1 else 5)
+  else list.find(KIND_RANGES, (r) => cp >= r.0 and cp <= r.1) |> option.map((r) => r.2) ?? 1
+
+/// The ASCII that words, paths, URLs and options are made of.
+let WORD_ASCII = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_-./~:@%+#?&="
+
+/// Past ASCII, the kinds that aren't letters (1): (first, last, kind), the
+/// first range holding a character deciding. Hiragana; katakana, its
+/// extension and halfwidth forms; kanji with its extension, compatibility
+/// ideographs and 々; then box drawing, blocks, CJK and fullwidth
+/// punctuation as symbols.
+let KIND_RANGES = [
+  (0x3041, 0x309F, 2),
+  (0x30A0, 0x30FF, 3), (0x31F0, 0x31FF, 3), (0xFF66, 0xFF9F, 3),
+  (0x4E00, 0x9FFF, 4), (0x3400, 0x4DBF, 4), (0xF900, 0xFAFF, 4), (0x3005, 0x3005, 4),
+  (0x2500, 0x259F, 5), (0x3000, 0x303F, 5), (0xFF01, 0xFF0F, 5), (0xFF1A, 0xFF20, 5), (0xFF3B, 0xFF40, 5), (0xFF5B, 0xFF65, 5),
+]
 
 fn run(cols: Int, rows: Int, input: String) -> terminal.Terminal = {
   var t = terminal.new(cols, rows)
