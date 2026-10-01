@@ -309,5 +309,5 @@ test "kitty keyboard flags are pushed, queried and popped" {
 
 test "XTVERSION and the colour scheme are answered" {
   var t = run(10, 2, "\x1b[>0q\x1b[?996n")
-  assert_eq(terminal.take_replies(t), "\x1bP>|sprid 0.1\x1b\\\x1b[?997;1n")
+  assert_eq(terminal.take_replies(t), "\x1bP>|sprid ${terminal.VERSION}\x1b\\\x1b[?997;1n")
 }

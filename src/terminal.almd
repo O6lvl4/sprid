@@ -37,8 +37,9 @@ let IGNORED_STRING = 8
 let OSC_MAX = 4096
 let MAX_PARAMS = 32
 
-/// What XTVERSION reports.
-let VERSION = "0.1"
+/// What XTVERSION reports: almide.toml's version (scripts/bump-version.sh
+/// sets both; the release build checks they agree with the tag).
+let VERSION = "0.2.0"
 
 /// Kitty keyboard flags sprid implements: 1, disambiguate escape codes —
 /// what lets a program tell Shift+Enter from Enter.

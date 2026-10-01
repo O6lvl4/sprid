@@ -61,6 +61,15 @@ jobs:
           git clone https://github.com/almide/almide.git ~/almide
           cd ~/almide && git checkout ${{ steps.almide.outputs.sha }} && cargo build --release
 
+      - name: Version
+        run: |
+          toml=$(sed -n 's/^version = "\(.*\)"/\1/p' almide.toml | head -1)
+          reported=$(sed -n 's/^let VERSION = "\(.*\)"/\1/p' src/terminal.almd)
+          if [ "v$toml" != "$TAG" ] || [ "$reported" != "$toml" ]; then
+            echo "tag $TAG, almide.toml $toml, terminal.almd $reported: run scripts/bump-version.sh" >&2
+            exit 1
+          fi
+
       - name: Test
         run: |
           for f in src/terminal_test.almd src/terminal.almd src/view.almd src/keys.almd; do
