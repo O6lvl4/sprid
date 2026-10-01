@@ -108,7 +108,7 @@ fn compose_caret(c: composition.Compose, x: Int, cols: Int) -> Int = composition
 /// — while the bar has the focus, with the composition in it. `link` is
 /// underlined, and where it goes shown when its text need not say. The
 /// `others` panes of its tab are drawn beside it, each in its box; `t` goes
-/// in `r.box`.
+/// in `r.box`. Every pane has an edge where it meets another.
 fn draw(mut r: surface.Renderer, t: terminal.Terminal, back: Int, shift: Int, sel: Option[view.Selection],
         compose: composition.Compose, width: Int, height: Int, tabs: List[String], active: Int,
         find: Option[findbar.Bar], link: Option[links.Link], others: List[beside.Beside]) -> Unit = {
@@ -125,7 +125,7 @@ fn draw(mut r: surface.Renderer, t: terminal.Terminal, back: Int, shift: Int, se
   // Room for the worst case: per cell a background, a glyph and two lines,
   // plus marks, the cursor, the scrollbar and the composition.
   reserve(r, f.shown * (t.cols * 4 + 1) + 2 + marks_total + 7 + list.len(compose.cps) * 3 + title_chars + list.len(f.titles) * 3 + 1
-    + list.len(f.bar) * 3 + findbar.FIND_QUADS + 1 + list.len(shown_hint) + hint.HINT_QUADS + other_frames.2)
+    + list.len(f.bar) * 3 + findbar.FIND_QUADS + 1 + list.len(shown_hint) + hint.HINT_QUADS + other_frames.2 + 2)
 
   // Pass 2: the quads.
   let sx = 2.0 / int.to_float(width)
@@ -137,6 +137,7 @@ fn draw(mut r: surface.Renderer, t: terminal.Terminal, back: Int, shift: Int, se
   r.box = front
   n = n + grid.draw_rows(r, f, t.cols, sel, link, sx, sy)
   n = n + grid.clear_edges(r, f, t, sx, sy)
+  if others != [] then n = n + beside.draw_edges(r, front, width, height, sx, sy)
   // The cursor, where its line is in view; the composition over it.
   let cursor_row = view.screen_line(t) + t.y - f.top_line
   if cursor_row >= f.extra and cursor_row < f.shown then {
