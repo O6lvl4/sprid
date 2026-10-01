@@ -48,21 +48,26 @@ fn emoji_slot(mut r: surface.Renderer, cp: Int) -> Int =
       list.push(r.wanted_emoji, cp)
       -1
     } else {
-      let slot = if cell_width.of(cp) != 2 or sfnt.glyph_id(r.layer.fonts[0], cp) != 0 then -1 else {
-        let img = emoji.bitmap(cp, r.cell_w * 2, r.cell_h)
-        if bytes.len(img) <= 8 then -1 else {
-          let before = list.len(r.layer.color_rects)
-          let device = r.device
-          r.layer = text.place_color(device, r.layer, cp, img, 8, bytes.read_u32_le(img, 0), bytes.read_u32_le(img, 4))
-          // The atlas started over: every slot known before is gone.
-          if list.len(r.layer.color_rects) <= before then map.clear(r.emojis)
-          text.color_slot(r.layer, cp)
-        }
-      }
+      let slot = if cell_width.of(cp) != 2 or sfnt.glyph_id(r.layer.fonts[0], cp) != 0 then -1 else place_emoji(r, cp)
       map.insert(r.emojis, cp, slot)
       slot
     }
   }
+
+/// The system's colour emoji for `cp` into the colour atlas, two cells
+/// wide; its slot, or -1 when there is none.
+fn place_emoji(mut r: surface.Renderer, cp: Int) -> Int = {
+  let img = emoji.bitmap(cp, r.cell_w * 2, r.cell_h)
+  if bytes.len(img) <= 8 then -1
+  else {
+    let before = list.len(r.layer.color_rects)
+    let device = r.device
+    r.layer = text.place_color(device, r.layer, cp, img, 8, bytes.read_u32_le(img, 0), bytes.read_u32_le(img, 4))
+    // The atlas started over: every slot known before is gone.
+    if list.len(r.layer.color_rects) <= before then map.clear(r.emojis)
+    text.color_slot(r.layer, cp)
+  }
+}
 
 /// Quad drawing colour atlas slot `slot` over the two cells from (`x`, `top`).
 fn emoji_quad(r: surface.Renderer, slot: Int, x: Int, top: Int, alpha: Float, sx: Float, sy: Float) -> Unit = {
@@ -81,29 +86,34 @@ fn face_for(mut r: surface.Renderer, cp: Int, bold: Bool) -> (Int, Int) = {
   let face = if bold then bold_face(r) else 0
   let g = sfnt.glyph_id(r.layer.fonts[face], cp)
   if g != 0 then (face, g)
-  else {
-    var found = (0, 0)
-    for fi in r.fallback_indices {
-      if found.1 == 0 then {
-        let fg = sfnt.glyph_id(r.layer.fonts[fi], cp)
-        if fg != 0 then found = (fi, fg)
-      }
-    }
-    while found.1 == 0 and r.fallbacks_tried < list.len(r.fallback_paths) {
-      let path = r.fallback_paths[r.fallbacks_tried]
-      r.fallbacks_tried = r.fallbacks_tried + 1
-      match fonts.load(path) {
-        some(f) => {
-          let fi = add_font(r, f)
-          r.fallback_indices = r.fallback_indices + [fi]
-          let fg = sfnt.glyph_id(f, cp)
-          if fg != 0 then found = (fi, fg)
-        },
-        none => (),
-      }
-    }
-    found
+  else match loaded_fallback(r, cp) {
+    some(found) => found,
+    none => unread_fallback(r, cp),
   }
+}
+
+/// The first fallback read so far that has `cp`.
+fn loaded_fallback(r: surface.Renderer, cp: Int) -> Option[(Int, Int)] =
+  list.find(r.fallback_indices, (fi) => sfnt.glyph_id(r.layer.fonts[fi], cp) != 0)
+    |> option.map((fi) => (fi, sfnt.glyph_id(r.layer.fonts[fi], cp)))
+
+/// Fallbacks not read yet, read until one has `cp`; (0, 0) when none does.
+fn unread_fallback(mut r: surface.Renderer, cp: Int) -> (Int, Int) = {
+  var found = (0, 0)
+  while found.1 == 0 and r.fallbacks_tried < list.len(r.fallback_paths) {
+    let path = r.fallback_paths[r.fallbacks_tried]
+    r.fallbacks_tried = r.fallbacks_tried + 1
+    match fonts.load(path) {
+      some(f) => {
+        let fi = add_font(r, f)
+        r.fallback_indices = r.fallback_indices + [fi]
+        let g = sfnt.glyph_id(f, cp)
+        if g != 0 then found = (fi, g)
+      },
+      none => (),
+    }
+  }
+  found
 }
 
 /// Where the bold is in the layer's fonts, reading it the first time; the

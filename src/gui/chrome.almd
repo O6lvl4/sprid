@@ -45,39 +45,51 @@ fn on_scrollbar(r: surface.Renderer, t: terminal.Terminal, width: Int, x: Int) -
 fn draw_tabs(mut r: surface.Renderer, titles: List[List[Int]], active: Int, width: Int, sx: Float, sy: Float) -> Int = {
   let h = surface.bar_height(r)
   let count = list.len(titles)
-  var n = 0
   ink.rect(r, 0, 0, width, h, r.theme.tab_bar, 1.0, sx, sy)
-  n = n + 1
+  var n = 1
   for i in 0..<count {
     let x0 = i * width / count
     let x1 = (i + 1) * width / count
-    if i == active then {
-      ink.rect(r, x0, 0, x1, h, r.theme.bg, 1.0, sx, sy)
-      ink.rect(r, x0, 0, x1, int.max(2, r.line_w), r.theme.accent, 1.0, sx, sy)
-      n = n + 2
-    } else if i > 0 and i != active + 1 then {
-      ink.rect(r, x0, h / 4, x0 + int.max(1, r.line_w / 2), h - h / 4, r.theme.tab_rule, 1.0, sx, sy)
-      n = n + 1
-    }
-    // The title, centred, cut to the tab with room to spare on each side.
-    let room = int.max(1, (x1 - x0) / r.cell_w - 2)
-    let title = titles[i]
-    let shown = if list.len(title) > room then list.take(title, int.max(1, room - 1)) + [0x2026] else title
-    var w = 0
-    for cp in shown {
-      w = w + r.cell_w * int.max(1, cell_width.of(cp))
-    }
-    var pen = x0 + (x1 - x0 - w) / 2
-    let baseline = (h - r.cell_h) / 2 + r.baseline
-    let color = if i == active then r.theme.fg else r.theme.tab_dim
-    for cp in shown {
-      let slot = ink.glyph(r, cp, false)
-      if slot >= 0 then {
-        ink.glyph_quad(r, slot, pen, baseline, color, 1.0, sx, sy)
-        n = n + 1
-      }
-      pen = pen + r.cell_w * int.max(1, cell_width.of(cp))
-    }
+    n = n + draw_tab_back(r, i, active, x0, x1, h, sx, sy)
+    n = n + draw_title(r, titles[i], x0, x1, (h - r.cell_h) / 2 + r.baseline, if i == active then r.theme.fg else r.theme.tab_dim, sx, sy)
   }
   n
 }
+
+/// Tab `i`'s background: the window's with an accent on top for the active
+/// one, a rule before the others (none beside the active one). How many
+/// quads.
+fn draw_tab_back(mut r: surface.Renderer, i: Int, active: Int, x0: Int, x1: Int, h: Int, sx: Float, sy: Float) -> Int =
+  if i == active then {
+    ink.rect(r, x0, 0, x1, h, r.theme.bg, 1.0, sx, sy)
+    ink.rect(r, x0, 0, x1, int.max(2, r.line_w), r.theme.accent, 1.0, sx, sy)
+    2
+  } else if i > 0 and i != active + 1 then {
+    ink.rect(r, x0, h / 4, x0 + int.max(1, r.line_w / 2), h - h / 4, r.theme.tab_rule, 1.0, sx, sy)
+    1
+  } else 0
+
+/// A title, centred between `x0` and `x1`, cut to the tab with room to
+/// spare on each side. How many quads.
+fn draw_title(mut r: surface.Renderer, title: List[Int], x0: Int, x1: Int, baseline: Int, color: Int, sx: Float, sy: Float) -> Int = {
+  let room = int.max(1, (x1 - x0) / r.cell_w - 2)
+  let shown = if list.len(title) > room then list.take(title, int.max(1, room - 1)) + [0x2026] else title
+  var w = 0
+  for cp in shown {
+    w = w + advance(r, cp)
+  }
+  var pen = x0 + (x1 - x0 - w) / 2
+  var n = 0
+  for cp in shown {
+    let slot = ink.glyph(r, cp, false)
+    if slot >= 0 then {
+      ink.glyph_quad(r, slot, pen, baseline, color, 1.0, sx, sy)
+      n = n + 1
+    }
+    pen = pen + advance(r, cp)
+  }
+  n
+}
+
+/// How far a title's pen moves past `cp`.
+fn advance(r: surface.Renderer, cp: Int) -> Int = r.cell_w * int.max(1, cell_width.of(cp))

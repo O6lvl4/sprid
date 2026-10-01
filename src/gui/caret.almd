@@ -26,10 +26,15 @@ fn draw_compose(mut r: surface.Renderer, compose: composition.Compose, x: Int, c
     if i + 1 == compose.to then to_x = px
     if i + 1 == compose.caret then caret_x = px
   }
-  if compose.from < compose.to and from_x >= 0 then n + box(r, from_x, if to_x >= 0 then to_x else px, ctop, sx, sy)
-  else if compose.from >= compose.to and caret_x >= 0 then n + bar(r, caret_x, ctop, sx, sy)
-  else n
+  n + mark_compose(r, compose, from_x, if to_x >= 0 then to_x else px, caret_x, ctop, sx, sy)
 }
+
+/// The part being converted (`from_x` to `to_x`) boxed, else the caret a
+/// bar at `caret_x`. The quads drawn.
+fn mark_compose(mut r: surface.Renderer, compose: composition.Compose, from_x: Int, to_x: Int, caret_x: Int, ctop: Int, sx: Float, sy: Float) -> Int =
+  if compose.from < compose.to then (if from_x >= 0 then box(r, from_x, to_x, ctop, sx, sy) else 0)
+  else if caret_x >= 0 then bar(r, caret_x, ctop, sx, sy)
+  else 0
 
 /// One character of the composition at `px`, `w` wide: its cells cleared,
 /// the glyph, the underline. The quads drawn.

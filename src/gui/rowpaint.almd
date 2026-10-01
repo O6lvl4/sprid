@@ -13,6 +13,17 @@ import self.gui.ink
 /// lines. Returns how many it pushed.
 fn draw_row(mut r: surface.Renderer, row: record.Row, line: Int, sel: Option[view.Selection], lit: Lit,
             top: Int, cols: Int, sx: Float, sy: Float) -> Int = {
+  var n = draw_backgrounds(r, row, line, sel, lit, top, cols, sx, sy)
+  for x in 0..<cols {
+    n = n + draw_cell(r, row, x, colors(r, row, line, x, sel, lit).0, top, sx, sy)
+  }
+  n
+}
+
+/// The row's backgrounds, a quad per run of one colour that isn't the
+/// window's. How many it pushed.
+fn draw_backgrounds(mut r: surface.Renderer, row: record.Row, line: Int, sel: Option[view.Selection], lit: Lit,
+                    top: Int, cols: Int, sx: Float, sy: Float) -> Int = {
   var n = 0
   var x = 0
   while x < cols {
@@ -27,50 +38,73 @@ fn draw_row(mut r: surface.Renderer, row: record.Row, line: Int, sel: Option[vie
     }
     x = end
   }
-  for cx in 0..<cols {
-    let o = cx * cell.SIZE
-    let cp = bytes.read_u32_le(row.cells, o + cell.OFF_CP)
-    let attrs = bytes.read_u16_le(row.cells, o + cell.OFF_ATTRS)
-    let fg = colors(r, row, line, cx, sel, lit).0
-    let alpha = if int.band(attrs, cell.ATTR_FAINT) != 0 then 0.6 else 1.0
-    let bold = int.band(attrs, cell.ATTR_BOLD) != 0
-    let left = r.pad_x + cx * r.cell_w
-    let w = r.cell_w * int.max(1, bytes.read_u8(row.cells, o + cell.OFF_WIDTH))
-    if sprite.is_sprite(cp) and int.band(attrs, cell.ATTR_HIDDEN) == 0 then {
-      for p in ink.sprite_pieces(r, cp) {
-        ink.rect(r, left + p.x0, top + p.y0, left + p.x1, top + p.y1, fg, alpha * p.alpha, sx, sy)
-        n = n + 1
-      }
-    } else if cp > 32 and int.band(attrs, cell.ATTR_HIDDEN) == 0 and ink.emoji_slot(r, cp) >= 0 then {
-      let slot = ink.emoji_slot(r, cp)
-      ink.emoji_quad(r, slot, left, top, alpha, sx, sy)
-      n = n + 1
-    } else if cp > 32 and int.band(attrs, cell.ATTR_HIDDEN) == 0 then {
-      let slot = ink.glyph(r, cp, bold)
-      if slot >= 0 then {
-        ink.glyph_quad(r, slot, left, top + r.baseline, fg, alpha, sx, sy)
-        n = n + 1
-      }
-      // Combining marks have no advance of their own: fonts draw them back
-      // from the pen, which stands after the base character.
-      for mark in marks(row, cx) {
-        let ms = ink.glyph(r, mark, bold)
-        if ms >= 0 then {
-          ink.glyph_quad(r, ms, left + w, top + r.baseline, fg, alpha, sx, sy)
-          n = n + 1
-        }
-      }
+  n
+}
+
+/// Cell `x` in `fg`: its character (unless hidden) and its lines. How many
+/// quads it pushed.
+fn draw_cell(mut r: surface.Renderer, row: record.Row, x: Int, fg: Int, top: Int, sx: Float, sy: Float) -> Int = {
+  let o = x * cell.SIZE
+  let cp = bytes.read_u32_le(row.cells, o + cell.OFF_CP)
+  let attrs = bytes.read_u16_le(row.cells, o + cell.OFF_ATTRS)
+  let alpha = if int.band(attrs, cell.ATTR_FAINT) != 0 then 0.6 else 1.0
+  let left = r.pad_x + x * r.cell_w
+  let w = r.cell_w * int.max(1, bytes.read_u8(row.cells, o + cell.OFF_WIDTH))
+  let shown = if int.band(attrs, cell.ATTR_HIDDEN) != 0 then 0
+    else if sprite.is_sprite(cp) then draw_sprite(r, cp, left, top, fg, alpha, sx, sy)
+    else if cp > 32 then draw_char(r, row, x, cp, int.band(attrs, cell.ATTR_BOLD) != 0, left, w, top, fg, alpha, sx, sy)
+    else 0
+  shown + draw_lines(r, attrs, left, w, top, fg, alpha, sx, sy)
+}
+
+/// A box-drawing or block character as rectangles.
+fn draw_sprite(mut r: surface.Renderer, cp: Int, left: Int, top: Int, fg: Int, alpha: Float, sx: Float, sy: Float) -> Int = {
+  let pieces = ink.sprite_pieces(r, cp)
+  for p in pieces {
+    ink.rect(r, left + p.x0, top + p.y0, left + p.x1, top + p.y1, fg, alpha * p.alpha, sx, sy)
+  }
+  list.len(pieces)
+}
+
+/// A character: the colour emoji, or the glyph and its combining marks —
+/// which have no advance of their own: fonts draw them back from the pen,
+/// which stands after the base character.
+fn draw_char(mut r: surface.Renderer, row: record.Row, x: Int, cp: Int, bold: Bool, left: Int, w: Int, top: Int,
+             fg: Int, alpha: Float, sx: Float, sy: Float) -> Int = {
+  let emoji = ink.emoji_slot(r, cp)
+  if emoji >= 0 then {
+    ink.emoji_quad(r, emoji, left, top, alpha, sx, sy)
+    1
+  } else {
+    var n = draw_glyph(r, cp, bold, left, top, fg, alpha, sx, sy)
+    for mark in marks(row, x) {
+      n = n + draw_glyph(r, mark, bold, left + w, top, fg, alpha, sx, sy)
     }
-    if int.band(attrs, cell.ATTR_UNDERLINE + cell.ATTR_DOUBLE_UNDERLINE) != 0 then {
-      let uy = top + r.baseline + r.line_w
-      ink.rect(r, left, uy, left + w, uy + r.line_w, fg, alpha, sx, sy)
-      n = n + 1
-    }
-    if int.band(attrs, cell.ATTR_STRIKE) != 0 then {
-      let y0 = top + r.baseline - r.size_px * 3 / 10
-      ink.rect(r, left, y0, left + w, y0 + r.line_w, fg, alpha, sx, sy)
-      n = n + 1
-    }
+    n
+  }
+}
+
+/// A glyph with its pen at `x`, if the fonts have it. How many quads.
+fn draw_glyph(mut r: surface.Renderer, cp: Int, bold: Bool, x: Int, top: Int, fg: Int, alpha: Float, sx: Float, sy: Float) -> Int = {
+  let slot = ink.glyph(r, cp, bold)
+  if slot >= 0 then {
+    ink.glyph_quad(r, slot, x, top + r.baseline, fg, alpha, sx, sy)
+    1
+  } else 0
+}
+
+/// Underline and strike-through.
+fn draw_lines(mut r: surface.Renderer, attrs: Int, left: Int, w: Int, top: Int, fg: Int, alpha: Float, sx: Float, sy: Float) -> Int = {
+  var n = 0
+  if int.band(attrs, cell.ATTR_UNDERLINE + cell.ATTR_DOUBLE_UNDERLINE) != 0 then {
+    let uy = top + r.baseline + r.line_w
+    ink.rect(r, left, uy, left + w, uy + r.line_w, fg, alpha, sx, sy)
+    n = n + 1
+  }
+  if int.band(attrs, cell.ATTR_STRIKE) != 0 then {
+    let y0 = top + r.baseline - r.size_px * 3 / 10
+    ink.rect(r, left, y0, left + w, y0 + r.line_w, fg, alpha, sx, sy)
+    n = n + 1
   }
   n
 }

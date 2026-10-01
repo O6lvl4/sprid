@@ -107,59 +107,75 @@ fn draw_find(mut r: surface.Renderer, b: Bar, preedit: List[Int], gy: Int, width
   ink.rect(r, x0, y1 - lw, x1, y1, edge, 1.0, sx, sy)
   ink.rect(r, x0, y0, x0 + lw, y1, edge, 1.0, sx, sy)
   ink.rect(r, x1 - lw, y0, x1, y1, edge, 1.0, sx, sy)
-  var n = 5
-  let count = find_count(b.find)
-  let baseline = y0 + r.pad_y / 2 + r.baseline
   let ctop = y0 + r.pad_y / 2
-  // The count, right-aligned; red when nothing matches.
-  var cx = x1 - r.pad_x / 2 - list.len(count) * r.cell_w
-  let count_color = if b.find.total == 0 then r.theme.no_match else r.theme.tab_dim
+  let count = draw_count(r, b, x1, ctop + r.baseline, sx, sy)
+  let text = draw_field(r, b, preedit, box, ctop, sx, sy)
+  5 + count + text + draw_caret(r, b, preedit, box, ctop, sx, sy)
+}
+
+/// The caret, while the bar has the focus and nothing is selected.
+fn draw_caret(mut r: surface.Renderer, b: Bar, preedit: List[Int], box: (Int, Int, Int, Int), ctop: Int, sx: Float, sy: Float) -> Int =
+  if b.focused and not field.has_selection(b.field) then {
+    let x = field_x(r, b, preedit, box, b.field.caret + list.len(preedit))
+    ink.rect(r, x, ctop, x + int.max(2, r.line_w * 2), ctop + r.cell_h, r.theme.accent, 1.0, sx, sy)
+    1
+  } else 0
+
+/// The count, right-aligned against `x1`; red when nothing matches.
+fn draw_count(mut r: surface.Renderer, b: Bar, x1: Int, baseline: Int, sx: Float, sy: Float) -> Int = {
+  let count = find_count(b.find)
+  let color = if b.find.total == 0 then r.theme.no_match else r.theme.tab_dim
+  var x = x1 - r.pad_x / 2 - list.len(count) * r.cell_w
+  var n = 0
   for cp in count {
-    let slot = ink.glyph(r, cp, false)
-    if slot >= 0 then {
-      ink.glyph_quad(r, slot, cx, baseline, count_color, 1.0, sx, sy)
-      n = n + 1
-    }
-    cx = cx + r.cell_w
+    n = n + text_glyph(r, cp, x, baseline, color, sx, sy)
+    x = x + r.cell_w
   }
-  // The field: characters from `first` while they fit.
+  n
+}
+
+/// A glyph of the bar's text at pen `x`. How many quads.
+fn text_glyph(mut r: surface.Renderer, cp: Int, x: Int, baseline: Int, color: Int, sx: Float, sy: Float) -> Int = {
+  let slot = ink.glyph(r, cp, false)
+  if slot >= 0 then {
+    ink.glyph_quad(r, slot, x, baseline, color, 1.0, sx, sy)
+    1
+  } else 0
+}
+
+/// The field: characters from its first shown while they fit, the
+/// selection behind them, the composition underlined. How many quads.
+fn draw_field(mut r: surface.Renderer, b: Bar, preedit: List[Int], box: (Int, Int, Int, Int), ctop: Int, sx: Float, sy: Float) -> Int = {
   let (left, room, first) = field_layout(r, b, preedit, box)
   let chars = bar_chars(b, preedit)
   let pre = if b.focused then list.len(preedit) else 0
-  let caret = b.field.caret
-  let (sel_a, sel_b) = field.range(b.field)
+  var n = 0
   var pen = left
   var used = 0
   var i = first
   while i < list.len(chars) and used + int.max(1, cell_width.of(chars[i])) <= room {
-    let cp = chars[i]
-    let cols = int.max(1, cell_width.of(cp))
-    let w = r.cell_w * cols
-    // Character `i` shown is the field's `at`, or part of the composition.
-    let composing = i >= caret and i < caret + pre
-    let at = if i < caret then i else i - pre
-    if not composing and at >= sel_a and at < sel_b then {
-      ink.rect(r, pen, ctop, pen + w, ctop + r.cell_h, r.theme.selection, 1.0, sx, sy)
-      n = n + 1
-    }
-    let slot = ink.glyph(r, cp, false)
-    if slot >= 0 then {
-      ink.glyph_quad(r, slot, pen, baseline, r.theme.fg, 1.0, sx, sy)
-      n = n + 1
-    }
-    if composing then {
-      let uy = baseline + r.line_w
-      ink.rect(r, pen, uy, pen + w, uy + r.line_w, r.theme.fg, 1.0, sx, sy)
-      n = n + 1
-    }
-    pen = pen + w
+    let cols = int.max(1, cell_width.of(chars[i]))
+    n = n + field_char(r, b, chars[i], i, pre, pen, r.cell_w * cols, ctop, sx, sy)
+    pen = pen + r.cell_w * cols
     used = used + cols
     i = i + 1
   }
-  if b.focused and not field.has_selection(b.field) then {
-    let x = field_x(r, b, preedit, box, caret + pre)
-    ink.rect(r, x, ctop, x + int.max(2, r.line_w * 2), ctop + r.cell_h, r.theme.accent, 1.0, sx, sy)
-    n = n + 1
-  }
   n
+}
+
+/// Character `i` shown in the field, `w` wide at `pen` — the field's own,
+/// or part of the `pre` characters composing at its caret. How many quads.
+fn field_char(mut r: surface.Renderer, b: Bar, cp: Int, i: Int, pre: Int, pen: Int, w: Int, ctop: Int, sx: Float, sy: Float) -> Int = {
+  let caret = b.field.caret
+  let composing = i >= caret and i < caret + pre
+  let at = if i < caret then i else i - pre
+  let (sel_a, sel_b) = field.range(b.field)
+  let selected = not composing and at >= sel_a and at < sel_b
+  if selected then ink.rect(r, pen, ctop, pen + w, ctop + r.cell_h, r.theme.selection, 1.0, sx, sy)
+  let glyph = text_glyph(r, cp, pen, ctop + r.baseline, r.theme.fg, sx, sy)
+  if composing then {
+    let uy = ctop + r.baseline + r.line_w
+    ink.rect(r, pen, uy, pen + w, uy + r.line_w, r.theme.fg, 1.0, sx, sy)
+  }
+  glyph + (if selected then 1 else 0) + (if composing then 1 else 0)
 }
