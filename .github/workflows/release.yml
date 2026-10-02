@@ -1,6 +1,7 @@
 # Release builds: Linux (x86_64, arm64) and macOS (arm64), attached to a
-# draft release for the pushed tag. Built with Almide from its develop
-# branch, which has the fix sprid needs (almide#3049). Linux builds run on
+# draft release for the pushed tag. Built with the Almide release in
+# ALMIDE_REF, which has the fix sprid needs (almide#3049): a tag, so a build
+# is the same whenever it runs. Linux builds run on
 # Ubuntu 22.04, so the binary needs glibc 2.35 or later.
 name: release
 
@@ -18,6 +19,7 @@ permissions:
 
 env:
   TAG: ${{ github.event.inputs.tag || github.ref_name }}
+  ALMIDE_REF: v0.66.0-rc3
 
 jobs:
   build:
@@ -44,22 +46,18 @@ jobs:
       - name: Rust
         run: rustup toolchain install stable --profile minimal && rustup default stable
 
-      - name: Almide revision
-        id: almide
-        run: echo "sha=$(git ls-remote https://github.com/almide/almide.git refs/heads/develop | cut -f1)" >> "$GITHUB_OUTPUT"
-
       - name: Almide cache
         id: cache
         uses: actions/cache@v4
         with:
           path: ~/almide/target/release/almide
-          key: almide-${{ matrix.os }}-${{ steps.almide.outputs.sha }}
+          key: almide-${{ matrix.os }}-${{ env.ALMIDE_REF }}
 
       - name: Build Almide
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
-          git clone https://github.com/almide/almide.git ~/almide
-          cd ~/almide && git checkout ${{ steps.almide.outputs.sha }} && cargo build --release
+          git clone --depth 1 --branch "$ALMIDE_REF" https://github.com/almide/almide.git ~/almide
+          cd ~/almide && cargo build --release
 
       - name: Version
         run: |

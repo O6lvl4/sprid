@@ -92,15 +92,20 @@ For debugging: `SPRID_DEBUG=1` reports wakes and input-to-frame latency every
 
 ## Compiler workarounds
 
-sprid needs Almide with the fix for
-[almide#3049](https://github.com/almide/almide/issues/3049), on `develop`
-since [almide#3087](https://github.com/almide/almide/pull/3087) (0.65.1 and
-earlier lack it): without it, calls such as `erase_cells(t, t.y, t.x, t.cols)`
-silently pass the wrong arguments.
+sprid builds with Almide
+[v0.66.0-rc3](https://github.com/almide/almide/releases/tag/v0.66.0-rc3), the
+release CI pins. 0.65.1 and earlier lack the fix for
+[almide#3049](https://github.com/almide/almide/issues/3049): calls such as
+`erase_cells(t, t.y, t.x, t.cols)` silently pass the wrong arguments.
+v0.66.0-rc4 fails to compile `restore.fill`: a fn whose `mut` parameter a
+closure captures, ending in a call that takes it, borrows it past its end
+(rustc E0597).
 
-Open issues it works around:
-[#3045](https://github.com/almide/almide/issues/3045) (a `Bytes` parameter on
-`@extern(rust)`: `pty.write` takes a `String` for now),
+The code works around Almide issues where a `FIXME(almide#N)` comment says
+so; many of them are fixed after rc3, and go once sprid moves to a release
+that has the fixes. Fixed and not marked:
+[#3045](https://github.com/almide/almide/issues/3045) (`pty.write` takes a
+`String`, not `Bytes`),
 [#3050](https://github.com/almide/almide/issues/3050) (arguments bound with
 `let` before an in-place stdlib call),
 [#3051](https://github.com/almide/almide/issues/3051) (`let empty: List[T] = []`
