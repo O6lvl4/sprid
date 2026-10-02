@@ -1,5 +1,5 @@
-// The config file: `key = value` lines, as Ghostty writes them, so a config
-// can come across with little change.
+// The config file: `key = value` lines, in the format and with the key names
+// terminals commonly use, so a config can come across with little change.
 //
 //   # a comment
 //   font-size = 15
