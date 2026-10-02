@@ -99,7 +99,7 @@ release CI pins. 0.65.1 and earlier lack the fix for
 `erase_cells(t, t.y, t.x, t.cols)` silently pass the wrong arguments.
 v0.66.0-rc4 fails to compile `restore.fill`: a fn whose `mut` parameter a
 closure captures, ending in a call that takes it, borrows it past its end
-(rustc E0597).
+(rustc E0597, [almide#3192](https://github.com/almide/almide/issues/3192)).
 
 The code works around Almide issues where a `FIXME(almide#N)` comment says
 so; many of them are fixed after rc3, and go once sprid moves to a release
