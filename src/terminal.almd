@@ -153,6 +153,8 @@ fn in_state(mut t: core.Terminal, b: Int) -> Unit =
   if t.state == core.GROUND then ground(t, b)
   else if t.state == core.OSC_STRING then osc.osc_byte(t, b)
   else if t.state == core.IGNORED_STRING then ()
+  // DEL leaves ESC and CSI sequences in their current state (VT500).
+  else if b == 0x7F then ()
   else if b < 0x20 then execute(t, b)
   else if t.state == core.ESCAPE then escape(t, b)
   else if t.state == core.ESCAPE_INTERMEDIATE then escape_intermediate(t, b)
