@@ -92,6 +92,39 @@ test "UTF-8 and CSI split across reads" {
   assert_eq(terminal.cell_fg(t, 0, 0), cell.palette(1))
 }
 
+test "DEL preserves an escape before its final byte" {
+  let t = run(10, 2, "\x1b\x7f[31mx")
+  assert_eq(terminal.screen_text(t), "x")
+  assert_eq(terminal.cell_fg(t, 0, 0), cell.palette(1))
+}
+
+test "DEL preserves an escape intermediate" {
+  let t = run(10, 2, "\x1b(\x7f0l\x1b(Bx")
+  assert_eq(terminal.screen_text(t), "┌x")
+}
+
+test "DEL preserves CSI entry and parameters" {
+  for input in ["\x1b[\x7f31mx", "\x1b[3\x7f1mx", "\x1b[31\x7fmx"] {
+    let t = run(10, 2, input)
+    assert_eq(terminal.screen_text(t), "x")
+    assert_eq(terminal.cell_fg(t, 0, 0), cell.palette(1))
+  }
+}
+
+test "DEL preserves a CSI intermediate across reads" {
+  var t = run(10, 2, "\x1b[5 ")
+  terminal.feed(t, bytes.from_list([0x7F]))
+  terminal.feed_string(t, "qx")
+  assert_eq(t.cursor_shape, 5)
+  assert_eq(terminal.screen_text(t), "x")
+}
+
+test "DEL does not revive an ignored CSI" {
+  let t = run(10, 2, "\x1b[3?\x7f1mx")
+  assert_eq(terminal.screen_text(t), "x")
+  assert_eq(terminal.cell_fg(t, 0, 0), cell.COLOR_DEFAULT)
+}
+
 test "a two-byte character after a longer one" {
   let t = run(10, 2, "❯ · é")
   assert_eq(terminal.screen_text(t), "❯ · é")
