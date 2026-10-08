@@ -35,6 +35,8 @@ type Tab = {
   back: Int,
   shift: Int,
   sel: Option[view.Selection],
+  // What `sel` held when it was made (see `view.hold`).
+  held: Option[view.Held],
   // The program's updates the frame is held for, and when each began.
   up: Updates,
   // The name the user gave it; "" for the automatic title.
@@ -163,7 +165,7 @@ fn cwd_of(tabs: List[Tab], i: Int, home: String) -> String = match list.get(tabs
 fn open_tab(cols: Int, rows: Int, command: String, cwd: String, scrollback: Int) -> Option[Tab] = {
   let fd = pty.spawn(command, cwd, cols, rows)
   if fd < 0 then none
-  else some(Tab { t: terminal.with_scrollback(cols, rows, scrollback), fd: fd, back: 0, shift: 0, sel: none, up: NO_UPDATES, name: "", alert: false })
+  else some(Tab { t: terminal.with_scrollback(cols, rows, scrollback), fd: fd, back: 0, shift: 0, sel: none, held: none, up: NO_UPDATES, name: "", alert: false })
 }
 
 /// Close tab `i` and its program, keeping the other tabs in order.
@@ -269,6 +271,25 @@ fn drain(mut tb: Tab, budget_ms: Int, front: Bool) -> (Bool, Bool) = {
   (got, more)
 }
 
+/// Remember what the selection holds, before output can change it.
+fn hold_sel(mut tb: Tab) -> Unit = match tb.sel {
+  some(s) => if (tb.held |> option.map((h) => h.sel)) != some(s) then { tb.held = some(view.hold(tb.t, s)) },
+  none => { tb.held = none },
+}
+
+/// Let go of a selection whose text output has moved or rewritten; whether
+/// it did. Not while the program is mid-frame (a synchronized update, a
+/// redraw with the cursor hidden, more still to read): half drawn, the
+/// text is about to come back.
+fn drop_moved_sel(mut tb: Tab, more: Bool) -> Bool = match tb.held {
+  some(h) => if more or hold_left(tb, sys.now_ms()) > 0 or not view.moved(tb.t, h) then false else {
+    tb.sel = none
+    tb.held = none
+    true
+  },
+  none => false,
+}
+
 /// Whether the cursor of the tab in front blinks: a blinking DECSCUSR shape,
 /// the program's or the config's, shown.
 fn cursor_blinks(tabs: List[Tab], active: Int, r: render.Renderer) -> Bool = match list.get(tabs, active) {
@@ -292,7 +313,7 @@ test "a tab moved keeps the others in order" {
 }
 
 test "a resized tab's frame waits for its program to draw again, no longer than the limit" {
-  let tb = Tab { t: terminal.new(10, 3), fd: -1, back: 0, shift: 0, sel: none, up: { ...NO_UPDATES, resized_at: 1000 }, name: "", alert: false }
+  let tb = Tab { t: terminal.new(10, 3), fd: -1, back: 0, shift: 0, sel: none, held: none, up: { ...NO_UPDATES, resized_at: 1000 }, name: "", alert: false }
   assert_eq(hold_left(tb, 1040), RESIZE_LIMIT - 40)
   assert_eq(hold_left(tb, 1000 + RESIZE_LIMIT), 0)
   assert_eq(hold_left({ ...tb, up: NO_UPDATES }, 1040), 0)

@@ -66,6 +66,33 @@ fn selected(s: Selection, line: Int, col: Int) -> Bool = {
   else true
 }
 
+// ── A selection over text that moved ───────────────────────────────────────
+
+/// What a selection held when it was made, from line `from` on: lines
+/// already in scrollback then can't change, so only the part on the screen
+/// is kept. Programs that redraw in place (Claude Code's spinner, status
+/// line and input box growing or shrinking) move text up and down the
+/// screen without scrolling; a selection held in line numbers would then
+/// sit on other text, and copy it.
+type Held = { sel: Selection, from: Int, text: String }
+
+fn hold(t: terminal.Terminal, s: Selection) -> Held = {
+  let from = int.max(ordered(s).0, screen_line(t))
+  Held { sel: s, from: from, text: text_from(t, s, from) }
+}
+
+/// Whether text under the selection `h` was made over has changed since.
+fn moved(t: terminal.Terminal, h: Held) -> Bool = text_from(t, h.sel, h.from) != h.text
+
+/// The selected text of lines `from` on.
+fn text_from(t: terminal.Terminal, s: Selection, from: Int) -> String = {
+  let (l0, _, l1, c1) = ordered(s)
+  if from > l1 then ""
+  else if from <= l0 then selected_text(t, s)
+  else if s.rect then rect_text(t, { ...s, anchor_line: from, head_line: l1 })
+  else span_text(t, Selection { anchor_line: from, anchor_col: 0, head_line: l1, head_col: c1, rect: false })
+}
+
 /// The selected text. Lines end in a newline unless they wrapped onto the
 /// next; trailing blanks of a line are dropped.
 fn selected_text(t: terminal.Terminal, s: Selection) -> String =
@@ -287,6 +314,25 @@ test "a triple click takes the whole line, wrapped rows included" {
   assert_eq(line_span(t, 2), (1, 0, 2, 3))
   assert_eq(line_span(t, 1), (1, 0, 2, 3))
   assert_eq(line_span(t, 0), (0, 0, 0, 3))
+}
+
+test "a selection lets go when the text under it moves, not when output only scrolls" {
+  var t = run(10, 4, "a\r\nspin 1\r\nkeep")
+  let top = screen_line(t)
+  let s = Selection { anchor_line: top + 1, anchor_col: 0, head_line: top + 2, head_col: 3, rect: false }
+  let h = hold(t, s)
+  assert(not moved(t, h))
+  // Scrolling it up into scrollback keeps every line's number.
+  terminal.feed_string(t, "\r\nx\r\ny\r\nz")
+  assert(not moved(t, h))
+  // Redrawn in place, one row higher: other text under the same numbers.
+  var u = run(10, 4, "a\r\nspin 1\r\nkeep")
+  terminal.feed_string(u, "\x1b[2;1H\x1b[Jkeep\r\n")
+  assert(moved(u, h))
+  // Rewritten with the same text: still the same selection.
+  var w = run(10, 4, "a\r\nspin 1\r\nkeep")
+  terminal.feed_string(w, "\x1b[2;1H\x1b[Jspin 1\r\nkeep")
+  assert(not moved(w, h))
 }
 
 test "a rectangle selects the same columns of every line" {
