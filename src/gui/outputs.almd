@@ -30,7 +30,14 @@ effect fn read_all(mut a: session.Session) -> Unit = {
 effect fn read_tab(mut a: session.Session, mut cur: tabset.Tab, i: Int) -> Unit = {
   let title_before = (cur.t.title, cur.t.cwd)
   let bells_before = cur.t.bells
+  tabset.hold_sel(cur)
   let (got, more) = tabset.drain(cur, if i == a.active then session.STREAM_DRAIN_MS else session.DRAIN_MS, i == a.active)
+  // The text under the selection moved: the selection goes, and a drag
+  // making it stops — its anchor is on other text now.
+  if got and tabset.drop_moved_sel(cur, more) then {
+    if i == a.active then { a.ui.dragging = false }
+    uistate.touch(a.ui)
+  }
   if got then asks(a, cur, i, cur.t.bells != bells_before)!
   // A tab in the back retitled itself: the tab bar shows it.
   if got and i != a.active and (cur.t.title, cur.t.cwd) != title_before then uistate.touch(a.ui)
