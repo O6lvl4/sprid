@@ -145,9 +145,10 @@ fn hold_left(tb: Tab, now: Int) -> Int = {
   int.max(0, int.max(sync, int.max(hidden, resized)))
 }
 
-/// How long the active tab's program may still hold the frame, ms.
+/// How long the active tab's program may still hold the frame, ms: not at
+/// all while the view moves (see `paint.draw_due`).
 fn sync_wait(tabs: List[Tab], active: Int, now: Int) -> Int = match list.get(tabs, active) {
-  some(tb) => hold_left(tb, now),
+  some(tb) => if drawn.moved(tb.seen, tb.back, tb.shift) then 0 else hold_left(tb, now),
   none => 0,
 }
 
