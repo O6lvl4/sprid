@@ -20,6 +20,7 @@ import self.terminal
 import self.view
 import self.gui.surface
 import self.links
+import self.theme
 import self.gui.frame
 import self.gui.ink
 import self.gui.composition

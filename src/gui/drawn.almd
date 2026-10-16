@@ -1,0 +1,98 @@
+// What a pane's last frame drew, and where: the pointer is read against it.
+//
+// The screen shows the last frame, not the terminal as it is now. A frame
+// waits while a program draws (a synchronized update, a hidden cursor), and
+// comes at most every few ms while output streams; meanwhile output scrolls
+// lines up into scrollback, the wheel moves the view, the font steps. Read
+// against the terminal now, a press landed on the line that will be under
+// the pointer next frame — rows away from the text it was on. Lines keep
+// their numbers as they scroll (view.almd), so a line read off the frame
+// on screen is still that text after the frame changes.
+
+import self.terminal
+import self.view
+import self.gui.surface
+
+/// A frame's rows: the line of its first row (the line above the viewport,
+/// part shown, when scrolled by part of a line), that row's top, and how
+/// many rows were drawn; the grid's top and left, cell size, and the grid's
+/// size then — pixels of the drawable.
+type Drawn = { line0: Int, y0: Int, shown: Int, gy: Int, x0: Int, cell_w: Int, cell_h: Int, cols: Int, rows: Int }
+
+/// What a frame of `t` in `r.box`, scrolled back `back` lines and `shift`
+/// pixels, draws. The frame is laid out by this (frame.almd), so the two
+/// can't disagree.
+fn of(r: surface.Renderer, t: terminal.Terminal, back: Int, shift: Int) -> Drawn =
+  laid_out(t, back, shift, surface.grid_y(r), surface.grid_left(r), r.cell_w, r.cell_h)
+
+/// `of` for a grid whose top left is (`x0`, `gy`), cells `cell_w` x `cell_h`.
+fn laid_out(t: terminal.Terminal, back: Int, shift: Int, gy: Int, x0: Int, cell_w: Int, cell_h: Int) -> Drawn = {
+  // Scrolled by part of a line, the line above the viewport shows in part at
+  // its top: one row more, from `shift` pixels less than a row above the grid.
+  let extra = if shift > 0 then 1 else 0
+  Drawn {
+    line0: view.top_line(t, back) - extra,
+    y0: gy - (if extra == 1 then cell_h - shift else 0),
+    shown: t.rows + extra,
+    gy: gy, x0: x0, cell_w: cell_w, cell_h: cell_h, cols: t.cols, rows: t.rows,
+  }
+}
+
+/// How many rows of the viewport were scrolled past the top: 1 when a part
+/// of a line shows above it.
+fn extra(d: Drawn) -> Int = d.shown - d.rows
+
+/// The line drawn at pixel row `py`, as `t` numbers its lines now. Above the
+/// rows, the first; below, the last. A line evicted since, or gone with a
+/// switch of screens, comes as the nearest there is.
+fn line_at(d: Drawn, t: terminal.Terminal, py: Int) -> Int = {
+  let row = if py < d.y0 then 0 else int.min((py - d.y0) / d.cell_h, d.shown - 1)
+  let first = if t.alt then view.screen_line(t) else view.first_line(t)
+  int.clamp(d.line0 + row, first, view.screen_line(t) + t.rows - 1)
+}
+
+/// The column drawn at pixel `px`, within the grid `t` has now.
+fn col_at(d: Drawn, t: terminal.Terminal, px: Int) -> Int =
+  int.clamp((if px < d.x0 then 0 else (px - d.x0) / d.cell_w), 0, int.min(d.cols, t.cols) - 1)
+
+/// The row of the viewport drawn at pixel row `py` — what a program that
+/// asked for the mouse is told — within the grid `t` has now.
+fn row_at(d: Drawn, t: terminal.Terminal, py: Int) -> Int =
+  int.clamp((if py < d.gy then 0 else (py - d.gy) / d.cell_h), 0, int.min(d.rows, t.rows) - 1)
+
+/// A frame of a grid at (5, 10), cells 10 x 20.
+fn sample(t: terminal.Terminal, back: Int, shift: Int) -> Drawn = laid_out(t, back, shift, 10, 5, 10, 20)
+
+test "a press lands on the line the frame on screen shows there, though output has scrolled since" {
+  var t = terminal.new(10, 4)
+  terminal.feed_string(t, "a\r\nb\r\nc\r\nd")
+  let d = sample(t, 0, 0)
+  // Two lines more scroll the screen before the next frame.
+  terminal.feed_string(t, "\r\ne\r\nf")
+  // The third row of the frame on screen shows "c"; now the third row holds "e".
+  let line = line_at(d, t, 10 + 2 * 20 + 5)
+  assert_eq(view.text_of(t, line), "c")
+  assert_eq(view.text_of(t, view.top_line(t, 0) + 2), "e")
+}
+
+test "scrolled by part of a line, the part shown above the viewport is the line above it" {
+  var t = terminal.new(10, 4)
+  terminal.feed_string(t, "a\r\nb\r\nc\r\nd\r\ne\r\nf")
+  let d = sample(t, 1, 6)
+  assert_eq(extra(d), 1)
+  // The line above the viewport shows in the grid's first 6 pixels.
+  assert_eq(view.text_of(t, line_at(d, t, 12)), "a")
+  assert_eq(view.text_of(t, line_at(d, t, 16)), "b")
+  assert_eq(view.text_of(t, line_at(d, t, 10 + 6 + 3 * 20 + 1)), "e")
+  // Below the rows: the last drawn.
+  assert_eq(view.text_of(t, line_at(d, t, 400)), "e")
+}
+
+test "the pointer outside the rows comes to the nearest row and column" {
+  var t = terminal.new(10, 4)
+  terminal.feed_string(t, "a\r\nb")
+  let d = sample(t, 0, 0)
+  assert_eq((line_at(d, t, 0), row_at(d, t, 0), col_at(d, t, 0)), (view.top_line(t, 0), 0, 0))
+  assert_eq((row_at(d, t, 400), col_at(d, t, 400)), (3, 9))
+  assert_eq((row_at(d, t, 10 + 20 + 19), col_at(d, t, 5 + 3 * 10 + 9)), (1, 3))
+}

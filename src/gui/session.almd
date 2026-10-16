@@ -67,6 +67,9 @@ type Session = {
   // The drawable's size, pixels; the font size now (Cmd+Plus / Minus).
   width: Int,
   height: Int,
+  // The size, logical pixels, the last time the window wasn't full screen:
+  // what is kept when it is, to open at again.
+  windowed: (Float, Float),
   font_size: Float,
   // A blinking cursor: when it next turns on or off, -1 when it doesn't
   // blink. When the visual bell's light goes out, -1 when it is not lit.

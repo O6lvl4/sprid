@@ -3,6 +3,7 @@
 
 import bytes
 import self.gui.dialog
+import self.gui.drawn
 import self.gui.render
 import self.pty
 import self.sys
@@ -44,6 +45,10 @@ type Tab = {
   // A bell or notification came while it wasn't being looked at: its title
   // is marked until it is.
   alert: Bool,
+  // What its last frame drew, where: the pointer is read against it — the
+  // screen shows that frame, not the terminal now (drawn.almd). None until
+  // it is first drawn.
+  seen: Option[drawn.Drawn],
 }
 
 /// The latest synchronized update and redraw with the cursor hidden that
@@ -165,7 +170,7 @@ fn cwd_of(tabs: List[Tab], i: Int, home: String) -> String = match list.get(tabs
 fn open_tab(cols: Int, rows: Int, command: String, cwd: String, scrollback: Int) -> Option[Tab] = {
   let fd = pty.spawn(command, cwd, cols, rows)
   if fd < 0 then none
-  else some(Tab { t: terminal.with_scrollback(cols, rows, scrollback), fd: fd, back: 0, shift: 0, sel: none, held: none, up: NO_UPDATES, name: "", alert: false })
+  else some(Tab { t: terminal.with_scrollback(cols, rows, scrollback), fd: fd, back: 0, shift: 0, sel: none, held: none, up: NO_UPDATES, name: "", alert: false, seen: none })
 }
 
 /// Close tab `i` and its program, keeping the other tabs in order.
@@ -313,7 +318,7 @@ test "a tab moved keeps the others in order" {
 }
 
 test "a resized tab's frame waits for its program to draw again, no longer than the limit" {
-  let tb = Tab { t: terminal.new(10, 3), fd: -1, back: 0, shift: 0, sel: none, held: none, up: { ...NO_UPDATES, resized_at: 1000 }, name: "", alert: false }
+  let tb = Tab { t: terminal.new(10, 3), fd: -1, back: 0, shift: 0, sel: none, held: none, up: { ...NO_UPDATES, resized_at: 1000 }, name: "", alert: false, seen: none }
   assert_eq(hold_left(tb, 1040), RESIZE_LIMIT - 40)
   assert_eq(hold_left(tb, 1000 + RESIZE_LIMIT), 0)
   assert_eq(hold_left({ ...tb, up: NO_UPDATES }, 1040), 0)

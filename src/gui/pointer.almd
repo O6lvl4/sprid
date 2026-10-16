@@ -2,7 +2,7 @@
 
 import snaidhm.native.window as window
 import self.gui.render
-import self.gui.surface
+import self.gui.drawn
 import self.keys
 import self.pty
 import self.terminal
@@ -71,19 +71,19 @@ fn drag_scrollbar(mut cur: tabset.Tab, mut ui: uistate.Ui, r: render.Renderer, s
   }
 }
 
-/// The line under the pointer, as `tb` is scrolled.
-fn pointer_line(r: render.Renderer, tb: tabset.Tab, scale: Float, tabs: Int) -> Int = {
-  let py = float.to_int(window.event_y() * scale)
-  // The viewport's top line starts `shift` pixels below the grid's top; the
-  // line above it shows in those pixels.
-  let rel = py - surface.grid_y(r) - tb.shift
-  let row = if rel < 0 then (if tb.shift > 0 then -1 else 0) else int.min(rel / r.cell_h, tb.t.rows - 1)
-  view.top_line(tb.t, tb.back) + row
-}
+/// What `tb`'s frame on screen drew: the pointer is read against it, not
+/// against the terminal now (drawn.almd). Before its first frame, what one
+/// would draw.
+fn seen(r: render.Renderer, tb: tabset.Tab) -> drawn.Drawn =
+  tb.seen ?? drawn.of(r, tb.t, tb.back, tb.shift)
 
-/// The cell under the pointer: (column, row of the viewport).
-fn cell_at(r: render.Renderer, t: terminal.Terminal, scale: Float, tabs: Int) -> (Int, Int) = {
-  let px = float.to_int(window.event_x() * scale)
-  let py = float.to_int(window.event_y() * scale)
-  (int.clamp((px - surface.grid_left(r)) / r.cell_w, 0, t.cols - 1), int.clamp((py - surface.grid_y(r)) / r.cell_h, 0, t.rows - 1))
+/// The line under the pointer: the one `tb`'s frame on screen shows there.
+fn pointer_line(r: render.Renderer, tb: tabset.Tab, scale: Float, tabs: Int) -> Int =
+  drawn.line_at(seen(r, tb), tb.t, float.to_int(window.event_y() * scale))
+
+/// The cell under the pointer: (column, row of the viewport), as `tb`'s
+/// frame on screen has them.
+fn cell_at(r: render.Renderer, tb: tabset.Tab, scale: Float, tabs: Int) -> (Int, Int) = {
+  let d = seen(r, tb)
+  (drawn.col_at(d, tb.t, float.to_int(window.event_x() * scale)), drawn.row_at(d, tb.t, float.to_int(window.event_y() * scale)))
 }

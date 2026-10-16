@@ -3,6 +3,7 @@
 
 import self.links
 import self.prompts
+import self.record
 import self.terminal
 import self.view
 import self.gui.chrome

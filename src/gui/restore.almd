@@ -117,13 +117,16 @@ effect fn fill(mut a: session.Session, tabs: List[KeptTab]) -> Unit = {
   groups.go_to(a, 0)
 }
 
-/// Window session `a` as kept: its frame, and its tabs when `tabs`.
+/// Window session `a` as kept: its frame, and its tabs when `tabs`. Full
+/// screen, its size out of it: kept as the screen's, it opened again too
+/// big for the screen with its title bar.
 fn frame_of(a: session.Session, tabs: Bool) -> Kept = {
   window.select(a.id)
   let kept_tabs = if not tabs then [] else list.map(a.groups, (g) => tab_of(a, g))
+  let (width, height) = if window.is_fullscreen() then a.windowed else (int.to_float(a.width) / a.scale, int.to_float(a.height) / a.scale)
   Kept {
     x: window.x(), y: window.y(),
-    width: int.to_float(a.width) / a.scale, height: int.to_float(a.height) / a.scale,
+    width: width, height: height,
     tabs: kept_tabs,
   }
 }

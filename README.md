@@ -163,7 +163,7 @@ above.
 
 ## Build
 
-Needs Almide [v0.66.0-rc3](https://github.com/almide/almide/releases/tag/v0.66.0-rc3) (see [docs/design.md](docs/design.md#compiler-workarounds)).
+Needs Almide built from its develop branch at the commit CI pins (`ALMIDE_REF` in [.github/workflows/release.yml](.github/workflows/release.yml); see [docs/design.md](docs/design.md#compiler-workarounds)).
 
 ```
 scripts/make-app.sh --install     # build Sprid.app into ~/Applications

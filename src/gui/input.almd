@@ -28,7 +28,7 @@ effect fn handle(mut cur: tabset.Tab, mut ui: uistate.Ui, kind: Int, r: render.R
   }
   if kind == window.TEXT or kind == window.KEY then key(cur, ui, kind)!
   else if kind == window.WHEEL then {
-    let (col, row) = pointer.cell_at(r, cur.t, scale, tabs)
+    let (col, row) = pointer.cell_at(r, cur, scale, tabs)
     pointer.wheel(cur, ui, r, scale, window.event_dy(), col, row)
     uistate.Stay
   }
