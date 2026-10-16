@@ -129,16 +129,6 @@ fn sized(a: Session) -> render.Renderer =
   render.with_size(a.r, float.to_int(float.round(a.font_size * a.scale)),
     float.to_int(a.st.pad_x * a.scale), float.to_int(a.st.pad_y * a.scale), a.st.cell_height)
 
-// FIXME(almide#3064): the setters below stand in for assignments two fields
-// deep (`a.r.flash = false`, `a.stats.wakes = ...`), which the compiler in
-// use doesn't parse yet (fixed on develop).
-
-fn set_flash(mut r: render.Renderer, on: Bool) -> Unit = { r.flash = on }
-
-fn set_blink_off(mut r: render.Renderer, off: Bool) -> Unit = { r.blink_off = off }
-
-fn set_focused(mut r: render.Renderer, on: Bool) -> Unit = { r.focused = on }
-
 /// A frame drawn, taking `ms`.
 fn count_frame(mut s: Stats, ms: Int) -> Unit = {
   s.frames = s.frames + 1
@@ -158,7 +148,3 @@ fn shown(mut s: Stats, now: Int) -> Unit = {
     s.input_at = -1
   }
 }
-
-fn count_wake(mut s: Stats) -> Unit = { s.wakes = s.wakes + 1 }
-
-fn set_auto_next(mut s: Stats, at: Int) -> Unit = { s.auto_next = at }

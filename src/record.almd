@@ -255,9 +255,7 @@ fn decode_run(mut row: Row, block: Bytes, p: Int, n: Int, cols: Int, at: (Int, I
   // 7 bits.
   let word = int.bor(bytes.read_u16_le(block, p + 8), int.bshl(bytes.read_u8(block, p + 13), 25))
   let style = (bytes.read_u32_le(block, p), bytes.read_u32_le(block, p + 4), word)
-  // FIXME(almide#3149): `var (x, last) = at` once var destructures.
-  var x = at.0
-  var last = at.1
+  var (x, last) = at
   for ch in string.chars(bytes.read_string_at(block, p + RUN_HEADER, n)) {
     let cp = string.codepoint(ch) ?? 32
     let w = width.of(cp)

@@ -95,7 +95,7 @@ effect fn after_events(mut a: session.Session) -> Unit = {
   // The tab in front, in a window with the focus, is being looked at.
   if a.r.focused and (list.get(a.tabs, a.active) |> option.map((tb) => tb.alert) ?? false) then {
     a.tabs = list.set(a.tabs, a.active, { ...a.tabs[a.active], alert: false })
-    uistate.touch(a.ui)
+    a.ui.dirty = true
   }
   paint.draw_due(a)
   match a.capture {
@@ -130,7 +130,7 @@ effect fn events(mut wins: List[session.Session]) -> Unit = {
 effect fn input(mut a: session.Session, kind: Int) -> Unit = {
   // Typing shows the cursor at once and starts its blink over.
   if kind == window.KEY or kind == window.TEXT then {
-    session.set_blink_off(a.r, false)
+    a.r.blink_off = false
     if a.blink_at >= 0 then a.blink_at = sys.now_ms() + session.BLINK_MS
   }
   session.note_input(a.stats, sys.now_ms())
@@ -156,7 +156,7 @@ fn tab_wheel(mut a: session.Session, kind: Int) -> Bool = {
   if kind == window.WHEEL and on_bar and not render.tabs_fit(a.r, a.width, open) and delta != 0.0 then {
     let before = a.r.tab_scroll
     render.scroll_tabs(a.r, float.to_int(delta * a.scale), a.width, open)
-    a.ui.dirty = a.ui.dirty or a.r.tab_scroll != before
+    if a.r.tab_scroll != before then { a.ui.dirty = true }
     true
   } else false
 }

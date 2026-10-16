@@ -97,13 +97,9 @@ effect fn adopt_taken(mut wins: List[session.Session], i: Int) -> Unit = match t
 /// Windows whose last tab closed, or that were closed, gone — their shells
 /// ended with them.
 fn close_ended(mut wins: List[session.Session]) -> Unit = {
-  // FIXME(almide#3170): `wins = list.filter(wins, (a) => a.alive)` once that
-  // compiles for a `mut` parameter.
-  var kept: List[session.Session] = []
   let n = list.len(wins)
   for a in wins {
-    if a.alive then list.push(kept, a)
-    else {
+    if not a.alive then {
       for tb in a.tabs {
         pty.close(tb.fd)
       }
@@ -111,7 +107,7 @@ fn close_ended(mut wins: List[session.Session]) -> Unit = {
       if n > 1 then window.close_window(a.id)
     }
   }
-  wins = kept
+  wins = list.filter(wins, (a) => a.alive)
 }
 
 /// Session `i` taken out of `wins` to be worked on (see `tabset.take`).

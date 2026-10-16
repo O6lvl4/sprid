@@ -50,7 +50,7 @@ effect fn window_act(mut a: session.Session, act: uistate.Act) -> Unit = match a
   uistate.Zoom(step) => zoom(a, step),
   uistate.Restyle => {
     a.r = prefs.styled(a.r, a.st)!
-    uistate.touch(a.ui)
+    a.ui.dirty = true
   },
   uistate.Focus(on) => focus(a, on),
   uistate.Paste => paste(a, clip.clipboard()!)!,
@@ -97,14 +97,14 @@ fn zoom(mut a: session.Session, step: Int) -> Unit = {
     a.r = session.sized(a)
     groups.relayout_live(a)
     a.resized_at = sys.now_ms()
-    uistate.touch(a.ui)
+    a.ui.dirty = true
   }
 }
 
 /// The window gained or lost the keyboard. Programs that asked (mode 1004)
 /// are told: CSI I, CSI O.
 fn focus(mut a: session.Session, on: Bool) -> Unit = {
-  session.set_focused(a.r, on)
+  a.r.focused = on
   match tabset.take(a.tabs, a.active) {
     some(tb) => {
       var cur = tb
@@ -116,7 +116,7 @@ fn focus(mut a: session.Session, on: Bool) -> Unit = {
     },
     none => (),
   }
-  uistate.touch(a.ui)
+  a.ui.dirty = true
 }
 
 /// The menu a right click opens, and what was picked from it done.
@@ -124,10 +124,7 @@ effect fn menu(mut a: session.Session) -> Unit = {
   let front = list.get(a.tabs, a.active)
   let has_sel = (front |> option.flat_map((tb) => tb.sel)) != none
   // The output of the command the pointer is on, as the shell marks it.
-  // FIXME(almide#3177): read `a` in the closure once that doesn't lose what
-  // the menu then does to it.
-  let (r, scale, open) = (a.r, a.scale, groups.count(a))
-  let output = front |> option.flat_map((tb) => prompts.output_at(tb.t, pointer.pointer_line(r, tb, scale, open)))
+  let output = front |> option.flat_map((tb) => prompts.output_at(tb.t, pointer.pointer_line(a.r, tb, a.scale, groups.count(a))))
   let names = if a.ja then ["コピー", "貼り付け", "-", "すべてを選択", "コマンドの出力を選択", "検索", "クリア"]
     else ["Copy", "Paste", "-", "Select All", "Select Command Output", "Find", "Clear"]
   let off = (i: Int) => (i == 0 and not has_sel) or (i == 4 and output == none)
@@ -148,7 +145,7 @@ effect fn menu_pick(mut a: session.Session, picked: Int, output: Option[(Int, In
     else if picked == 4 then shortcuts.select_lines(cur, output)
     else if picked == 5 then shortcuts.open_find(cur, a.ui)
     else if picked == 6 then shortcuts.clear(cur, a.ui)
-    uistate.touch(a.ui)
+    a.ui.dirty = true
     list.push(a.tabs, cur)
     a.tabs = list.swap(a.tabs, a.active, list.len(a.tabs) - 1)
   },
@@ -179,7 +176,7 @@ effect fn paste(mut a: session.Session, text: String) -> Unit = match tabset.tak
     let protect = a.st.paste_protection and not cur.t.bracketed_paste and keys.multiline(text)
     if text != "" and (not protect or clip.paste_ok(text, a.ja)!) then {
       let _ = pty.write(cur.fd, keys.paste(text, cur.t.bracketed_paste))
-      if cur.back != 0 then uistate.touch(a.ui)
+      if cur.back != 0 then { a.ui.dirty = true }
       tabset.scroll_to(cur, 0)
     }
     list.push(a.tabs, cur)

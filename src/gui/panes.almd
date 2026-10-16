@@ -23,8 +23,6 @@ fn cycle(mut a: session.Session, step: Int) -> Unit = {
   if gi >= 0 then {
     let ps = layout.panes(a.groups[gi].layout)
     let n = list.len(ps)
-    // FIXME(almide#3177): `tabset.fd_of(a.tabs, a.active)` in the closure
-    // once that doesn't lose the focus set below.
     let front = tabset.fd_of(a.tabs, a.active)
     let at = list.find_index(ps, (p) => p == front) ?? 0
     if n > 1 then groups.focus(a, ps[(at + step + n) % n])
@@ -38,7 +36,7 @@ fn resize(mut a: session.Session, dx: Int, dy: Int) -> Unit = {
     let g = a.groups[gi]
     a.groups = list.set(a.groups, gi, { ...g, layout: layout.resize(g.layout, g.focus, dx, dy, RESIZE_STEP) })
     groups.relayout_live(a)
-    uistate.touch(a.ui)
+    a.ui.dirty = true
   }
 }
 
@@ -48,7 +46,7 @@ fn toggle_zoom(mut a: session.Session) -> Unit = {
   if gi >= 0 and list.len(layout.panes(a.groups[gi].layout)) > 1 then {
     a.groups = list.set(a.groups, gi, { ...a.groups[gi], zoomed: not a.groups[gi].zoomed })
     groups.relayout_live(a)
-    uistate.touch(a.ui)
+    a.ui.dirty = true
   }
 }
 
@@ -58,6 +56,6 @@ fn equalize(mut a: session.Session) -> Unit = {
   if gi >= 0 then {
     a.groups = list.set(a.groups, gi, { ...a.groups[gi], layout: layout.equalize(a.groups[gi].layout) })
     groups.relayout_live(a)
-    uistate.touch(a.ui)
+    a.ui.dirty = true
   }
 }
