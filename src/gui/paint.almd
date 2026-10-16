@@ -6,6 +6,7 @@ import env
 import snaidhm.native.window as window
 import snaidhm.native.frame as frame
 import snaidhm.text as text
+import self.gui.drawn
 import self.gui.render
 import self.gui.surface
 import self.gui.tabset
@@ -58,10 +59,14 @@ fn retitle(mut a: session.Session) -> Unit = {
   }
 }
 
-fn draw(mut a: session.Session, cur: tabset.Tab, titles: List[String], clock: Int) -> Unit = {
+fn draw(mut a: session.Session, mut cur: tabset.Tab, titles: List[String], clock: Int) -> Unit = {
   let t0 = sys.now_ms()
   render.draw(a.r, cur.t, cur.back, cur.shift, cur.sel, uistate.compose_of(a.ui), a.width, a.height, titles, groups.current_of(a, cur.fd),
     uistate.bar_of(a.ui), a.ui.link, groups.others(a, cur.fd))
+  // What is on screen now, for the pointer to be read against until the
+  // next frame: this pane's and the ones beside it.
+  cur.seen = some(drawn.of(a.r, cur.t, cur.back, cur.shift))
+  groups.saw_others(a, cur.fd)
   if a.stats.trace then eprintln("frame ${int.to_string(sys.now_ms())} cursor ${int.to_string(cur.t.x)},${int.to_string(cur.t.y)} shown ${if cur.t.cursor_visible then "yes" else "no"}"
     + " preedit ${int.to_string(list.len(a.ui.preedit))} line ${view.text_of(cur.t, view.screen_line(cur.t) + cur.t.y)}")
   session.count_frame(a.stats, sys.now_ms() - t0)

@@ -9,6 +9,7 @@ import self.record
 import self.search
 import self.terminal
 import self.view
+import self.gui.drawn
 import self.gui.sprite
 import self.gui.surface
 import self.gui.ink
@@ -35,18 +36,18 @@ type Frame = {
 }
 
 fn frame_of(r: surface.Renderer, t: terminal.Terminal, back: Int, shift: Int, preedit: List[Int], tabs: List[String], find: Option[findbar.Bar]) -> Frame = {
-  // Scrolled by part of a line, the line above the viewport shows in part at
-  // its top: one row more is drawn, from `shift` pixels less than a row
-  // above the grid, and what falls outside the grid is covered.
-  let extra = if shift > 0 then 1 else 0
-  let gy = surface.grid_y(r)
-  let top_line = view.top_line(t, back) - extra
-  let shown = t.rows + extra
+  // Laid out as the pointer reads it (drawn.almd). Scrolled by part of a
+  // line, one row more is drawn above, and what falls outside the grid is
+  // covered.
+  let d = drawn.of(r, t, back, shift)
+  let extra = drawn.extra(d)
+  let top_line = d.line0
+  let shown = d.shown
   let lines = list.map(0..<shown, (y) => view.line_at(t, top_line + y))
   let query = find |> option.map((b) => b.find.query) ?? ""
   Frame {
-    gy: gy, extra: extra, top_line: top_line, shown: shown,
-    row_y: gy - (if extra == 1 then r.cell_h - shift else 0),
+    gy: d.gy, extra: extra, top_line: top_line, shown: shown,
+    row_y: d.y0,
     // A composition is drawn over the cursor's row (see `compose_span`).
     composing: list.len(preedit) > 0 and not (find |> option.map((b) => b.focused) ?? false),
     lines: lines,
