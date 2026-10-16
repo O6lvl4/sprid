@@ -31,7 +31,7 @@ jobs:
           - { os: macos-14, arch: arm64 }
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ env.TAG }}
 
@@ -47,7 +47,7 @@ jobs:
 
       - name: Almide cache
         id: cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/almide/target/release/almide
           key: almide-${{ matrix.os }}-${{ env.ALMIDE_REF }}
@@ -90,7 +90,7 @@ jobs:
         if: runner.os == 'macOS'
         run: ALMIDE=~/almide/target/release/almide scripts/make-app.sh --zip
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: sprid-${{ matrix.os }}
           path: |
@@ -101,7 +101,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           path: dist
           merge-multiple: true
