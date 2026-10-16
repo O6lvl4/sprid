@@ -2,9 +2,9 @@
 
 import self.terminal
 import self.view
-import self.width as cell_width
 import self.gui.surface
 import self.gui.ink
+import self.gui.tabtitle
 
 fn scrollbar_width(r: surface.Renderer) -> Int = int.max(4, r.pad_x / 3)
 
@@ -43,20 +43,47 @@ fn on_scrollbar(r: surface.Renderer, t: terminal.Terminal, x: Int) -> Bool = {
 }
 
 /// The tab bar: one tab per title, `active` raised to the terminal's
-/// background with an accent line, the others on a darker strip. Returns the
+/// background with an accent line, the others on a darker strip. Too many
+/// to share the bar and each is its narrowest, the bar scrolled to keep
+/// `active` in view and faded at an end with more past it. Returns the
 /// quads it pushed.
 fn draw_tabs(mut r: surface.Renderer, titles: List[List[Int]], active: Int, width: Int, sx: Float, sy: Float) -> Int = {
   let h = surface.bar_height(r)
   let count = list.len(titles)
+  surface.follow_tab(r, active, width, count)
   ink.rect(r, 0, 0, width, h, r.theme.tab_bar, 1.0, sx, sy)
   var n = 1
   for i in 0..<count {
-    let x0 = i * width / count
-    let x1 = (i + 1) * width / count
-    n = n + draw_tab_back(r, i, active, x0, x1, h, sx, sy)
-    n = n + draw_title(r, titles[i], x0, x1, (h - r.cell_h) / 2 + r.baseline, if i == active then r.theme.fg else r.theme.tab_dim, sx, sy)
+    let (x0, x1) = surface.tab_span(r, i, width, count)
+    if x1 > 0 and x0 < width then {
+      n = n + draw_tab_back(r, i, active, x0, x1, h, sx, sy)
+      n = n + draw_title(r, titles[i], x0, x1, (h - r.cell_h) / 2 + r.baseline, if i == active then r.theme.fg else r.theme.tab_dim, sx, sy)
+    }
   }
+  let more_left = r.tab_scroll > 0
+  let more_right = r.tab_scroll < surface.tab_scroll_max(r, width, count)
+  if more_left then n = n + draw_fade(r, 0, h, 1, sx, sy)
+  if more_right then n = n + draw_fade(r, width, h, -1, sx, sy)
   n
+}
+
+/// Steps of the fade at an end of a scrolled tab bar.
+let FADE_STEPS = 4
+
+/// Quads the tab bar may push besides its tabs' (the fades).
+let TAB_EXTRA_QUADS = FADE_STEPS * 2
+
+/// A fade from the bar's colour at `edge` to clear, two cells into the bar
+/// (`dir` 1 rightward, -1 leftward). How many quads.
+fn draw_fade(mut r: surface.Renderer, edge: Int, h: Int, dir: Int, sx: Float, sy: Float) -> Int = {
+  let step = int.max(1, r.cell_w * 2 / FADE_STEPS)
+  for k in 0..<FADE_STEPS {
+    let a = edge + dir * k * step
+    let b = a + dir * step
+    let alpha = int.to_float(FADE_STEPS - k) / int.to_float(FADE_STEPS + 1)
+    ink.rect(r, int.min(a, b), 0, int.max(a, b), h, r.theme.tab_bar, alpha, sx, sy)
+  }
+  FADE_STEPS
 }
 
 /// Tab `i`'s background: the window's with an accent on top for the active
@@ -72,15 +99,15 @@ fn draw_tab_back(mut r: surface.Renderer, i: Int, active: Int, x0: Int, x1: Int,
     1
   } else 0
 
-/// A title, centred between `x0` and `x1`, cut to the tab with room to
-/// spare on each side. How many quads.
+/// A title, centred between `x0` and `x1` with a cell to spare on each
+/// side, cut to fit there. How many quads.
 fn draw_title(mut r: surface.Renderer, title: List[Int], x0: Int, x1: Int, baseline: Int, color: Int, sx: Float, sy: Float) -> Int = {
-  let room = int.max(1, (x1 - x0) / r.cell_w - 2)
-  let shown = if list.len(title) > room then list.take(title, int.max(1, room - 1)) + [0x2026] else title
-  var w = 0
-  for cp in shown {
-    w = w + advance(r, cp)
-  }
+  let room = x1 - x0 - 2 * r.cell_w
+  // A title being typed ends with its caret: cut from the front, so what is
+  // typed stays in view.
+  let typing = (list.last(title) ?? 0) == 0x258F
+  let shown = if typing then tabtitle.fit_tail(r.cell_w, title, room) else tabtitle.fit(r.cell_w, title, room)
+  let w = tabtitle.span(r.cell_w, shown)
   var pen = x0 + (x1 - x0 - w) / 2
   var n = 0
   for cp in shown {
@@ -97,4 +124,4 @@ fn draw_title(mut r: surface.Renderer, title: List[Int], x0: Int, x1: Int, basel
 /// How far a title's pen moves past `cp`.
 // FIXME(almide#3154): a local closure in `draw_title` once one may capture its
 // `mut` renderer.
-fn advance(r: surface.Renderer, cp: Int) -> Int = r.cell_w * int.max(1, cell_width.of(cp))
+fn advance(r: surface.Renderer, cp: Int) -> Int = tabtitle.cells_px(r.cell_w, cp)

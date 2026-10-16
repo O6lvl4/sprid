@@ -27,6 +27,9 @@ type Renderer = {
   size_px: Int,
   cell_w: Int,
   cell_h: Int,
+  // The font's own height, ascent to descent, pixels: more than `cell_h`
+  // when the cell is set shorter than its glyphs.
+  font_h: Int,
   baseline: Int,
   pad_x: Int,
   pad_y: Int,
@@ -65,6 +68,10 @@ type Renderer = {
   // emoji.
   wanted: List[(Int, Bool)],
   wanted_emoji: List[Int],
+  // The tab bar, when its tabs are too many to share it: how far it is
+  // scrolled, pixels, and the tab last brought into view (-1: none yet).
+  tab_scroll: Int,
+  tab_follow: Int,
 }
 
 /// `r` in the colours of `t`.
@@ -101,6 +108,7 @@ fn new(device: Int, faces: fonts.Faces, size_px: Int, pad_x: Int, pad_y: Int, ce
     size_px: 0,
     cell_w: 1,
     cell_h: 1,
+    font_h: 1,
     baseline: 0,
     pad_x: 0,
     pad_y: 0,
@@ -122,6 +130,8 @@ fn new(device: Int, faces: fonts.Faces, size_px: Int, pad_x: Int, pad_y: Int, ce
     missed: false,
     wanted: [],
     wanted_emoji: [],
+    tab_scroll: 0,
+    tab_follow: -1,
   }
   with_size(r, size_px, pad_x, pad_y, cell_height)
 }
@@ -147,6 +157,7 @@ fn with_size(r: Renderer, size_px: Int, pad_x: Int, pad_y: Int, cell_height: Flo
     size_px: size_px,
     cell_w: cell_w,
     cell_h: cell_h,
+    font_h: int.max(1, float.to_int(float.ceil(natural))),
     baseline: baseline,
     pad_x: pad_x,
     pad_y: pad_y,
@@ -188,14 +199,54 @@ fn grid_left(r: Renderer) -> Int = r.box.0 + r.pad_x
 
 fn grid_y(r: Renderer) -> Int = r.box.1 + r.pad_y
 
-/// Height of the tab bar.
-fn bar_height(r: Renderer) -> Int = r.cell_h + r.pad_y
+/// Height of the tab bar: a row and the padding, the row as tall as its
+/// glyphs where the cell is set shorter, so a title stays inside the bar.
+fn bar_height(r: Renderer) -> Int = int.max(r.cell_h, r.font_h) + r.pad_y
 
 /// Pixel row the grid starts at: below the tab bar when there is one.
 fn grid_top(r: Renderer, tabs: Int) -> Int = r.pad_y + (if tabs > 1 then bar_height(r) else 0)
 
+/// Narrowest a tab gets, in cells: more tabs than fit at this width and the
+/// bar scrolls instead, as Terminal's and iTerm2's do.
+let TAB_MIN_CELLS = 12
+
+fn tab_min_width(r: Renderer) -> Int = r.cell_w * TAB_MIN_CELLS
+
+/// Whether `tabs` tabs share a bar `width` wide without scrolling it.
+fn tabs_fit(r: Renderer, width: Int, tabs: Int) -> Bool = tabs * tab_min_width(r) <= width
+
+/// Tab `i`'s left and right edges on the bar, pixels: the bar shared out
+/// while the tabs fit, else each its narrowest, scrolled by `r.tab_scroll`.
+fn tab_span(r: Renderer, i: Int, width: Int, tabs: Int) -> (Int, Int) =
+  if tabs_fit(r, width, tabs) then (i * width / int.max(1, tabs), (i + 1) * width / int.max(1, tabs))
+  else (i * tab_min_width(r) - r.tab_scroll, (i + 1) * tab_min_width(r) - r.tab_scroll)
+
+/// Furthest the tab bar scrolls, pixels.
+fn tab_scroll_max(r: Renderer, width: Int, tabs: Int) -> Int = int.max(0, tabs * tab_min_width(r) - width)
+
 /// The tab under pixel `x` of the tab bar, for `tabs` tabs across `width`.
-fn tab_at(r: Renderer, x: Int, width: Int, tabs: Int) -> Int = int.clamp(x * tabs / int.max(1, width), 0, tabs - 1)
+fn tab_at(r: Renderer, x: Int, width: Int, tabs: Int) -> Int =
+  if tabs_fit(r, width, tabs) then int.clamp(x * tabs / int.max(1, width), 0, tabs - 1)
+  else int.clamp((x + r.tab_scroll) / int.max(1, tab_min_width(r)), 0, tabs - 1)
+
+/// The tab bar scrolled to `to` pixels, kept in range.
+fn scroll_tabs(mut r: Renderer, to: Int, width: Int, tabs: Int) -> Unit = {
+  r.tab_scroll = int.clamp(to, 0, tab_scroll_max(r, width, tabs))
+}
+
+/// The tab bar scrolled as little as brings tab `active` wholly into view —
+/// once each time another tab comes to the front, so the wheel may scroll
+/// it out of view again — and kept in range as the window or tabs change.
+fn follow_tab(mut r: Renderer, active: Int, width: Int, tabs: Int) -> Unit = {
+  if active != r.tab_follow then {
+    let w = tab_min_width(r)
+    let left = active * w
+    if left < r.tab_scroll then r.tab_scroll = left
+    else if left + w > r.tab_scroll + width then r.tab_scroll = left + w - width
+    r.tab_follow = active
+  }
+  scroll_tabs(r, r.tab_scroll, width, tabs)
+}
 
 /// 0xRRGGBB of a cell colour; `fallback` for the default colour.
 fn resolve(r: Renderer, color: Int, fallback: Int) -> Int = {

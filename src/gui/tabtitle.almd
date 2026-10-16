@@ -1,0 +1,60 @@
+// A tab's title cut to the room its tab has, by the cells each character
+// takes — a wide one two — so a title never runs past its tab.
+
+import self.width as cell_width
+
+/// As much of `title` from its start as fits `room` pixels at `cell_w`
+/// pixels a cell, ended with "…" where it is cut; nothing where not even
+/// that fits.
+fn fit(cell_w: Int, title: List[Int], room: Int) -> List[Int] =
+  if span(cell_w, title) <= room then title
+  else {
+    let budget = room - cells_px(cell_w, 0x2026)
+    var kept: List[Int] = []
+    var w = 0
+    var full = false
+    for cp in title {
+      if not full and w + cells_px(cell_w, cp) <= budget then {
+        kept = kept + [cp]
+        w = w + cells_px(cell_w, cp)
+      } else full = true
+    }
+    if budget < 0 then [] else trim_end(kept) + [0x2026]
+  }
+
+/// `fit` from the end: "…" and as much of the end of `title` as fits.
+fn fit_tail(cell_w: Int, title: List[Int], room: Int) -> List[Int] =
+  list.reverse(fit(cell_w, list.reverse(title), room))
+
+/// `cps` without the spaces at its end, so a cut doesn't end " …".
+fn trim_end(cps: List[Int]) -> List[Int] = {
+  var n = list.len(cps)
+  while n > 0 and cps[n - 1] == 0x20 {
+    n = n - 1
+  }
+  list.take(cps, n)
+}
+
+/// How wide `cps` are drawn at `cell_w` pixels a cell.
+fn span(cell_w: Int, cps: List[Int]) -> Int = list.fold(cps, 0, (acc, cp) => acc + cells_px(cell_w, cp))
+
+/// How wide `cp` is drawn at `cell_w` pixels a cell.
+fn cells_px(cell_w: Int, cp: Int) -> Int = cell_w * int.max(1, cell_width.of(cp))
+
+test "a title cut to its tab by the cells it takes" {
+  // 10 cells of room at 1 pixel a cell.
+  assert_eq(fit(1, [0x61, 0x62, 0x63], 10), [0x61, 0x62, 0x63])
+  // "a long title here" -> "a long ti…"
+  assert_eq(fit(1, [0x61, 0x20, 0x6C, 0x6F, 0x6E, 0x67, 0x20, 0x74, 0x69, 0x74, 0x6C, 0x65], 10),
+    [0x61, 0x20, 0x6C, 0x6F, 0x6E, 0x67, 0x20, 0x74, 0x69, 0x2026])
+  // Wide characters take two cells each: "日本語のタイ" -> "日本語の…", nine cells.
+  assert_eq(fit(1, [0x65E5, 0x672C, 0x8A9E, 0x306E, 0x30BF, 0x30A4], 10), [0x65E5, 0x672C, 0x8A9E, 0x306E, 0x2026])
+  // No " …" where the cut falls after a space: "abcdefgh  xyz" -> "abcdefgh…".
+  assert_eq(fit(1, [0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x20, 0x20, 0x78, 0x79, 0x7A], 10),
+    [0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x2026])
+  // Room for "…" alone, then for nothing.
+  assert_eq(fit(1, [0x65E5, 0x672C], 1), [0x2026])
+  assert_eq(fit(1, [0x61, 0x62], 0), [])
+  // A name being typed keeps its end, caret and all: "abcdefg▏" -> "…efg▏".
+  assert_eq(fit_tail(1, [0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67, 0x258F], 5), [0x2026, 0x65, 0x66, 0x67, 0x258F])
+}
