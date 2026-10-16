@@ -18,7 +18,7 @@ permissions:
 
 env:
   TAG: ${{ github.event.inputs.tag || github.ref_name }}
-  ALMIDE_REF: 2faf532c4452d86c21e27987dd67a835a873f61a
+  ALMIDE_REF: 0bbe6f81009daabff1c0c9f6e3a48a1404e1ad4b
 
 jobs:
   build:

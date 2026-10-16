@@ -116,12 +116,7 @@ fn draw_title(mut r: surface.Renderer, title: List[Int], x0: Int, x1: Int, basel
       ink.glyph_quad(r, slot, pen, baseline, color, 1.0, sx, sy)
       n = n + 1
     }
-    pen = pen + advance(r, cp)
+    pen = pen + tabtitle.cells_px(r.cell_w, cp)
   }
   n
 }
-
-/// How far a title's pen moves past `cp`.
-// FIXME(almide#3154): a local closure in `draw_title` once one may capture its
-// `mut` renderer.
-fn advance(r: surface.Renderer, cp: Int) -> Int = tabtitle.cells_px(r.cell_w, cp)

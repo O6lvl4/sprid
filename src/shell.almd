@@ -44,13 +44,7 @@ fn quote(s: String) -> String = "'" + string.replace(s, "'", "'\\''") + "'"
 /// when they can't be.
 effect fn install() -> String = {
   let dir = cache_dir()! + "/shell-integration"
-  // FIXME(almide#3163): `list.all(SCRIPTS, (f) => write_if_changed(...)!)`
-  // once list.all takes a fallible callback.
-  var written = true
-  for f in SCRIPTS {
-    written = write_if_changed(dir + "/" + f.0, f.1)! and written
-  }
-  if written then dir else ""
+  if list.all(SCRIPTS, (f) => write_if_changed(dir + "/" + f.0, f.1)!)! then dir else ""
 }
 
 effect fn cache_dir() -> String = {
@@ -83,9 +77,7 @@ effect fn write_if_changed(path: String, text: String) -> Bool = {
 }
 
 /// (path under the directory, text).
-// FIXME(almide#3164): drop the annotation once a let referring to later
-// lets is typed.
-let SCRIPTS: List[(String, String)] = [
+let SCRIPTS = [
   ("zsh/.zshenv", ZSHENV),
   ("zsh/sprid.zsh", ZSH),
   ("bash/sprid.bash", BASH),

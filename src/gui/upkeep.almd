@@ -28,9 +28,9 @@ fn wait_for(mut a: session.Session) -> Int = {
   let now = sys.now_ms()
   blink(a, now)
   if a.flash_until >= 0 and now >= a.flash_until then {
-    session.set_flash(a.r, false)
+    a.r.flash = false
     a.flash_until = -1
-    uistate.touch(a.ui)
+    a.ui.dirty = true
   }
   let frame_wait = int.max(0, a.last_frame + session.frame_ms(a) - now)
   let idle = if a.capture == none then -1 else 50
@@ -48,13 +48,13 @@ fn blink(mut a: session.Session, now: Int) -> Unit =
   if a.r.focused and tabset.cursor_blinks(a.tabs, a.active, a.r) then {
     if a.blink_at < 0 then a.blink_at = now + session.BLINK_MS
     else if now >= a.blink_at then {
-      session.set_blink_off(a.r, not a.r.blink_off)
+      a.r.blink_off = not a.r.blink_off
       a.blink_at = now + session.BLINK_MS
-      uistate.touch(a.ui)
+      a.ui.dirty = true
     }
   } else {
     a.blink_at = -1
-    session.set_blink_off(a.r, false)
+    a.r.blink_off = false
   }
 
 /// The config file was saved: it applies now — the theme, the font and its
@@ -77,7 +77,7 @@ effect fn reload(mut a: session.Session) -> Unit = {
       groups.relayout_live(a)
       a.resized_at = sys.now_ms()
     }
-    uistate.touch(a.ui)
+    a.ui.dirty = true
   }
 }
 
@@ -94,7 +94,7 @@ effect fn new_font(mut a: session.Session) -> Unit = match fonts.find(a.st.font_
 /// SPRID_DEBUG: every 2 s, how often the loop woke and how long input took
 /// to show.
 fn report_wakes(mut a: session.Session, timeout: Int) -> Unit = {
-  session.count_wake(a.stats)
+  a.stats.wakes = a.stats.wakes + 1
   if a.stats.debug and sys.now_ms() - a.stats.wake_report >= 2000 then {
     let s = a.stats
     eprintln("sprid: ${int.to_string(s.wakes)} wakes in 2 s (dirty ${if a.ui.dirty then "yes" else "no"}, timeout ${int.to_string(timeout)})"
@@ -119,12 +119,12 @@ fn resized(mut a: session.Session) -> Unit = {
     if not window.is_fullscreen() then a.windowed = (int.to_float(a.width) / a.scale, int.to_float(a.height) / a.scale)
     groups.relayout_window(a)
     a.resized_at = sys.now_ms()
-    uistate.touch(a.ui)
+    a.ui.dirty = true
   }
   if a.resized_at >= 0 and sys.now_ms() - a.resized_at >= session.SETTLE_MS then {
     tabset.settle_all(a.tabs)
     a.resized_at = -1
-    uistate.touch(a.ui)
+    a.ui.dirty = true
     match tabset.take(a.tabs, a.active) {
       some(tb) => {
         var cur = tb
@@ -152,6 +152,6 @@ fn autoscroll(mut a: session.Session) -> Unit = {
       },
       none => (),
     }
-    session.set_auto_next(a.stats, if sys.now_ms() >= float.to_int(auto[2]) then -1 else next + float.to_int(auto[3]))
+    a.stats.auto_next = if sys.now_ms() >= float.to_int(auto[2]) then -1 else next + float.to_int(auto[3])
   }
 }

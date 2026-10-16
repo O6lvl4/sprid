@@ -74,7 +74,7 @@ fn draw(mut a: session.Session, mut cur: tabset.Tab, titles: List[String], clock
   a.last_frame = clock
   session.shown(a.stats, sys.now_ms())
   // A glyph the frame couldn't make in time is made by the next.
-  uistate.set_dirty(a.ui, a.r.missed)
+  a.ui.dirty = a.r.missed
 }
 
 /// Tell the input method where it composes: the find bar while it has the

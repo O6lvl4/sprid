@@ -13,14 +13,12 @@ import self.gui.surface
 /// A pane drawn beside the one in front: its terminal, scrolled `back`
 /// lines and `shift` pixels, its selection, and its box (see
 /// `surface.Renderer.box`).
-// FIXME(almide#3176): `Pane` once a qualified record literal isn't taken
-// for layout.almd's variant of that name.
-type Beside = { t: terminal.Terminal, back: Int, shift: Int, sel: Option[view.Selection], box: (Int, Int, Int, Int) }
+type Pane = { t: terminal.Terminal, back: Int, shift: Int, sel: Option[view.Selection], box: (Int, Int, Int, Int) }
 
 /// The other panes' frames, their glyphs into the atlas: the frames, the
 /// quads their marks and sprites take, and the most quads they can take in
 /// all.
-fn prepare_others(mut r: surface.Renderer, others: List[Beside]) -> (List[frame.Frame], Int, Int) = {
+fn prepare_others(mut r: surface.Renderer, others: List[Pane]) -> (List[frame.Frame], Int, Int) = {
   var frames: List[frame.Frame] = []
   var marks = 0
   var quads = 0
@@ -37,7 +35,7 @@ fn prepare_others(mut r: surface.Renderer, others: List[Beside]) -> (List[frame.
 
 /// The other panes, each in its box, dimmed, its cursor hollow — the keys
 /// go elsewhere — and an edge where it meets another pane. The quads drawn.
-fn draw_others(mut r: surface.Renderer, others: List[Beside], frames: List[frame.Frame], width: Int, height: Int, sx: Float, sy: Float) -> Int = {
+fn draw_others(mut r: surface.Renderer, others: List[Pane], frames: List[frame.Frame], width: Int, height: Int, sx: Float, sy: Float) -> Int = {
   var n = 0
   let focused = r.focused
   r.focused = false

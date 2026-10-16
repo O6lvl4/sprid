@@ -54,8 +54,6 @@ fn draw(mut r: surface.Renderer, cps: List[Int], width: Int, height: Int, sx: Fl
     let baseline = y0 + r.pad_y / 2 + r.baseline
     var x = x0 + r.cell_w / 2
     var n = HINT_QUADS
-    // FIXME(almide#3154): a fold over the characters once a closure may
-    // capture the `mut` renderer.
     for cp in cps {
       n = n + findbar.text_glyph(r, cp, x, baseline, r.theme.fg, sx, sy)
       x = x + r.cell_w * int.max(1, cell_width.of(cp))

@@ -156,14 +156,9 @@ fn nudge(l: Layout, id: Int, dx: Int, dy: Int, step: Float) -> Option[Layout] = 
 
 /// The split of parts `a` and `b` with a divider inside one of them moved.
 fn deeper(across: Bool, f: Float, a: Layout, b: Layout, id: Int, dx: Int, dy: Int, step: Float) -> Option[Layout] =
-  // FIXME(almide#3174): `|> option.map((a2) => Split(across, f, a2, b))`
-  // once a closure may capture a recursive variant's field.
   match nudge(a, id, dx, dy, step) {
     some(a2) => some(Split(across, f, a2, b)),
-    none => match nudge(b, id, dx, dy, step) {
-      some(b2) => some(Split(across, f, a, b2)),
-      none => none,
-    },
+    none => nudge(b, id, dx, dy, step) |> option.map((b2) => Split(across, f, a, b2)),
   }
 
 /// The split of parts `a` and `b` with its own divider moved, when it runs

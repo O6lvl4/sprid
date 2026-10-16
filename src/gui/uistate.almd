@@ -2,8 +2,6 @@
 
 import snaidhm.native.window as window
 import self.links
-import self.gui.composition
-import self.gui.findbar
 import self.gui.render
 import self.search
 import self.field
@@ -79,16 +77,13 @@ type Act = | Stay | NewTab | CloseTab | NextTab | PrevTab | GoTo(Int) | NewWindo
   | SplitPane(Bool) | FocusPane(Int, Int) | CyclePane(Int) | ResizePane(Int, Int) | ZoomPane | EqualPanes
 
 /// The find bar as drawn.
-// FIXME(almide#3153): `render.Bar { ... }` once a record literal works through a
-// type alias; the defining module is named meanwhile.
-fn bar(ui: Ui) -> render.Bar = findbar.Bar { find: ui.find, field: ui.field, focused: ui.find_focus }
+fn bar(ui: Ui) -> render.Bar = render.Bar { find: ui.find, field: ui.field, focused: ui.find_focus }
 
 fn bar_of(ui: Ui) -> Option[render.Bar] = if ui.finding then some(bar(ui)) else none
 
 /// The input method's composition, as drawn.
 fn compose_of(ui: Ui) -> render.Compose =
-  // FIXME(almide#3153): `render.Compose { ... }`, as for `bar`.
-  composition.Compose { cps: ui.preedit, caret: ui.preedit_caret, from: ui.preedit_from, to: ui.preedit_to }
+  render.Compose { cps: ui.preedit, caret: ui.preedit_caret, from: ui.preedit_from, to: ui.preedit_to }
 
 /// End what belonged to the tab that was in front: its find bar and
 /// search, a rename, a drag or a press reported to its program.
@@ -106,15 +101,6 @@ fn leave_tab(mut ui: Ui) -> Unit = {
   ui.link = none
   ui.dirty = true
 }
-
-// FIXME(almide#3064): the setters below stand in for `a.ui.dirty = true` and
-// the like — assignments two fields deep — which the compiler in use doesn't
-// parse yet (fixed on develop).
-
-/// Something changed that the next frame shows.
-fn touch(mut ui: Ui) -> Unit = { ui.dirty = true }
-
-fn set_dirty(mut ui: Ui, dirty: Bool) -> Unit = { ui.dirty = dirty }
 
 /// The pointer's shape, set.
 fn shape_pointer(mut ui: Ui, shape: Int) -> Unit =

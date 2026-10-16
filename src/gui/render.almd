@@ -119,7 +119,7 @@ fn compose_caret(c: composition.Compose, x: Int, cols: Int) -> Int = composition
 /// in `r.box`. Every pane has an edge where it meets another.
 fn draw(mut r: surface.Renderer, t: terminal.Terminal, back: Int, shift: Int, sel: Option[view.Selection],
         compose: composition.Compose, width: Int, height: Int, tabs: List[String], active: Int,
-        find: Option[findbar.Bar], link: Option[links.Link], others: List[beside.Beside]) -> Unit = {
+        find: Option[findbar.Bar], link: Option[links.Link], others: List[beside.Pane]) -> Unit = {
   let front = r.box
   // Pass 1: every glyph on screen into the atlas.
   r.layer = text.solid(r.device, r.layer)

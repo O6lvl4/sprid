@@ -50,7 +50,7 @@ fn drag(mut a: session.Session, d: layout.Divider, px: Int, py: Int, done: Bool)
     some(g) => {
       a.groups = list.set(a.groups, gi, { ...g, layout: layout.set_fraction(g.layout, d.path, layout.fraction_at(d, px, py, 0)) })
       if done then groups.relayout(a) else groups.relayout_live(a)
-      uistate.touch(a.ui)
+      a.ui.dirty = true
     },
     none => (),
   }

@@ -57,11 +57,11 @@ fn place_box_for(mut a: session.Session, fd: Int) -> Unit = {
 
 /// The panes shown beside the one in front, `front`: the rest of its tab,
 /// each where it goes. None while it is zoomed.
-fn others(a: session.Session, front: Int) -> List[beside.Beside] =
+fn others(a: session.Session, front: Int) -> List[beside.Pane] =
   regions(a, group_of(a.groups, front))
     |> list.filter((rg) => rg.id != front)
     |> list.filter_map((rg) => list.get(a.tabs, index_of(a.tabs, rg.id))
-      |> option.map((tb) => beside.Beside { t: tb.t, back: tb.back, shift: tb.shift, sel: tb.sel, box: box_of(rg) }))
+      |> option.map((tb) => beside.Pane { t: tb.t, back: tb.back, shift: tb.shift, sel: tb.sel, box: box_of(rg) }))
 
 /// The panes beside `front` told what the frame just drawn showed of them
 /// (see `tabset.Tab.seen`), as `others` placed them.
@@ -106,7 +106,7 @@ fn titles(a: session.Session) -> List[String] = {
 fn go_to(mut a: session.Session, gi: Int) -> Unit = match list.get(a.groups, gi) {
   some(g) => {
     a.active = index_of(a.tabs, g.focus)
-    uistate.touch(a.ui)
+    a.ui.dirty = true
   },
   none => (),
 }
@@ -122,7 +122,7 @@ fn focus(mut a: session.Session, fd: Int) -> Unit = {
     // after the input that moved the keys (a press starting a selection).
     uistate.leave_tab(a.ui)
     a.front = fd
-    uistate.touch(a.ui)
+    a.ui.dirty = true
   }
 }
 
@@ -132,7 +132,7 @@ fn add_tab(mut a: session.Session, tb: tabset.Tab) -> Unit = {
   list.push(a.tabs, tb)
   a.active = list.len(a.tabs) - 1
   relayout(a)
-  uistate.touch(a.ui)
+  a.ui.dirty = true
 }
 
 /// Tab `gi`, of one pane, given `panes` beside it, laid out as `shape`
@@ -166,7 +166,7 @@ fn add_pane(mut a: session.Session, tb: tabset.Tab, across: Bool) -> Unit = {
     list.push(a.tabs, tb)
     a.active = list.len(a.tabs) - 1
     relayout(a)
-    uistate.touch(a.ui)
+    a.ui.dirty = true
   }
 }
 
@@ -203,7 +203,7 @@ fn close_pane(mut a: session.Session, fd: Int) -> Unit = {
     }
   a.active = int.max(0, index_of(a.tabs, target))
   relayout(a)
-  uistate.touch(a.ui)
+  a.ui.dirty = true
 }
 
 /// Pane `fd` out of group `gi`'s layout: the space goes back to what it
@@ -224,7 +224,7 @@ fn move_tab(mut a: session.Session, to: Int) -> Unit = {
   let from = current(a)
   if from >= 0 and to >= 0 and to < count(a) and to != from then {
     a.groups = tabset.move_to(a.groups, from, to)
-    uistate.touch(a.ui)
+    a.ui.dirty = true
   }
 }
 

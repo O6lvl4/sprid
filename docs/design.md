@@ -100,10 +100,14 @@ earlier lack the fix for
 v0.66.0-rc4 fails to compile `restore.fill`: a fn whose `mut` parameter a
 closure captures, ending in a call that takes it, borrows it past its end
 (rustc E0597, [almide#3192](https://github.com/almide/almide/issues/3192));
-develop compiles it.
+develop compiles it. v0.66.0 compiles sprid, but the binary panics as it
+starts (`RefCell already mutably borrowed`).
 
-The code works around Almide issues where a `FIXME(almide#N)` comment says
-so; many of them are fixed on develop, and can go now. Fixed and not marked:
+The workarounds once marked `FIXME(almide#N)` are gone: the issues they
+stood for are fixed on develop. One is left, unmarked: an assignment two
+fields deep straight after `then` or `else` (`if c then a.ui.dirty = true`)
+still fails to parse, with "Assignments return Unit"; in braces
+(`then { a.ui.dirty = true }`) it is taken. Fixed and not marked:
 [#3045](https://github.com/almide/almide/issues/3045) (`pty.write` takes a
 `String`, not `Bytes`),
 [#3050](https://github.com/almide/almide/issues/3050) (arguments bound with

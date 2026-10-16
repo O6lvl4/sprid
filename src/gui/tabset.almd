@@ -198,10 +198,7 @@ fn fit(mut tabs: List[Tab], sizes: List[(Int, (Int, Int))], live: Bool, hold: Bo
     match take(tabs, i) {
       some(tb) => {
         var cur = tb
-        // FIXME(almide#3177): read `cur.fd` in the closure once doing so
-        // doesn't lose the resize below.
-        let fd = cur.fd
-        let (cols, rows) = list.find(sizes, (e) => e.0 == fd) |> option.map((e) => e.1) ?? (cur.t.cols, cur.t.rows)
+        let (cols, rows) = list.find(sizes, (e) => e.0 == cur.fd) |> option.map((e) => e.1) ?? (cur.t.cols, cur.t.rows)
         if cur.t.cols != cols or cur.t.rows != rows then {
           if live then terminal.resize_live(cur.t, cols, rows) else terminal.resize(cur.t, cols, rows)
           let _ = pty.resize(cur.fd, cols, rows)

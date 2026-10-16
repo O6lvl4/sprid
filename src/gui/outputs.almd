@@ -36,14 +36,14 @@ effect fn read_tab(mut a: session.Session, mut cur: tabset.Tab, i: Int) -> Unit 
   // making it stops — its anchor is on other text now.
   if got and tabset.drop_moved_sel(cur, more) then {
     if i == a.active then { a.ui.dragging = false }
-    uistate.touch(a.ui)
+    a.ui.dirty = true
   }
   if got then asks(a, cur, i, cur.t.bells != bells_before)!
   // A tab in the back retitled itself: the tab bar shows it.
-  if got and i != a.active and (cur.t.title, cur.t.cwd) != title_before then uistate.touch(a.ui)
+  if got and i != a.active and (cur.t.title, cur.t.cwd) != title_before then { a.ui.dirty = true }
   if got and a.stats.trace then eprintln("out ${int.to_string(sys.now_ms())} tab ${int.to_string(i)} cursor ${int.to_string(cur.t.x)},${int.to_string(cur.t.y)}")
   if i == a.active then {
-    if got then uistate.touch(a.ui)
+    if got then { a.ui.dirty = true }
     if more then a.streaming = true
   }
   let replies = terminal.take_replies(cur.t)
@@ -82,16 +82,16 @@ effect fn clipboard(a: session.Session, mut cur: tabset.Tab) -> Unit = {
 
 /// The visual bell's light on.
 fn flash(mut a: session.Session) -> Unit = {
-  session.set_flash(a.r, true)
+  a.r.flash = true
   a.flash_until = sys.now_ms() + session.FLASH_MS
-  uistate.touch(a.ui)
+  a.ui.dirty = true
 }
 
 /// A tab not being looked at marked.
 fn mark(mut a: session.Session, mut cur: tabset.Tab) -> Unit =
   if not cur.alert then {
     cur.alert = true
-    uistate.touch(a.ui)
+    a.ui.dirty = true
   }
 
 /// With the window in the background: the Dock asked to show a bell or
