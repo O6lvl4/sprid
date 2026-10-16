@@ -23,8 +23,11 @@ let MAX_FONT_SIZE = 72.0
 /// Least time between two frames, ms: short while the program answers keys —
 /// a shell echoes a key and then redraws the line in colour a few ms later,
 /// and the second must not wait a whole refresh — and longer while its output
-/// streams in, time the parser can use.
-let FRAME_MS = 8
+/// streams in, time the parser can use. Under a refresh at 120 Hz: on macOS
+/// taking the events waits for the display's next update anyway, and a
+/// turn that may not draw yet spends one of them, so at 8 ms a frame came
+/// every 12 ms, 80 a second, while scrolling.
+let FRAME_MS = 4
 
 let STREAM_FRAME_MS = 50
 
