@@ -116,6 +116,7 @@ fn resized(mut a: session.Session) -> Unit = {
     }
     a.width = window.width()
     a.height = window.height()
+    if not window.is_fullscreen() then a.windowed = (int.to_float(a.width) / a.scale, int.to_float(a.height) / a.scale)
     groups.relayout_window(a)
     a.resized_at = sys.now_ms()
     uistate.touch(a.ui)
