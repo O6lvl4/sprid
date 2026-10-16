@@ -104,8 +104,9 @@ develop compiles it. v0.66.0 compiles sprid, but the binary panics as it
 starts (`RefCell already mutably borrowed`).
 
 The workarounds once marked `FIXME(almide#N)` are gone: the issues they
-stood for are fixed on develop. One is left, unmarked: an assignment two
-fields deep straight after `then` or `else` (`if c then a.ui.dirty = true`)
+stood for are fixed on develop. One is left
+([almide#3757](https://github.com/almide/almide/issues/3757)): an assignment
+two fields deep straight after `then` or `else` (`if c then a.ui.dirty = true`)
 still fails to parse, with "Assignments return Unit"; in braces
 (`then { a.ui.dirty = true }`) it is taken. Fixed and not marked:
 [#3045](https://github.com/almide/almide/issues/3045) (`pty.write` takes a
