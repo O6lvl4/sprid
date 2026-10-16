@@ -28,6 +28,7 @@ import self.gui.paint
 import self.gui.upkeep
 import self.gui.windows
 import self.gui.restore
+import self.gui.render
 import self.gui.dividers
 
 /// One turn of the loop: sleep until something is to be done in a window,
@@ -138,9 +139,26 @@ effect fn input(mut a: session.Session, kind: Int) -> Unit = {
   // A window's close button, with others open.
   let act = if kind == window.CLOSE then uistate.CloseWindow
     else if dividers.mouse(a, kind)! then uistate.Stay
+    else if tab_wheel(a, kind) then uistate.Stay
     else event(a, kind)!
   acts.apply(a, act)!
   front_changed(a)
+}
+
+/// A sideways swipe, or the wheel with Shift held, over a tab bar too full
+/// to show every tab scrolls it; the wheel alone goes on to the pane, as in
+/// iTerm2. Whether it was taken.
+fn tab_wheel(mut a: session.Session, kind: Int) -> Bool = {
+  let open = groups.count(a)
+  let on_bar = open > 1 and float.to_int(window.event_y() * a.scale) < render.bar_height(a.r)
+  let shift = int.band(window.event_mods(), window.MOD_SHIFT) != 0
+  let delta = window.event_dx() + (if shift then window.event_dy() else 0.0)
+  if kind == window.WHEEL and on_bar and not render.tabs_fit(a.r, a.width, open) and delta != 0.0 then {
+    let before = a.r.tab_scroll
+    render.scroll_tabs(a.r, float.to_int(delta * a.scale), a.width, open)
+    a.ui.dirty = a.ui.dirty or a.r.tab_scroll != before
+    true
+  } else false
 }
 
 /// Input `kind` applied to the active tab; what it asks of the tabs.

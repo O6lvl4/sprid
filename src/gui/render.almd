@@ -64,6 +64,13 @@ fn bar_height(r: surface.Renderer) -> Int = surface.bar_height(r)
 /// The tab under pixel `x` of the tab bar, for `tabs` tabs across `width`.
 fn tab_at(r: surface.Renderer, x: Int, width: Int, tabs: Int) -> Int = surface.tab_at(r, x, width, tabs)
 
+/// Whether `tabs` tabs share the bar without scrolling it.
+fn tabs_fit(r: surface.Renderer, width: Int, tabs: Int) -> Bool = surface.tabs_fit(r, width, tabs)
+
+/// The tab bar scrolled by `px` pixels (positive: toward the last tab), as
+/// far as it goes.
+fn scroll_tabs(mut r: surface.Renderer, px: Int, width: Int, tabs: Int) -> Unit = surface.scroll_tabs(r, r.tab_scroll + px, width, tabs)
+
 /// Cell width and height in pixels for `faces` at `size_px`: what `new`
 /// works out, without a GPU, so a window can be sized to a grid before it
 /// opens.
@@ -125,7 +132,7 @@ fn draw(mut r: surface.Renderer, t: terminal.Terminal, back: Int, shift: Int, se
   let title_chars = list.fold(f.titles, 0, (acc, title) => acc + list.len(title))
   // Room for the worst case: per cell a background, a glyph and two lines,
   // plus marks, the cursor, the scrollbar and the composition.
-  reserve(r, f.shown * (t.cols * 4 + 1) + 2 + marks_total + 7 + list.len(compose.cps) * 3 + title_chars + list.len(f.titles) * 3 + 1
+  reserve(r, f.shown * (t.cols * 4 + 1) + 2 + marks_total + 7 + list.len(compose.cps) * 3 + title_chars + list.len(f.titles) * 3 + 1 + chrome.TAB_EXTRA_QUADS
     + list.len(f.bar) * 3 + findbar.FIND_QUADS + 1 + list.len(shown_hint) + hint.HINT_QUADS + other_frames.2 + 2)
 
   // Pass 2: the quads.
