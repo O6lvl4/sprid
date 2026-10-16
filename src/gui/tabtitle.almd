@@ -26,6 +26,53 @@ fn fit(cell_w: Int, title: List[Int], room: Int) -> List[Int] =
 fn fit_tail(cell_w: Int, title: List[Int], room: Int) -> List[Int] =
   list.reverse(fit(cell_w, list.reverse(title), room))
 
+/// What starts the title of a tab with an alert (`groups.titles`).
+let ALERT = [0x2022, 0x20]
+
+/// `fit_tail` for a title shown by its end, an alert's "• " kept before
+/// the "…" where there is room for it.
+fn fit_end(cell_w: Int, title: List[Int], room: Int) -> List[Int] =
+  if list.take(title, 2) == ALERT and room >= span(cell_w, ALERT) + cells_px(cell_w, 0x2026)
+  then ALERT + fit_tail(cell_w, list.drop(title, 2), room - span(cell_w, ALERT))
+  else fit_tail(cell_w, title, room)
+
+/// How many characters of a title's start and end tell titles apart.
+let KEY_LEN = 5
+
+/// Whether titles cut to fit should keep their ends rather than their
+/// starts: when their last five characters tell more of them apart than
+/// their first five do — paths under one directory, a host name before
+/// each — as iTerm2's smart truncation has it. A title's start is read
+/// after what decorates it (a spinner Claude Code puts first, the "• " of
+/// an alert), so that ticking over doesn't flip every tab back and forth.
+/// Titles shorter than five characters don't count.
+fn keep_ends(titles: List[List[Int]]) -> Bool = {
+  let long = list.filter(titles, (t) => list.len(t) >= KEY_LEN)
+  let starts = list.map(long, (t) => start_key(t)) |> list.unique
+  let ends = list.map(long, (t) => list.drop(t, list.len(t) - KEY_LEN)) |> list.unique
+  list.len(ends) > list.len(starts)
+}
+
+/// A title's first five characters after what decorates it; the first five
+/// as they are when it is all decoration.
+fn start_key(t: List[Int]) -> List[Int] = {
+  var at = 0
+  while at < list.len(t) and decoration(t[at]) {
+    at = at + 1
+  }
+  if at == list.len(t) then list.take(t, KEY_LEN) else list.take(list.drop(t, at), KEY_LEN)
+}
+
+/// Whether `cp` decorates rather than says something: a space, punctuation
+/// or a symbol — the blocks of them, ASCII's but letters and digits, and
+/// the braille a spinner turns through.
+fn decoration(cp: Int) -> Bool =
+  (cp < 0x80 and not (cp >= 0x30 and cp <= 0x39) and not (cp >= 0x41 and cp <= 0x5A) and not (cp >= 0x61 and cp <= 0x7A))
+  or (cp >= 0x80 and cp <= 0xBF)    // Latin-1 punctuation and symbols
+  or (cp >= 0x2000 and cp <= 0x2BFF) // punctuation, arrows, shapes, dingbats, braille
+  or (cp >= 0x3000 and cp <= 0x303F) // CJK punctuation
+  or (cp >= 0x1F000 and cp <= 0x1FAFF) // emoji
+
 /// `cps` without the spaces at its end, so a cut doesn't end " …".
 fn trim_end(cps: List[Int]) -> List[Int] = {
   var n = list.len(cps)
@@ -40,6 +87,26 @@ fn span(cell_w: Int, cps: List[Int]) -> Int = list.fold(cps, 0, (acc, cp) => acc
 
 /// How wide `cp` is drawn at `cell_w` pixels a cell.
 fn cells_px(cell_w: Int, cp: Int) -> Int = cell_w * int.max(1, cell_width.of(cp))
+
+test "titles told apart by their ends keep their ends" {
+  // "~/work/alpha", "~/work/bravo": one start, two ends.
+  assert_eq(keep_ends([[0x7E, 0x2F, 0x77, 0x6F, 0x72, 0x6B, 0x2F, 0x61, 0x6C, 0x70, 0x68, 0x61],
+    [0x7E, 0x2F, 0x77, 0x6F, 0x72, 0x6B, 0x2F, 0x62, 0x72, 0x61, 0x76, 0x6F]]), true)
+  // "alpha-log", "bravo-log": two starts, one end.
+  assert_eq(keep_ends([[0x61, 0x6C, 0x70, 0x68, 0x61, 0x2D, 0x6C, 0x6F, 0x67], [0x62, 0x72, 0x61, 0x76, 0x6F, 0x2D, 0x6C, 0x6F, 0x67]]), false)
+  // As many either way, or too short to count: starts.
+  assert_eq(keep_ends([[0x7A, 0x73, 0x68], [0x76, 0x69, 0x6D]]), false)
+  // A spinner and an alert before the text don't make starts differ:
+  // "⠐ Claude task-a", "• Claude task-b" are one start, two ends.
+  assert_eq(keep_ends([[0x2810, 0x20, 0x43, 0x6C, 0x61, 0x75, 0x64, 0x65, 0x20, 0x74, 0x61, 0x73, 0x6B, 0x2D, 0x61],
+    [0x2022, 0x20, 0x43, 0x6C, 0x61, 0x75, 0x64, 0x65, 0x20, 0x74, 0x61, 0x73, 0x6B, 0x2D, 0x62]]), true)
+  // Cut from the front, an alert keeps its mark: "• abcdefg" -> "• …efg".
+  assert_eq(fit_end(1, [0x2022, 0x20, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67], 6), [0x2022, 0x20, 0x2026, 0x65, 0x66, 0x67])
+  assert_eq(fit_end(1, [0x2022, 0x20, 0x61, 0x62], 9), [0x2022, 0x20, 0x61, 0x62])
+  // Japanese is text, not decoration.
+  assert_eq(decoration(0x65E5), false)
+  assert_eq(decoration(0x2733), true)
+}
 
 test "a title cut to its tab by the cells it takes" {
   // 10 cells of room at 1 pixel a cell.
