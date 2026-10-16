@@ -92,18 +92,18 @@ For debugging: `SPRID_DEBUG=1` reports wakes and input-to-frame latency every
 
 ## Compiler workarounds
 
-sprid builds with Almide
-[v0.66.0-rc3](https://github.com/almide/almide/releases/tag/v0.66.0-rc3), the
-release CI pins. 0.65.1 and earlier lack the fix for
+sprid builds with Almide's develop branch at the commit CI pins
+(`ALMIDE_REF` in `.github/workflows/release.yml`; 0.67.1-dev). 0.65.1 and
+earlier lack the fix for
 [almide#3049](https://github.com/almide/almide/issues/3049): calls such as
 `erase_cells(t, t.y, t.x, t.cols)` silently pass the wrong arguments.
 v0.66.0-rc4 fails to compile `restore.fill`: a fn whose `mut` parameter a
 closure captures, ending in a call that takes it, borrows it past its end
-(rustc E0597, [almide#3192](https://github.com/almide/almide/issues/3192)).
+(rustc E0597, [almide#3192](https://github.com/almide/almide/issues/3192));
+develop compiles it.
 
 The code works around Almide issues where a `FIXME(almide#N)` comment says
-so; many of them are fixed after rc3, and go once sprid moves to a release
-that has the fixes. Fixed and not marked:
+so; many of them are fixed on develop, and can go now. Fixed and not marked:
 [#3045](https://github.com/almide/almide/issues/3045) (`pty.write` takes a
 `String`, not `Bytes`),
 [#3050](https://github.com/almide/almide/issues/3050) (arguments bound with
