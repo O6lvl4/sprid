@@ -16,6 +16,7 @@ import self.shell
 import self.sys
 import self.gui.dialog
 import self.gui.shortcuts
+import self.gui.findkeys
 import self.gui.pointer
 import self.prompts
 import self.view
@@ -102,12 +103,22 @@ fn zoom(mut a: session.Session, step: Int) -> Unit = {
 }
 
 /// The window gained or lost the keyboard. Programs that asked (mode 1004)
-/// are told: CSI I, CSI O.
+/// are told: CSI I, CSI O. Lost, what the pointer held — a selection being
+/// made, the scrollbar, a tab, a divider, the find bar's field — is let go:
+/// the release that would have ended it goes to whatever took the focus,
+/// and a drag left on would follow the pointer when it came back. A rename
+/// ends, keeping its draft, as a press ends one: typing would go on into
+/// the title.
 fn focus(mut a: session.Session, on: Bool) -> Unit = {
   a.r.focused = on
+  if not on then {
+    uistate.let_go(a.ui)
+    a.dividing = none
+  }
   match tabset.take(a.tabs, a.active) {
     some(tb) => {
       var cur = tb
+      if not on and a.ui.renaming then findkeys.finish_rename(cur, a.ui, true)
       if cur.t.focus_events then {
         let _ = pty.write(cur.fd, if on then "\x1b[I" else "\x1b[O")
       }

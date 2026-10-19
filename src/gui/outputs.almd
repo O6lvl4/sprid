@@ -33,8 +33,10 @@ effect fn read_tab(mut a: session.Session, mut cur: tabset.Tab, i: Int) -> Unit 
   tabset.hold_sel(cur)
   let (got, more) = tabset.drain(cur, if i == a.active then session.STREAM_DRAIN_MS else session.DRAIN_MS, i == a.active)
   // The text under the selection moved: the selection goes, and a drag
-  // making it stops — its anchor is on other text now.
-  if got and tabset.drop_moved_sel(cur, more) then {
+  // making it stops — its anchor is on other text now. Looked at whether
+  // output came this turn or not: what moved it may have come while the
+  // frame was held (`drop_moved_sel` waits), and nothing more after.
+  if tabset.drop_moved_sel(cur, more) then {
     if i == a.active then { a.ui.dragging = false }
     a.ui.dirty = true
   }

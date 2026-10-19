@@ -102,6 +102,17 @@ fn leave_tab(mut ui: Ui) -> Unit = {
   ui.dirty = true
 }
 
+/// What the pointer holds let go: a drag selecting, the scrollbar, the find
+/// bar's field, a tab held by its title, a press reported to the program.
+fn let_go(mut ui: Ui) -> Unit = {
+  ui.dragging = false
+  ui.scroll_drag = false
+  ui.field_drag = false
+  ui.tab_drag = -1
+  ui.app_button = -1
+  ui.dirty = true
+}
+
 /// The pointer's shape, set.
 fn shape_pointer(mut ui: Ui, shape: Int) -> Unit =
   if shape != ui.pointer then {
