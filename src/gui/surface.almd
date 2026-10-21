@@ -75,10 +75,15 @@ type Renderer = {
 }
 
 /// `r` in the colours of `t`.
-fn with_theme(r: Renderer, t: theme.Theme) -> Renderer = { ...r, theme: t, palette: palette256(t.ansi) }
+fn with_theme(r: Renderer, t: theme.Theme) -> Renderer = { ...r, theme: t, palette: palette256(t) }
 
-/// The 256-colour palette: the 16 of the theme, the 6x6x6 cube, 24 greys.
-fn palette256(ansi: List[Int]) -> List[Int] = {
+/// The 256-colour palette: the 16 of the theme, the 6x6x6 cube, 24 greys,
+/// with the theme's extras over the last two.
+fn palette256(t: theme.Theme) -> List[Int] =
+  list.fold(t.extra, cube_and_greys(t.ansi), (p, e) => list.set(p, e.0, e.1))
+
+/// The 16 colours, then the 6x6x6 cube and 24 greys of xterm.
+fn cube_and_greys(ansi: List[Int]) -> List[Int] = {
   var p = ansi
   let steps = [0, 95, 135, 175, 215, 255]
   for i in 0..<216 {
@@ -119,7 +124,7 @@ fn new(device: Int, faces: fonts.Faces, size_px: Int, pad_x: Int, pad_y: Int, ce
     focused: true,
     blink_off: false,
     flash: false,
-    palette: palette256(theme.default().ansi),
+    palette: palette256(theme.default()),
     glyphs: [:],
     emojis: [:],
     sprites: [:],
