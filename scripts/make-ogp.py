@@ -1,5 +1,5 @@
 """Draw sprid's social preview (OGP) image: the icon's ghost, the name, what
-it is and its numbers, in Almide's colours, 1280 x 640 as GitHub asks.
+it is and its numbers, in Almide's colours on black, 1280 x 640 as GitHub asks.
 Writes assets/ogp.png."""
 
 import importlib.util
@@ -19,8 +19,9 @@ _spec.loader.exec_module(icon)
 
 AVENIR = "/System/Library/Fonts/Avenir Next.ttc"
 AVENIR_BOLD, AVENIR_DEMI, AVENIR_MEDIUM = 0, 2, 5
-MONO = os.path.expanduser("~/Library/Fonts/UDEVGothic35NFLG-Regular.ttf")
-DEEP_TEAL = icon.BANDS[2]
+# The terminal's own font, where it is; else Menlo, as sprid falls back to.
+MONO = next((f for f in [os.path.expanduser("~/Library/Fonts/UDEVGothic35NFLG-Regular.ttf")] if os.path.exists(f)), "/System/Library/Fonts/Menlo.ttc")
+LIGHT_TEAL = icon.BANDS[0]
 
 
 def font(path: str, size: float, index: int = 0) -> ImageFont.FreeTypeFont:
@@ -29,10 +30,10 @@ def font(path: str, size: float, index: int = 0) -> ImageFont.FreeTypeFont:
 
 def ogp() -> Image.Image:
     w, h = W * SS, H * SS
-    # White going faintly cool toward the bottom right, as the icon's square.
+    # Black with a faintly cool cast at the top left, as the icon's square.
     yy, xx = np.mgrid[0:h, 0:w]
     t = ((xx / w) * 0.4 + (yy / h) * 0.6)[..., None]
-    top, bottom = np.array([0xFF, 0xFF, 0xFF]), np.array([0xE6, 0xEF, 0xF2])
+    top, bottom = np.array([0x1A, 0x1E, 0x26]), np.array([0x08, 0x0A, 0x0D])
     img = Image.fromarray((top + (bottom - top) * t).astype(np.uint8)).convert("RGBA")
 
     # The ghost on the left, 400 px tall, centred.
@@ -42,15 +43,15 @@ def ogp() -> Image.Image:
 
     d = ImageDraw.Draw(img)
     x = 560 * SS
-    navy = icon.NAVY + (255,)
-    d.text((x - 8 * SS, 92 * SS), "sprid", font=font(AVENIR, 176, AVENIR_BOLD), fill=navy)
+    white = icon.WHITE + (255,)
+    d.text((x - 8 * SS, 92 * SS), "sprid", font=font(AVENIR, 176, AVENIR_BOLD), fill=white)
     tagline = font(AVENIR, 42, AVENIR_DEMI)
-    d.text((x, 344 * SS), "A fast, light terminal", font=tagline, fill=DEEP_TEAL + (255,))
-    d.text((x, 396 * SS), "written in Almide", font=tagline, fill=DEEP_TEAL + (255,))
+    d.text((x, 344 * SS), "A fast, light terminal", font=tagline, fill=LIGHT_TEAL + (255,))
+    d.text((x, 396 * SS), "written in Almide", font=tagline, fill=LIGHT_TEAL + (255,))
     # The numbers, as a terminal would show them.
     mono = font(MONO, 25)
-    d.text((x, 476 * SS), "0.23 s start · 40 MB idle", font=mono, fill=icon.NAVY + (200,))
-    d.text((x, 512 * SS), "scrollback that can't leak", font=mono, fill=icon.NAVY + (200,))
+    d.text((x, 476 * SS), "0.23 s start · 40 MB idle", font=mono, fill=icon.WHITE + (170,))
+    d.text((x, 512 * SS), "scrollback that can't leak", font=mono, fill=icon.WHITE + (170,))
 
     # The shell's bands along the bottom edge.
     band_h = 7 * SS
