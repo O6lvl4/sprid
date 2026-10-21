@@ -161,23 +161,9 @@ fn quad(r: surface.Renderer, x0: Float, y0: Float, x1: Float, y1: Float,
   let nx1 = x1 * sx - 1.0
   let ny0 = 1.0 - y0 * sy
   let ny1 = 1.0 - y1 * sy
-  vertex(nx0, ny0, u0, v0, cr, cg, cb, alpha)
-  vertex(nx1, ny0, u1, v0, cr, cg, cb, alpha)
-  vertex(nx0, ny1, u0, v1, cr, cg, cb, alpha)
-  vertex(nx0, ny1, u0, v1, cr, cg, cb, alpha)
-  vertex(nx1, ny0, u1, v0, cr, cg, cb, alpha)
-  vertex(nx1, ny1, u1, v1, cr, cg, cb, alpha)
-}
-
-fn vertex(x: Float, y: Float, u: Float, v: Float, cr: Float, cg: Float, cb: Float, a: Float) -> Unit = {
-  gpu.push_f32(x)
-  gpu.push_f32(y)
-  gpu.push_f32(u)
-  gpu.push_f32(v)
-  gpu.push_f32(cr)
-  gpu.push_f32(cg)
-  gpu.push_f32(cb)
-  gpu.push_f32(a)
+  // The six vertices in one call: pushed a float at a time, each a lock
+  // and a bounds check in the host, the quads were most of a frame.
+  gpu.push_quad(nx0, ny0, nx1, ny1, u0, v0, u1, v1, cr, cg, cb, alpha)
 }
 
 /// A filled rectangle, sampling the atlas's solid texel.
