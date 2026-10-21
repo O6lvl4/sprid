@@ -1,6 +1,6 @@
 """Draw sprid's icon: a ghost in Almide's colours — its head the armadillo's
-banded shell, teal from light to deep, its body Almide's navy — with a
-terminal prompt for a mouth, on a black macOS-shaped rounded square. Writes
+banded shell, teal from light to deep, its body white with navy eyes — with
+a terminal prompt for a mouth, on a black macOS-shaped rounded square. Writes
 assets/icon.png and assets/Sprid.icns (via iconutil)."""
 
 import os
@@ -42,8 +42,8 @@ def ghost(k: float) -> Image.Image:
     """The ghost alone, on transparency, `k` pixels to a unit: GHOST_W x
     GHOST_H units. Its head is the shell — bands curving round a point to the
     right, as the armadillo's do, light outside to deep inside, a white gap
-    between each — parted from the navy body by a white line; white eyes,
-    and a prompt and block cursor for a mouth in the shell's light teal."""
+    between each — over the white body; navy eyes with white pupils, and a
+    prompt and block cursor for a mouth in the shell's light teal."""
     nw, nh = round(GHOST_W * k), round(GHOST_H * k)
     cx, w, hem_y = GHOST_W / 2 * k, GHOST_W * k, 472 * k
     body = ghost_mask(nw, nh, cx, 0, w, hem_y, 5)
@@ -64,15 +64,15 @@ def ghost(k: float) -> Image.Image:
     px[shell, :3] = colors[shell]
     px[shell & inside & (to_edge < gap / 2), :3] = WHITE
     px[body & (yy >= shell_bottom) & (yy < shell_bottom + gap), :3] = WHITE
-    px[body & (yy >= shell_bottom + gap), :3] = NAVY
+    px[body & (yy >= shell_bottom + gap), :3] = WHITE
     px[body, 3] = 255
     img = Image.fromarray(px)
 
     d = ImageDraw.Draw(img)
     eye_w, eye_h, eye_y = 58 * k, 76 * k, 242 * k
     for ex in (cx - 92 * k, cx + 92 * k):
-        d.ellipse([ex - eye_w / 2, eye_y, ex + eye_w / 2, eye_y + eye_h], fill=WHITE + (255,))
-        d.ellipse([ex - 12 * k, eye_y + 30 * k, ex + 16 * k, eye_y + 62 * k], fill=NAVY + (255,))
+        d.ellipse([ex - eye_w / 2, eye_y, ex + eye_w / 2, eye_y + eye_h], fill=NAVY + (255,))
+        d.ellipse([ex - 12 * k, eye_y + 30 * k, ex + 16 * k, eye_y + 62 * k], fill=WHITE + (255,))
     prompt_y = 336 * k
     teal = BANDS[0] + (255,)
     p = cx - 82 * k
