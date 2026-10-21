@@ -107,16 +107,26 @@ let ZSH = r"""
 typeset -g _sprid_hooked=1 _sprid_ran=
 autoload -Uz add-zsh-hook
 
-_sprid_precmd() {
+# First among the hooks: the command's end, the directory and the prompt's
+# start are marked before the others run — a prompt that waits for git
+# status then comes under the mark, and the window shows the newline and
+# the prompt together rather than a frame apart.
+_sprid_precmd_first() {
   local ret=$?
   if [[ -n "$_sprid_ran" ]]; then
     builtin printf '\e]133;D;%s\a' "$ret"
     _sprid_ran=
   fi
   local p=${PWD//\%/%25}
-  builtin printf '\e]7;file://%s%s\a' "$HOST" "${p// /%20}"
-  # Last among the hooks from the next prompt on, so a prompt another sets
-  # is marked too.
+  builtin printf '\e]7;file://%s%s\a\e]133;A\a' "$HOST" "${p// /%20}"
+  if [[ "${precmd_functions[1]}" != _sprid_precmd_first ]]; then
+    precmd_functions=(_sprid_precmd_first ${precmd_functions:#_sprid_precmd_first})
+  fi
+}
+
+# Last among the hooks from the next prompt on, so a prompt another sets is
+# marked too.
+_sprid_precmd() {
   if [[ "${precmd_functions[-1]}" != _sprid_precmd ]]; then
     precmd_functions=(${precmd_functions:#_sprid_precmd} _sprid_precmd)
   fi
@@ -128,6 +138,7 @@ _sprid_preexec() {
   builtin printf '\e]133;C\a'
 }
 
+precmd_functions=(_sprid_precmd_first ${precmd_functions:#_sprid_precmd_first})
 add-zsh-hook precmd _sprid_precmd
 add-zsh-hook preexec _sprid_preexec
 """

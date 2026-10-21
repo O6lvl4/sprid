@@ -75,6 +75,11 @@ fn prompt_mark(mut t: core.Terminal, arg: String) -> Unit = {
   if kind != "" and string.contains("ANP", kind) then t.attrs = int.bor(t.attrs, cell.PROMPT_BIT)
   else if kind != "" and string.contains("BCD", kind) then t.attrs = int.band(t.attrs, int.bnot(cell.PROMPT_BIT))
   if kind == "B" then t.command_line = screen.cursor_line(t)
+  if (kind == "A" or kind == "D") and not t.prompt_pending then {
+    t.prompt_pending = true
+    t.prompt_starts = t.prompt_starts + 1
+  }
+  if kind == "B" or kind == "C" then t.prompt_pending = false
   if kind == "D" then {
     let status = string.split(arg, ";") |> list.get(1) ?? "0"
     if t.command_line >= 0 and status != "" and status != "0" then screen.mark_failed(t, t.command_line)
