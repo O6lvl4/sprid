@@ -24,8 +24,8 @@ fn osc_dispatch(mut t: core.Terminal) -> Unit = {
 /// What a program says of what it shows: the title, its directory, links,
 /// prompts. Whether `cmd` was one.
 fn screen_osc(mut t: core.Terminal, cmd: String, arg: String) -> Bool = match cmd {
-  "0" => { t.title = arg; true },
-  "2" => { t.title = arg; true },
+  "0" => { set_title(t, arg); true },
+  "2" => { set_title(t, arg); true },
   "7" => { t.cwd = file_url_path(arg); true },
   "8" => { hyperlink(t, arg); true },
   "133" => { prompt_mark(t, arg); true },
@@ -52,13 +52,26 @@ fn hyperlink(mut t: core.Terminal, arg: String) -> Unit = {
   t.attrs = int.bor(int.band(t.attrs, int.bnot(cell.LINK_MASK)), link)
 }
 
+/// The title. Set while a command runs it is the program's — Claude Code's,
+/// ssh's — and goes with the program (`prompt_mark`): the tab shows its
+/// directory again, not a title a program that has ended left behind.
+fn set_title(mut t: core.Terminal, title: String) -> Unit = {
+  t.title = title
+  t.title_of_command = t.command_line >= 0
+}
+
 /// `133;A` starts a shell's prompt (as do `N` and `P`), `133;B` ends it —
 /// the command typed follows — `133;C` starts the command's output and
 /// `133;D;status` ends it. What is printed from a start to the next of the
 /// others is marked as prompt; a status other than 0 marks the prompt the
-/// command was typed at as failed.
+/// command was typed at as failed. A title a command set goes when the
+/// command ends — at `D`, or at the next prompt if `D` never came.
 fn prompt_mark(mut t: core.Terminal, arg: String) -> Unit = {
   let kind = string.take(arg, 1)
+  if kind != "" and string.contains("ANPD", kind) and t.title_of_command then {
+    t.title = ""
+    t.title_of_command = false
+  }
   if kind != "" and string.contains("ANP", kind) then t.attrs = int.bor(t.attrs, cell.PROMPT_BIT)
   else if kind != "" and string.contains("BCD", kind) then t.attrs = int.band(t.attrs, int.bnot(cell.PROMPT_BIT))
   if kind == "B" then t.command_line = screen.cursor_line(t)
