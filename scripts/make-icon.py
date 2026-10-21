@@ -1,6 +1,6 @@
 """Draw sprid's icon: a ghost in Almide's colours — its head the armadillo's
 banded shell, teal from light to deep, its body Almide's navy — with a
-terminal prompt for a mouth, on a white macOS-shaped rounded square. Writes
+terminal prompt for a mouth, on a black macOS-shaped rounded square. Writes
 assets/icon.png and assets/Sprid.icns (via iconutil)."""
 
 import os
@@ -85,11 +85,11 @@ def icon() -> Image.Image:
     n = S * SS
     img = Image.new("RGBA", (n, n), (0, 0, 0, 0))
 
-    # The rounded square macOS icons sit in: 824 of 1024, radius ~185; white
-    # going faintly cool toward the bottom, as Almide's page is.
+    # The rounded square macOS icons sit in: 824 of 1024, radius ~185; black
+    # with a faintly cool cast at the top, lifting the ghost off it.
     inset, radius = 100 * SS, 185 * SS
     ys = np.linspace(0, 1, n)[:, None]
-    top, bottom = np.array([0xFF, 0xFF, 0xFF]), np.array([0xE9, 0xF1, 0xF3])
+    top, bottom = np.array([0x1A, 0x1E, 0x26]), np.array([0x08, 0x0A, 0x0D])
     grad = (top + (bottom - top) * ys[..., None]).repeat(n, axis=1).astype(np.uint8)
     square = Image.new("L", (n, n), 0)
     ImageDraw.Draw(square).rounded_rectangle([inset, inset, n - inset, n - inset], radius, fill=255)
@@ -97,7 +97,7 @@ def icon() -> Image.Image:
     bg.paste(Image.fromarray(grad).convert("RGBA"), (0, 0), square)
 
     shadow = Image.new("RGBA", (n, n), (0, 0, 0, 0))
-    ImageDraw.Draw(shadow).rounded_rectangle([inset, inset + 18 * SS, n - inset, n - inset + 18 * SS], radius, fill=(0x1F, 0x3A, 0x5F, 90))
+    ImageDraw.Draw(shadow).rounded_rectangle([inset, inset + 18 * SS, n - inset, n - inset + 18 * SS], radius, fill=(0, 0, 0, 110))
     shadow = shadow.filter(ImageFilter.GaussianBlur(22 * SS))
     img = Image.alpha_composite(img, shadow)
     img = Image.alpha_composite(img, bg)
