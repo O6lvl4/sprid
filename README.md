@@ -85,7 +85,9 @@ before closing a busy tab or pasting line breaks, are macOS only for now.
   Pasting line breaks into a shell that would run each line asks first.
 - **Tabs**: open in the current directory, switch by click or keys, rename by
   double-click, drag to reorder — or out of the tab bar for a window of
-  their own; the window takes the title of the tab in front. Closing a tab,
+  their own. A tab is titled by its directory, or by what the program in it
+  says of itself while it runs (Claude Code, ssh); the window takes the
+  title of the tab in front. Closing a tab,
   the window or the app asks first while a program is running.
 - **Split panes**: split a tab across or down, again and again; move
   between panes by keys or a click, drag a divider or move it by keys, zoom

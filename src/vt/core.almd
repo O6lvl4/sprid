@@ -116,6 +116,9 @@ type Terminal = {
   blank_bg: Int,
   // Outside world.
   title: String,
+  /// Whether the title was set while a command ran (between OSC 133 B and
+  /// D): a program's title, which goes when the program does.
+  title_of_command: Bool,
   /// The program's working directory, as the shell reports it (OSC 7).
   cwd: String,
   replies: String,
@@ -215,6 +218,7 @@ fn with_scrollback(cols: Int, rows: Int, limit: Int) -> Terminal = {
     blank: blank,
     blank_bg: 0,
     title: "",
+    title_of_command: false,
     cwd: "",
     replies: "",
     bells: 0,

@@ -72,3 +72,20 @@ test "a title with semicolons and UTF-8" {
   terminal.feed_string(t, "\x1b]2;a;b ✳ c\x07")
   assert_eq(t.title, "a;b ✳ c")
 }
+
+test "a title set while a command runs goes with the command; one set at the prompt stays" {
+  var t = terminal.new(20, 3)
+  let prompt = "\x1b]133;A\x07$ \x1b]133;B\x07"
+  terminal.feed_string(t, prompt + "claude\r\n\x1b]133;C\x07\x1b]0;✳ sprid\x07")
+  assert_eq(t.title, "✳ sprid")
+  terminal.feed_string(t, "\x1b]133;D;0\x07")
+  assert_eq(t.title, "")
+  // A prompt's own title (set between A and B, or after D) is the shell's: kept.
+  terminal.feed_string(t, "\x1b]133;A\x07\x1b]2;~/src\x07$ \x1b]133;B\x07ls\r\n\x1b]133;C\x07\x1b]133;D;0\x07" + prompt)
+  assert_eq(t.title, "~/src")
+  // A command's title with no D (the shell went with it): the next prompt clears it.
+  terminal.feed_string(t, "ssh\r\n\x1b]133;C\x07\x1b]0;host\x07")
+  assert_eq(t.title, "host")
+  terminal.feed_string(t, "\x1b]133;A\x07")
+  assert_eq(t.title, "")
+}
