@@ -14,6 +14,8 @@ type Theme = {
   cursor: Int,
   selection: Int,
   ansi: List[Int],
+  // Colours 16–255 set over the fixed cube and greys: (index, colour).
+  extra: List[(Int, Int)],
   // Worked out by `finish`.
   tab_bar: Int,
   tab_dim: Int,
@@ -27,7 +29,7 @@ type Theme = {
 
 /// A theme from its own colours, the window's worked out from them.
 fn make(name: String, bg: Int, fg: Int, cursor: Int, selection: Int, ansi: List[Int]) -> Theme =
-  finish(Theme { name: name, bg: bg, fg: fg, cursor: cursor, selection: selection, ansi: ansi,
+  finish(Theme { name: name, bg: bg, fg: fg, cursor: cursor, selection: selection, ansi: ansi, extra: [],
     tab_bar: 0, tab_dim: 0, tab_rule: 0, accent: 0, match_bg: 0, match_current: 0, match_fg: 0, no_match: 0 })
 
 /// `t` with the window's colours worked out from its own: the tab bar a
@@ -131,9 +133,9 @@ fn fold_name(s: String) -> String = string.replace(string.replace(string.to_lowe
 
 /// `base` with the colours a config — the user's, or a theme file in the
 /// same format — sets: background, foreground, cursor-color,
-/// selection-background and palette (`N=#rrggbb`).
+/// selection-background and palette (`N=#rrggbb`, N 0–255).
 fn apply(base: Theme, c: config.Config) -> Theme = {
-  let ansi = list.fold(config.all(c, "palette"), base.ansi, (acc, entry) => palette_entry(acc, entry))
+  let (ansi, extra) = list.fold(config.all(c, "palette"), (base.ansi, base.extra), (acc, entry) => palette_entry(acc, entry))
   let t = {
     ...base,
     bg: color_of(c, "background", base.bg),
@@ -141,6 +143,7 @@ fn apply(base: Theme, c: config.Config) -> Theme = {
     cursor: color_of(c, "cursor-color", base.cursor),
     selection: color_of(c, "selection-background", base.selection),
     ansi: ansi,
+    extra: extra,
   }
   // The window's colours follow the theme's own only when those changed: a
   // theme's hand-picked ones stay otherwise.
@@ -151,13 +154,23 @@ fn apply(base: Theme, c: config.Config) -> Theme = {
 fn color_of(c: config.Config, key: String, fallback: Int) -> Int =
   config.get(c, key) |> option.flat_map((v) => config.color(v)) ?? fallback
 
-/// `ansi` with `N=#rrggbb` applied, when N is one of the 16.
-fn palette_entry(ansi: List[Int], entry: String) -> List[Int] = match string.split_once(entry, "=") {
-  some((i, v)) => match (int.parse(string.trim(i)), config.color(string.trim(v))) {
-    (ok(n), some(rgb)) => if n >= 0 and n < 16 then list.set(ansi, n, rgb) else ansi,
-    _ => ansi,
-  },
-  none => ansi,
+/// The 16 colours and the extras with `N=#rrggbb` applied: N under 16 is
+/// one of the 16, up to 255 an extra (the last word on an index wins).
+fn palette_entry(p: (List[Int], List[(Int, Int)]), entry: String) -> (List[Int], List[(Int, Int)]) = {
+  let (ansi, extra) = p
+  match string.split_once(entry, "=") {
+    some((i, v)) => match (int.parse(string.trim(i)), config.color(string.trim(v))) {
+      (ok(n), some(rgb)) =>
+        if n >= 0 and n < 16 then (list.set(ansi, n, rgb), extra)
+        else if n < 256 then {
+          var kept = list.filter(extra, (e) => e.0 != n)
+          list.push(kept, (n, rgb))
+          (ansi, kept)
+        } else p,
+      _ => p,
+    },
+    none => p,
+  }
 }
 
 test "built-in themes by name" {
@@ -172,6 +185,14 @@ test "a config's colours over a theme" {
   let c = config.parse("background = #000000\npalette = 1=#ff0000\npalette = 20=#ffffff\nforeground = nonsense")
   let t = apply(default(), c)
   assert_eq((t.bg, t.ansi[1], t.fg), (0x000000, 0xFF0000, 0xC0CAF5))
+  assert_eq(t.extra, [(20, 0xFFFFFF)])
+}
+
+test "colours 16-255 are set over the cube and greys, the last word winning" {
+  let c = config.parse("palette = 255=#111111\npalette = 255=#222222\npalette = 256=#333333\npalette = 16=#444444")
+  let t = apply(default(), c)
+  assert_eq(t.extra, [(255, 0x222222), (16, 0x444444)])
+  assert_eq(t.ansi, default().ansi)
 }
 
 test "window colours follow light and dark" {

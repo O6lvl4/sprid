@@ -146,7 +146,7 @@ macos-option-as-alt = left      # true, false, left, right
 | `window-padding-x`, `window-padding-y` | `12`, `8` |
 | `theme` | `Tokyo Night Storm` |
 | `background`, `foreground`, `cursor-color`, `selection-background` | the theme's — `#rrggbb` |
-| `palette` | the theme's — `palette = 1=#ff5555`, once per colour 0–15 |
+| `palette` | a colour over the theme's — `palette = 1=#ff5555`, once per colour; 0–15 are the theme's 16, 16–255 the fixed cube and greys |
 | `scrollback-limit` | `10000000` bytes of text (`KB`, `MB`, `GB` also read) |
 | `cursor-style`, `cursor-style-blink` | `bar`, `false` |
 | `macos-option-as-alt` | `false` |
