@@ -48,6 +48,10 @@ effect fn handle(mut cur: tabset.Tab, mut ui: uistate.Ui, kind: Int, r: render.R
 /// the focus and takes the key, else the terminal's.
 effect fn key(mut cur: tabset.Tab, mut ui: uistate.Ui, kind: Int) -> uistate.Act = {
   let mods = keys.shortcut_mods(sys.is_linux(), kind, window.event_code(), window.event_mods())
+  // A shortcut (Cmd; Ctrl+Shift on Linux) during a rename ends it, the draft
+  // kept, and is done: a rename begun by a double click on a tab that was
+  // not noticed held every key, even the ones that switch tabs.
+  if ui.renaming and int.band(mods, window.MOD_SUPER) != 0 then findkeys.finish_rename(cur, ui, true)
   if ui.renaming then {
     findkeys.rename_key(cur, ui, kind, window.event_code(), window.event_mods())
     uistate.Stay
