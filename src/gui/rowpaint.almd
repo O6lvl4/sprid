@@ -76,8 +76,13 @@ fn draw_char(mut r: surface.Renderer, row: record.Row, x: Int, cp: Int, bold: Bo
     ink.emoji_quad(r, emoji, left, top, alpha, sx, sy)
     1
   } else {
-    list.fold(marks(row, x), draw_glyph(r, cp, bold, left, top, fg, alpha, sx, sy),
-      (n, mark) => n + draw_glyph(r, mark, bold, left + w, top, fg, alpha, sx, sy))
+    // A loop, not a fold: a closure taking `r` to write back copied the
+    // renderer — its glyph maps and all — once per character drawn.
+    var n = draw_glyph(r, cp, bold, left, top, fg, alpha, sx, sy)
+    for mark in marks(row, x) {
+      n = n + draw_glyph(r, mark, bold, left + w, top, fg, alpha, sx, sy)
+    }
+    n
   }
 }
 
