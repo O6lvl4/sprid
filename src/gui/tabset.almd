@@ -27,6 +27,13 @@ let FIRST_SCREEN_LIMIT = 1000
 /// grid size, ms.
 let RESIZE_LIMIT = 150
 
+/// Longest the screen waits for a shell's prompt, from a command's end
+/// (OSC 133 D) to the prompt's end (B), ms. The shell's own functions run
+/// between — a git status for the prompt takes tens of ms — and zsh flushes
+/// the newline before them: shown as it came, the screen scrolled in two
+/// steps a frame apart, and the prompt looked like a wave.
+let PROMPT_LIMIT = 150
+
 /// One tab: a terminal, the PTY its program runs on, and how it is viewed.
 type Tab = {
   t: terminal.Terminal,
@@ -59,9 +66,9 @@ type Tab = {
 /// them held, and its half-drawn screens shown. `resized_at`: when the grid
 /// changed size and the program has not yet answered by drawing, -1 when it
 /// has.
-type Updates = { syncs: Int, sync_at: Int, hides: Int, hide_at: Int, resized_at: Int }
+type Updates = { syncs: Int, sync_at: Int, hides: Int, hide_at: Int, prompts: Int, prompt_at: Int, resized_at: Int }
 
-let NO_UPDATES = Updates { syncs: 0, sync_at: 0, hides: 0, hide_at: 0, resized_at: -1 }
+let NO_UPDATES = Updates { syncs: 0, sync_at: 0, hides: 0, hide_at: 0, prompts: 0, prompt_at: 0, resized_at: -1 }
 
 /// Whether tab `i` may close: at once when its shell waits at the prompt,
 /// else when the user says so — closing ends what runs in it.
@@ -127,6 +134,7 @@ fn note_updates(mut tb: Tab, now: Int) -> Unit = {
   let t = tb.t
   if t.sync_starts != tb.up.syncs then tb.up = { ...tb.up, syncs: t.sync_starts, sync_at: now }
   if t.hide_starts != tb.up.hides then tb.up = { ...tb.up, hides: t.hide_starts, hide_at: now }
+  if t.prompt_starts != tb.up.prompts then tb.up = { ...tb.up, prompts: t.prompt_starts, prompt_at: now }
 }
 
 /// How much longer the frame is held for `tb`'s program to finish drawing,
@@ -136,13 +144,15 @@ fn note_updates(mut tb: Tab, now: Int) -> Unit = {
 /// the screen before it is the better one to show. So is the screen before
 /// a resize, until the program has drawn itself again at the new size: what
 /// it drew for the old one, wrapped or cut to the new, is not a screen it
-/// ever drew.
+/// ever drew. And a shell's prompt is waited for from the command's end
+/// (`PROMPT_LIMIT`), so the newline and the prompt come in together.
 fn hold_left(tb: Tab, now: Int) -> Int = {
   let t = tb.t
   let sync = if t.sync_output then tb.up.sync_at + SYNC_LIMIT - now else 0
   let hidden = if terminal.drawing_hidden(t) then tb.up.hide_at + (if t.first_screen then FIRST_SCREEN_LIMIT else HIDDEN_LIMIT) - now else 0
   let resized = if tb.up.resized_at >= 0 then tb.up.resized_at + RESIZE_LIMIT - now else 0
-  int.max(0, int.max(sync, int.max(hidden, resized)))
+  let prompt = if t.prompt_pending then tb.up.prompt_at + PROMPT_LIMIT - now else 0
+  int.max(0, int.max(int.max(sync, prompt), int.max(hidden, resized)))
 }
 
 /// How long the active tab's program may still hold the frame, ms: not at
@@ -307,6 +317,17 @@ fn cursor_blinks(tabs: List[Tab], active: Int, r: render.Renderer) -> Bool = mat
 fn scroll_to(mut tb: Tab, back: Int) -> Unit = {
   tb.back = back
   tb.shift = 0
+}
+
+test "the frame is held for the shell's prompt from a command's end, to a limit" {
+  var t = terminal.new(10, 3)
+  terminal.feed_string(t, "\r\n\x1b]133;D;0\x07")
+  var tb = Tab { t: t, fd: -1, back: 0, shift: 0, sel: none, held: none, up: NO_UPDATES, name: "", alert: false, seen: none }
+  note_updates(tb, 1000)
+  assert_eq(hold_left(tb, 1030), PROMPT_LIMIT - 30)
+  assert_eq(hold_left(tb, 1000 + PROMPT_LIMIT), 0)
+  terminal.feed_string(tb.t, "\x1b]133;A\x07$ \x1b]133;B\x07")
+  assert_eq(hold_left(tb, 1030), 0)
 }
 
 test "a tab moved keeps the others in order" {

@@ -96,6 +96,12 @@ type Terminal = {
   // from when it began.
   sync_starts: Int,
   hide_starts: Int,
+  /// Whether the shell is between a command's end (OSC 133 D, or a prompt's
+  /// start, A) and its prompt's end (B): the prompt is being drawn, and the
+  /// window holds the frame for it, so the newline and the prompt that
+  /// scroll the screen come in together. Counted as the syncs are.
+  prompt_pending: Bool,
+  prompt_starts: Int,
   cursor_shape: Int,
   app_cursor: Bool,
   app_keypad: Bool,
@@ -202,6 +208,8 @@ fn with_scrollback(cols: Int, rows: Int, limit: Int) -> Terminal = {
     first_screen: false,
     sync_starts: 0,
     hide_starts: 0,
+    prompt_pending: false,
+    prompt_starts: 0,
     cursor_shape: 0,
     app_cursor: false,
     app_keypad: false,

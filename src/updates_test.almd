@@ -73,6 +73,21 @@ test "a title with semicolons and UTF-8" {
   assert_eq(t.title, "a;b ✳ c")
 }
 
+test "the shell's prompt is pending from a command's end to the prompt's end" {
+  var t = terminal.new(20, 3)
+  terminal.feed_string(t, "\x1b]133;A\x07")
+  assert_eq((t.prompt_pending, t.prompt_starts), (true, 1))
+  terminal.feed_string(t, "$ \x1b]133;B\x07")
+  assert_eq(t.prompt_pending, false)
+  terminal.feed_string(t, "ls\r\n\x1b]133;C\x07out\r\n\x1b]133;D;0\x07")
+  assert_eq((t.prompt_pending, t.prompt_starts), (true, 2))
+  // A, after D: the same wait, not another.
+  terminal.feed_string(t, "\x1b]133;A\x07")
+  assert_eq((t.prompt_pending, t.prompt_starts), (true, 2))
+  terminal.feed_string(t, "$ \x1b]133;B\x07")
+  assert_eq(t.prompt_pending, false)
+}
+
 test "a title set while a command runs goes with the command; one set at the prompt stays" {
   var t = terminal.new(20, 3)
   let prompt = "\x1b]133;A\x07$ \x1b]133;B\x07"
