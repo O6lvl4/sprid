@@ -32,6 +32,12 @@ fn current_of(a: session.Session, fd: Int) -> Int = group_of(a.groups, fd)
 /// How many tabs the tab bar shows.
 fn count(a: session.Session) -> Int = list.len(a.groups)
 
+/// The panes of tab `gi`, by their PTYs; none for a tab that isn't.
+fn panes_of(a: session.Session, gi: Int) -> List[Int] = match list.get(a.groups, gi) {
+  some(g) => layout.panes(g.layout),
+  none => [],
+}
+
 /// Where group `gi`'s panes go: the window below the tab bar, split as its
 /// layout says — or, zoomed, all of it to the one in front.
 fn regions(a: session.Session, gi: Int) -> List[layout.Region] = match list.get(a.groups, gi) {

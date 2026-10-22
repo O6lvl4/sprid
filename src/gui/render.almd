@@ -64,6 +64,9 @@ fn bar_height(r: surface.Renderer) -> Int = surface.bar_height(r)
 /// The tab under pixel `x` of the tab bar, for `tabs` tabs across `width`.
 fn tab_at(r: surface.Renderer, x: Int, width: Int, tabs: Int) -> Int = surface.tab_at(r, x, width, tabs)
 
+/// Whether pixel `x` of the tab bar is on the close button of tab `i`.
+fn on_close(r: surface.Renderer, x: Int, width: Int, tabs: Int, i: Int) -> Bool = surface.on_close(r, x, width, tabs, i)
+
 /// Whether `tabs` tabs share the bar without scrolling it.
 fn tabs_fit(r: surface.Renderer, width: Int, tabs: Int) -> Bool = surface.tabs_fit(r, width, tabs)
 
@@ -118,7 +121,7 @@ fn compose_caret(c: composition.Compose, x: Int, cols: Int) -> Int = composition
 /// `others` panes of its tab are drawn beside it, each in its box; `t` goes
 /// in `r.box`. Every pane has an edge where it meets another.
 fn draw(mut r: surface.Renderer, t: terminal.Terminal, back: Int, shift: Int, sel: Option[view.Selection],
-        compose: composition.Compose, width: Int, height: Int, tabs: List[String], active: Int,
+        compose: composition.Compose, width: Int, height: Int, tabs: List[String], active: Int, hover: (Int, Bool),
         find: Option[findbar.Bar], link: Option[links.Link], others: List[beside.Pane]) -> Unit = {
   let front = r.box
   // Pass 1: every glyph on screen into the atlas.
@@ -154,7 +157,7 @@ fn draw(mut r: surface.Renderer, t: terminal.Terminal, back: Int, shift: Int, se
       else if t.cursor_visible then caret.draw_cursor(r, t, ctop, sx, sy)
       else 0)
   }
-  n = n + draw_chrome(r, t, back, shift, tabs, active, width, height, sx, sy)
+  n = n + draw_chrome(r, t, back, shift, tabs, active, hover, width, height, sx, sy)
   match find {
     some(b) => { n = n + findbar.draw_find(r, b, compose.cps, surface.grid_top(r, list.len(tabs)), width, sx, sy) },
     none => (),
@@ -176,14 +179,14 @@ fn reserve(mut r: surface.Renderer, quads: Int) -> Unit =
 
 /// The scrollbar while there is scrollback (faint at the bottom, plainer
 /// scrolled back), the visual bell, the tab bar; the quads drawn.
-fn draw_chrome(mut r: surface.Renderer, t: terminal.Terminal, back: Int, shift: Int, tabs: List[String], active: Int,
+fn draw_chrome(mut r: surface.Renderer, t: terminal.Terminal, back: Int, shift: Int, tabs: List[String], active: Int, hover: (Int, Bool),
                width: Int, height: Int, sx: Float, sy: Float) -> Int = {
   var n = grid.draw_scrollbar(r, t, back, shift, sx, sy)
   if r.flash then {
     ink.rect(r, r.box.0, r.box.1, r.box.0 + r.box.2, r.box.1 + r.box.3, r.theme.fg, 0.12, sx, sy)
     n = n + 1
   }
-  if list.len(tabs) > 1 then n = n + chrome.draw_tabs(r, list.map(tabs, (s) => text.code_points(s)), active, width, sx, sy)
+  if list.len(tabs) > 1 then n = n + chrome.draw_tabs(r, list.map(tabs, (s) => text.code_points(s)), active, hover, width, sx, sy)
   n
 }
 

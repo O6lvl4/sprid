@@ -43,11 +43,13 @@ fn on_scrollbar(r: surface.Renderer, t: terminal.Terminal, x: Int) -> Bool = {
 }
 
 /// The tab bar: one tab per title, `active` raised to the terminal's
-/// background with an accent line, the others on a darker strip. Too many
+/// background with an accent line, the others on a darker strip. The
+/// active tab and the one under the pointer (`hover`: its index, and
+/// whether the pointer is on the button) end with a close button. Too many
 /// to share the bar and each is its narrowest, the bar scrolled to keep
 /// `active` in view and faded at an end with more past it. Returns the
 /// quads it pushed.
-fn draw_tabs(mut r: surface.Renderer, titles: List[List[Int]], active: Int, width: Int, sx: Float, sy: Float) -> Int = {
+fn draw_tabs(mut r: surface.Renderer, titles: List[List[Int]], active: Int, hover: (Int, Bool), width: Int, sx: Float, sy: Float) -> Int = {
   let h = surface.bar_height(r)
   let count = list.len(titles)
   surface.follow_tab(r, active, width, count)
@@ -57,8 +59,10 @@ fn draw_tabs(mut r: surface.Renderer, titles: List[List[Int]], active: Int, widt
   for i in 0..<count {
     let (x0, x1) = surface.tab_span(r, i, width, count)
     if x1 > 0 and x0 < width then {
+      let baseline = (h - r.cell_h) / 2 + r.baseline
       n = n + draw_tab_back(r, i, active, x0, x1, h, sx, sy)
-      n = n + draw_title(r, titles[i], ends, x0, x1, (h - r.cell_h) / 2 + r.baseline, if i == active then r.theme.fg else r.theme.tab_dim, sx, sy)
+      n = n + draw_title(r, titles[i], ends, x0, x1, baseline, if i == active then r.theme.fg else r.theme.tab_dim, sx, sy)
+      if i == active or i == hover.0 then n = n + draw_close(r, x1, h, baseline, i == hover.0 and hover.1, sx, sy)
     }
   }
   let more_left = r.tab_scroll > 0
@@ -71,8 +75,35 @@ fn draw_tabs(mut r: surface.Renderer, titles: List[List[Int]], active: Int, widt
 /// Steps of the fade at an end of a scrolled tab bar.
 let FADE_STEPS = 4
 
-/// Quads the tab bar may push besides its tabs' (the fades).
-let TAB_EXTRA_QUADS = FADE_STEPS * 2
+/// Quads a close button takes: its glyph, and the square lit behind it.
+let CLOSE_QUADS = 2
+
+/// Quads the tab bar may push besides its tabs' (the fades, and the close
+/// buttons: at most two tabs show one).
+let TAB_EXTRA_QUADS = FADE_STEPS * 2 + CLOSE_QUADS * 2
+
+/// A tab's close button, "×" in the cell before its right edge `x1`, dim as
+/// an inactive title; `lit` (the pointer on it) in the foreground on a
+/// square of the rule's colour. How many quads.
+fn draw_close(mut r: surface.Renderer, x1: Int, h: Int, baseline: Int, lit: Bool, sx: Float, sy: Float) -> Int = {
+  let (cx0, cx1) = surface.close_span(r, x1)
+  var n = 0
+  if lit then {
+    let side = int.min(h, r.cell_w * 2)
+    let mid = (cx0 + cx1) / 2
+    ink.rect(r, mid - side / 2, (h - side) / 2, mid + side / 2, (h + side) / 2, r.theme.tab_rule, 1.0, sx, sy)
+    n = n + 1
+  }
+  let slot = ink.glyph(r, CLOSE_MARK, false)
+  if slot >= 0 then {
+    ink.glyph_quad(r, slot, cx0, baseline, if lit then r.theme.fg else r.theme.tab_dim, 1.0, sx, sy)
+    n = n + 1
+  }
+  n
+}
+
+/// What a close button reads: "×".
+let CLOSE_MARK = 0xD7
 
 /// A fade from the bar's colour at `edge` to clear, two cells into the bar
 /// (`dir` 1 rightward, -1 leftward). How many quads.
@@ -100,11 +131,13 @@ fn draw_tab_back(mut r: surface.Renderer, i: Int, active: Int, x0: Int, x1: Int,
     1
   } else 0
 
-/// A title, centred between `x0` and `x1` with a cell to spare on each
-/// side, cut to fit there — from the front, `ends`, where the titles are
-/// told apart by their ends (`tabtitle.keep_ends`). How many quads.
+/// A title, centred between `x0` and `x1` with a cell and a half to spare
+/// on each side (the close button's cell on the right, and as much on the
+/// left so the title stays centred), cut to fit there — from the front,
+/// `ends`, where the titles are told apart by their ends
+/// (`tabtitle.keep_ends`). How many quads.
 fn draw_title(mut r: surface.Renderer, title: List[Int], ends: Bool, x0: Int, x1: Int, baseline: Int, color: Int, sx: Float, sy: Float) -> Int = {
-  let room = x1 - x0 - 2 * r.cell_w
+  let room = x1 - x0 - 3 * r.cell_w
   // A title being typed ends with its caret: cut from the front, so what is
   // typed stays in view.
   let typing = (list.last(title) ?? 0) == 0x258F

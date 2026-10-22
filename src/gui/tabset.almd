@@ -72,10 +72,16 @@ let NO_UPDATES = Updates { syncs: 0, sync_at: 0, hides: 0, hide_at: 0, prompts: 
 
 /// Whether tab `i` may close: at once when its shell waits at the prompt,
 /// else when the user says so — closing ends what runs in it.
-fn may_close_tab(tabs: List[Tab], i: Int, ja: Bool) -> Bool = {
-  let running = pty.busy(fd_of(tabs, i))
-  running == "" or (if ja then dialog.confirm("このタブを閉じますか？", "「${running}」が実行中です。閉じると終了します。", "閉じる", "キャンセル")
-    else dialog.confirm("Close this tab?", "${running} is still running in it, and will be ended.", "Close", "Cancel"))
+fn may_close_tab(tabs: List[Tab], i: Int, ja: Bool) -> Bool = may_close_panes(tabs, [fd_of(tabs, i)], ja)
+
+/// Whether the panes `fds` — a tab's — may close: at once when every shell
+/// of theirs waits at its prompt, else when the user says so.
+fn may_close_panes(tabs: List[Tab], fds: List[Int], ja: Bool) -> Bool = {
+  let running = list.filter(tabs, (tb) => list.contains(fds, tb.fd)) |> list.map((tb) => pty.busy(tb.fd)) |> list.filter((n) => n != "")
+  let n = list.len(running)
+  let names = list.join(running, ", ")
+  n == 0 or (if ja then dialog.confirm("このタブを閉じますか？", "「${names}」が実行中です。閉じると終了します。", "閉じる", "キャンセル")
+    else dialog.confirm("Close this tab?", "${names} ${if n > 1 then "are" else "is"} still running in it, and will be ended.", "Close", "Cancel"))
 }
 
 /// Whether the window may close: at once when every shell waits at its

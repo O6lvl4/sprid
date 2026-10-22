@@ -40,6 +40,10 @@ type Ui = {
   click_tab: Int,
   // A tab being dragged by its title: where it is now, -1 when none is.
   tab_drag: Int,
+  // The tab under the pointer (-1: none), and whether the pointer is on
+  // its close button: the button shows on it, lit while pointed at.
+  hover_tab: Int,
+  hover_close: Bool,
   // The button held in a press reported to the program, -1 when none, and
   // the cell the pointer was last reported at.
   app_button: Int,
@@ -70,10 +74,12 @@ type Ui = {
 }
 
 /// What an input asks of the tabs.
+/// `CloseTab` closes the pane in front, its tab with it when it is the
+/// last; `CloseTabAt(i)` tab `i` whole, panes and all (its close button).
 /// `Zoom` changes the font size by that many points, or with 0 resets it;
 /// `Restyle` follows the system's light or dark appearance; `Focus` the
 /// window gaining or losing the keyboard.
-type Act = | Stay | NewTab | CloseTab | NextTab | PrevTab | GoTo(Int) | NewWindow | CloseWindow | Zoom(Int) | Restyle | Focus(Bool) | Paste | PastePrimary | Selected | Menu | MoveTab(Int) | DetachTab
+type Act = | Stay | NewTab | CloseTab | CloseTabAt(Int) | NextTab | PrevTab | GoTo(Int) | NewWindow | CloseWindow | Zoom(Int) | Restyle | Focus(Bool) | Paste | PastePrimary | Selected | Menu | MoveTab(Int) | DetachTab
   | SplitPane(Bool) | FocusPane(Int, Int) | CyclePane(Int) | ResizePane(Int, Int) | ZoomPane | EqualPanes
 
 /// The find bar as drawn.
