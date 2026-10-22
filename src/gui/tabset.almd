@@ -32,7 +32,7 @@ let RESIZE_LIMIT = 150
 /// between — a git status for the prompt takes tens of ms — and zsh flushes
 /// the newline before them: shown as it came, the screen scrolled in two
 /// steps a frame apart, and the prompt looked like a wave.
-let PROMPT_LIMIT = 150
+let PROMPT_LIMIT = 300
 
 /// One tab: a terminal, the PTY its program runs on, and how it is viewed.
 type Tab = {
@@ -150,8 +150,9 @@ fn note_updates(mut tb: Tab, now: Int) -> Unit = {
 /// the screen before it is the better one to show. So is the screen before
 /// a resize, until the program has drawn itself again at the new size: what
 /// it drew for the old one, wrapped or cut to the new, is not a screen it
-/// ever drew. And a shell's prompt is waited for from the command's end
-/// (`PROMPT_LIMIT`), so the newline and the prompt come in together.
+/// ever drew. And a shell's prompt is waited for from the command's end,
+/// or from Enter typed at the prompt (`PROMPT_LIMIT`), so the newline and
+/// the prompt come in together.
 fn hold_left(tb: Tab, now: Int) -> Int = {
   let t = tb.t
   let sync = if t.sync_output then tb.up.sync_at + SYNC_LIMIT - now else 0
@@ -334,6 +335,29 @@ test "the frame is held for the shell's prompt from a command's end, to a limit"
   assert_eq(hold_left(tb, 1000 + PROMPT_LIMIT), 0)
   terminal.feed_string(tb.t, "\x1b]133;A\x07$ \x1b]133;B\x07")
   assert_eq(hold_left(tb, 1030), 0)
+}
+
+test "the frame is held from Enter at the prompt until the next prompt or the command starts" {
+  var t = terminal.new(10, 3)
+  terminal.feed_string(t, "\x1b]133;A\x07$ \x1b]133;B\x07")
+  var tb = Tab { t: t, fd: -1, back: 0, shift: 0, sel: none, held: none, up: NO_UPDATES, name: "", alert: false, seen: none }
+  note_updates(tb, 1000)
+  assert_eq(hold_left(tb, 1000), 0)
+  assert_eq(terminal.enter_at_prompt(tb.t), true)
+  note_updates(tb, 2000)
+  // The newline comes alone: still held.
+  terminal.feed_string(tb.t, "\r\n")
+  assert_eq(hold_left(tb, 2050), PROMPT_LIMIT - 50)
+  assert_eq(hold_left(tb, 2000 + PROMPT_LIMIT), 0)
+  terminal.feed_string(tb.t, "\x1b]133;A\x07$ \x1b]133;B\x07")
+  assert_eq(hold_left(tb, 2050), 0)
+  // A command: its start lets the frame go.
+  assert_eq(terminal.enter_at_prompt(tb.t), true)
+  note_updates(tb, 3000)
+  terminal.feed_string(tb.t, "\r\n\x1b]133;C\x07")
+  assert_eq(hold_left(tb, 3050), 0)
+  // Not at the prompt: Enter is the program's, nothing waits.
+  assert_eq(terminal.enter_at_prompt(tb.t), false)
 }
 
 test "a tab moved keeps the others in order" {

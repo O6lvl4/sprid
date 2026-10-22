@@ -102,6 +102,10 @@ type Terminal = {
   /// scroll the screen come in together. Counted as the syncs are.
   prompt_pending: Bool,
   prompt_starts: Int,
+  /// Whether the shell waits at its prompt (from B until a command starts,
+  /// C, or Enter is typed there): Enter then begins the wait above at once,
+  /// before the shell has flushed its newline alone.
+  at_prompt: Bool,
   cursor_shape: Int,
   app_cursor: Bool,
   app_keypad: Bool,
@@ -210,6 +214,7 @@ fn with_scrollback(cols: Int, rows: Int, limit: Int) -> Terminal = {
     hide_starts: 0,
     prompt_pending: false,
     prompt_starts: 0,
+    at_prompt: false,
     cursor_shape: 0,
     app_cursor: false,
     app_keypad: false,

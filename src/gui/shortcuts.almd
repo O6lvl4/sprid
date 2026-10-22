@@ -253,6 +253,9 @@ fn clear(mut cur: tabset.Tab, mut ui: uistate.Ui) -> Unit = {
 fn to_program(mut cur: tabset.Tab, mut ui: uistate.Ui, k: Key) -> uistate.Act =
   if k.command and k.lower == 0x76 then uistate.Paste
   else {
+    // Enter alone at the prompt: the frame waits for the shell's answer, so
+    // its newline doesn't scroll the screen a frame before the prompt does.
+    if k.kind == window.KEY and k.code == window.KEY_ENTER and k.held == 0 then { let _ = terminal.enter_at_prompt(cur.t) }
     send(cur, ui, keys.encode_with(k.kind, k.code, k.held, cur.t.app_cursor, cur.t.kitty_flags))
     uistate.Stay
   }

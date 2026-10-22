@@ -80,6 +80,8 @@ fn prompt_mark(mut t: core.Terminal, arg: String) -> Unit = {
     t.prompt_starts = t.prompt_starts + 1
   }
   if kind == "B" or kind == "C" then t.prompt_pending = false
+  if kind == "B" then t.at_prompt = true
+  else if kind != "" and string.contains("ACD", kind) then t.at_prompt = false
   if kind == "D" then {
     let status = string.split(arg, ";") |> list.get(1) ?? "0"
     if t.command_line >= 0 and status != "" and status != "0" then screen.mark_failed(t, t.command_line)
