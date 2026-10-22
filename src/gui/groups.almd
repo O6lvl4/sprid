@@ -67,7 +67,26 @@ fn others(a: session.Session, front: Int) -> List[beside.Pane] =
   regions(a, group_of(a.groups, front))
     |> list.filter((rg) => rg.id != front)
     |> list.filter_map((rg) => list.get(a.tabs, index_of(a.tabs, rg.id))
-      |> option.map((tb) => beside.Pane { t: tb.t, back: tb.back, shift: tb.shift, sel: tb.sel, box: box_of(rg) }))
+      |> option.map((tb) => {
+        let (back, shift) = tabset.viewed(tb, a.r.cell_h)
+        beside.Pane { t: tb.t, back: back, shift: shift, sel: tb.sel, box: box_of(rg) }
+      }))
+
+/// The panes beside `front` slid on for a frame at `now` (see
+/// `tabset.view_pos`), before `others` places them.
+fn slide_others(mut a: session.Session, front: Int, now: Int) -> Unit =
+  for rg in regions(a, group_of(a.groups, front)) {
+    let i = index_of(a.tabs, rg.id)
+    if rg.id != front and i >= 0 then {
+      var tb = a.tabs[i]
+      let _ = tabset.view_pos(tb, now, a.r.cell_h, a.st.scroll_animation)
+      a.tabs = list.set(a.tabs, i, tb)
+    }
+  }
+
+/// Whether a pane beside `front` is still sliding: another frame is due.
+fn others_sliding(a: session.Session, front: Int) -> Bool =
+  regions(a, group_of(a.groups, front)) |> list.any((rg) => rg.id != front and (list.get(a.tabs, index_of(a.tabs, rg.id)) |> option.map(tabset.sliding) ?? false))
 
 /// The panes beside `front` told what the frame just drawn showed of them
 /// (see `tabset.Tab.seen`), as `others` placed them.
@@ -76,7 +95,8 @@ fn saw_others(mut a: session.Session, front: Int) -> Unit =
     let i = index_of(a.tabs, rg.id)
     if rg.id != front and i >= 0 then {
       let tb = a.tabs[i]
-      a.tabs = list.set(a.tabs, i, { ...tb, seen: some(drawn.of({ ...a.r, box: box_of(rg) }, tb.t, tb.back, tb.shift)) })
+      let (back, shift) = tabset.viewed(tb, a.r.cell_h)
+      a.tabs = list.set(a.tabs, i, { ...tb, seen: some({ ...drawn.of({ ...a.r, box: box_of(rg) }, tb.t, back, shift), back: tb.back, shift: tb.shift }) })
     }
   }
 

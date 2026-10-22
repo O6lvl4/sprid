@@ -58,7 +58,7 @@ fn all(c: Config, key: String) -> List[String] =
 
 /// The keys sprid knows; anything else is reported as unknown.
 let KEYS = ["font-family", "font-size", "adjust-cell-height", "theme", "background", "foreground",
-  "cursor-color", "selection-background", "palette", "scrollback-limit", "cursor-style",
+  "cursor-color", "selection-background", "palette", "scrollback-limit", "scroll-animation", "cursor-style",
   "cursor-style-blink", "macos-option-as-alt", "window-padding-x", "window-padding-y",
   "clipboard-write", "clipboard-read", "clipboard-paste-protection", "bell-features",
   "copy-on-select", "shell-integration", "window-save-state"]
@@ -98,6 +98,9 @@ let TEMPLATE = [
   "",
   "# Bytes of text kept to scroll back to; KB, MB and GB are read too.",
   "# scrollback-limit = 10000000",
+  "# How long the view takes to slide after output that scrolled the",
+  "# screen, ms; 0 and it jumps.",
+  "# scroll-animation = 120",
   "",
   "# Which Option keys type as Alt: true, false, left, right.",
   "# macos-option-as-alt = false",

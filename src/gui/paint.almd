@@ -42,6 +42,7 @@ fn draw_due(mut a: session.Session) -> Unit = {
         let left = if drawn.moved(cur.seen, cur.back, cur.shift) then 0 else tabset.hold_left(cur, clock)
         if a.stats.trace and left > 0 then eprintln("held ${int.to_string(clock)} for ${int.to_string(left)} ms")
         if left <= 0 then draw(a, cur, titles, clock)
+        else if tabset.sliding(cur) then { a.ui.dirty = true }
         list.push(a.tabs, cur)
         a.tabs = list.swap(a.tabs, a.active, list.len(a.tabs) - 1)
       },
@@ -64,20 +65,25 @@ fn retitle(mut a: session.Session) -> Unit = {
 
 fn draw(mut a: session.Session, mut cur: tabset.Tab, titles: List[String], clock: Int) -> Unit = {
   let t0 = sys.now_ms()
-  render.draw(a.r, cur.t, cur.back, cur.shift, cur.sel, uistate.compose_of(a.ui), a.width, a.height, titles, groups.current_of(a, cur.fd), (a.ui.hover_tab, a.ui.hover_close),
+  // Where the view is drawn: sliding after output, when it is.
+  let (back, shift) = tabset.view_pos(cur, clock, a.r.cell_h, a.st.scroll_animation)
+  groups.slide_others(a, cur.fd, clock)
+  render.draw(a.r, cur.t, back, shift, cur.sel, uistate.compose_of(a.ui), a.width, a.height, titles, groups.current_of(a, cur.fd), (a.ui.hover_tab, a.ui.hover_close),
     uistate.bar_of(a.ui), a.ui.link, groups.others(a, cur.fd))
   // What is on screen now, for the pointer to be read against until the
-  // next frame: this pane's and the ones beside it.
-  cur.seen = some(drawn.of(a.r, cur.t, cur.back, cur.shift))
+  // next frame: this pane's and the ones beside it. Its `back` and `shift`
+  // are the view's own, not the slide's: a slide is not the view moved.
+  cur.seen = some({ ...drawn.of(a.r, cur.t, back, shift), back: cur.back, shift: cur.shift })
   groups.saw_others(a, cur.fd)
-  if a.stats.trace then eprintln("frame ${int.to_string(sys.now_ms())} cursor ${int.to_string(cur.t.x)},${int.to_string(cur.t.y)} shown ${if cur.t.cursor_visible then "yes" else "no"}"
+  if a.stats.trace then eprintln("frame ${int.to_string(sys.now_ms())} view ${int.to_string(back)},${int.to_string(shift)} cursor ${int.to_string(cur.t.x)},${int.to_string(cur.t.y)} shown ${if cur.t.cursor_visible then "yes" else "no"}"
     + " preedit ${int.to_string(list.len(a.ui.preedit))} line ${view.text_of(cur.t, view.screen_line(cur.t) + cur.t.y)}")
   session.count_frame(a.stats, sys.now_ms() - t0)
   place_ime(a, cur, list.len(titles))
   a.last_frame = clock
   session.shown(a.stats, sys.now_ms())
-  // A glyph the frame couldn't make in time is made by the next.
-  a.ui.dirty = a.r.missed
+  // A glyph the frame couldn't make in time is made by the next; a view
+  // still sliding is drawn on.
+  a.ui.dirty = a.r.missed or tabset.sliding(cur) or groups.others_sliding(a, cur.fd)
 }
 
 /// Tell the input method where it composes: the find bar while it has the
