@@ -46,6 +46,12 @@ let DRAIN_MS = 12
 fn drain_ms(refresh_mhz: Int) -> Int =
   if refresh_mhz <= 0 then DRAIN_MS else int.clamp(1000000 / refresh_mhz - 2, 4, 15)
 
+/// Longest a tab in the back is read for in a turn, ms: what has come is
+/// parsed, nothing waited for. Several tabs running Claude Code in the back
+/// each had a frame's worth of reading before the one in front was drawn.
+let BACK_DRAIN_MS = 2
+
+
 test "the drain budget leaves 2 ms of the display's refresh for the frame" {
   assert_eq(drain_ms(120000), 6)
   assert_eq(drain_ms(60000), 14)
