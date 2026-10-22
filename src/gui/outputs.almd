@@ -11,8 +11,8 @@ import self.pty
 import self.sys
 import self.terminal
 
-/// Every tab's output, each read for the budget the display's refresh
-/// leaves (`session.drain_ms`).
+/// Every tab's output: the one in front read for the budget the display's
+/// refresh leaves (`session.drain_ms`), the others briefly.
 effect fn read_all(mut a: session.Session) -> Unit = {
   a.streaming = false
   let budget = session.drain_ms(window.refresh_rate())
@@ -20,7 +20,7 @@ effect fn read_all(mut a: session.Session) -> Unit = {
     match tabset.take(a.tabs, i) {
       some(tb) => {
         var cur = tb
-        read_tab(a, cur, i, budget)!
+        read_tab(a, cur, i, if i == a.active then budget else session.BACK_DRAIN_MS)!
         list.push(a.tabs, cur)
         a.tabs = list.swap(a.tabs, i, list.len(a.tabs) - 1)
       },

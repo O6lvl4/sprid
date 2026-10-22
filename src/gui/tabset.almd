@@ -335,9 +335,11 @@ fn drain(mut tb: Tab, budget_ms: Int, front: Bool) -> (Bool, Bool) = {
     // coming, and a program that writes only as fast as it is read — a
     // full-screen redraw comes 1 KB per turn — is kept waiting by every turn
     // not spent reading. A tab in the back has no frame to hold, and waiting
-    // on it would keep the one in front waiting.
-    let gap = if front and hold_left(tb, sys.now_ms()) > 0 then MID_UPDATE_GAP_MS else 1
-    data = if sys.now_ms() < until then pty.read(tb.fd, gap) else {
+    // on it would keep the one in front waiting: what has come is read, no
+    // more. Never past the budget: the frame is due.
+    let now = sys.now_ms()
+    let gap = if not front then 0 else if hold_left(tb, now) > 0 then MID_UPDATE_GAP_MS else 1
+    data = if now < until then pty.read(tb.fd, int.min(gap, until - now)) else {
       more = true
       bytes.new(0)
     }
