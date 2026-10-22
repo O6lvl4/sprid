@@ -88,6 +88,21 @@ test "the shell's prompt is pending from a command's end to the prompt's end" {
   assert_eq(t.prompt_pending, false)
 }
 
+test "the shell is at its prompt from the prompt's end until a command starts or Enter is typed" {
+  var t = terminal.new(20, 3)
+  assert_eq(t.at_prompt, false)
+  terminal.feed_string(t, "\x1b]133;A\x07$ \x1b]133;B\x07")
+  assert_eq(t.at_prompt, true)
+  terminal.feed_string(t, "ls\r\n\x1b]133;C\x07out\r\n\x1b]133;D;0\x07")
+  assert_eq(t.at_prompt, false)
+  terminal.feed_string(t, "\x1b]133;A\x07$ \x1b]133;B\x07")
+  assert_eq(terminal.enter_at_prompt(t), true)
+  assert_eq((t.at_prompt, t.prompt_pending, t.prompt_starts), (false, true, 3))
+  // Enter again before the prompt is back: no second wait.
+  assert_eq(terminal.enter_at_prompt(t), false)
+  assert_eq(t.prompt_starts, 3)
+}
+
 test "a title set while a command runs goes with the command; one set at the prompt stays" {
   var t = terminal.new(20, 3)
   let prompt = "\x1b]133;A\x07$ \x1b]133;B\x07"

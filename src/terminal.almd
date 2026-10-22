@@ -61,6 +61,17 @@ fn resize_live(mut t: Terminal, cols: Int, rows: Int) -> Unit = resize.resize_li
 /// when that is in front.
 fn settle(mut t: Terminal) -> Unit = resize.settle(t)
 
+/// Enter typed while the shell waits at its prompt: the shell's newline and
+/// the next prompt (or the command's start) are waited for from now, as
+/// from a command's end. Whether it was at the prompt.
+fn enter_at_prompt(mut t: Terminal) -> Bool =
+  if t.at_prompt then {
+    t.at_prompt = false
+    t.prompt_pending = true
+    t.prompt_starts = t.prompt_starts + 1
+    true
+  } else false
+
 /// Take the pending replies.
 fn take_replies(mut t: Terminal) -> String = core.take_replies(t)
 
