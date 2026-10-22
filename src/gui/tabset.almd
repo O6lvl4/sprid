@@ -67,6 +67,10 @@ type Slide = { px: Int, at: Int, line: Int }
 
 let NO_SLIDE = Slide { px: 0, at: 0, line: -1 }
 
+/// How long after a synchronized update a program counts as drawing its
+/// own screen, so output doesn't slide (`view_pos`).
+let MANAGED_MS = 1000
+
 /// Where `tb` is viewed for a frame at `now`: scrolled `back` lines and
 /// `shift` pixels — and, with `settle` > 0 ms (`scroll-animation`), sliding
 /// after output that scrolled the screen since the last frame, so lines
@@ -74,13 +78,18 @@ let NO_SLIDE = Slide { px: 0, at: 0, line: -1 }
 /// `settle` ms; output coming meanwhile adds to it, up to half a screen —
 /// past that it jumps, so a firehose never trails far behind. Not on the
 /// alternate screen, nor scrolled back: there the view stays where it is.
+/// Nor for a program drawing its screen in synchronized updates (within
+/// `MANAGED_MS` of one): it repaints the bottom of the screen whole, and
+/// a repaint is not output scrolling in — Claude Code's trailed by half a
+/// screen, sliding at every repaint.
 fn view_pos(mut tb: Tab, now: Int, cell_h: Int, settle: Int) -> (Int, Int) = {
   let t = tb.t
   let line = view.screen_line(t)
   let scrolled = if tb.slide.line < 0 then 0 else int.max(0, line - tb.slide.line)
   let dt = if tb.slide.at == 0 then 0 else int.max(0, now - tb.slide.at)
   var px = eased(tb.slide.px, dt, int.max(1, settle / 3))
-  if settle > 0 and scrolled > 0 and tb.back == 0 and tb.shift == 0 and not t.alt then {
+  let managed = tb.up.syncs > 0 and now - tb.up.sync_at < MANAGED_MS
+  if settle > 0 and scrolled > 0 and tb.back == 0 and tb.shift == 0 and not t.alt and not managed then {
     px = int.min(px + scrolled * cell_h, t.rows * cell_h / 2)
   }
   px = int.max(0, int.min(px, (view.max_back(t) - tb.back) * cell_h - tb.shift))
@@ -440,6 +449,15 @@ test "the view slides after output that scrolled the screen, and settles" {
   tb.slide = NO_SLIDE
   assert_eq(view_pos(tb, 3000, 10, 0), (0, 0))
   assert_eq(view_pos(tb, 3000, 10, 0), (0, 0))
+  // A program drawing in synchronized updates: its repaints don't slide.
+  terminal.feed_string(tb.t, "\x1b[?2026h\r\nm\r\nn\x1b[?2026l")
+  note_updates(tb, 4000)
+  assert_eq(view_pos(tb, 4000, 10, 120), (0, 0))
+  terminal.feed_string(tb.t, "\r\no")
+  assert_eq(view_pos(tb, 4000 + MANAGED_MS - 1, 10, 120), (0, 0))
+  // A second on, plain output slides again.
+  terminal.feed_string(tb.t, "\r\np")
+  assert_eq(view_pos(tb, 4000 + MANAGED_MS, 10, 120), (1, 0))
 }
 
 test "a tab moved keeps the others in order" {
