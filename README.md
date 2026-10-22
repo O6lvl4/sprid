@@ -60,7 +60,7 @@ before closing a busy tab or pasting line breaks, are macOS only for now.
   attaches dropped images.
 - **Scrollback**: smooth, pixel-by-pixel scrolling with a draggable
   scrollbar; the view stays put while output arrives below. Output that
-  scrolls the screen slides in rather than jumping (`scroll-animation`).
+  scrolls the screen can slide in rather than jump (`scroll-animation`).
 - **Find** (Cmd+F): across scrollback and screen, every match marked, smart
   case.
 - **Links**: Cmd+click (Ctrl+click on Linux) opens the URL or file path under
@@ -150,7 +150,7 @@ macos-option-as-alt = left      # true, false, left, right
 | `background`, `foreground`, `cursor-color`, `selection-background` | the theme's — `#rrggbb` |
 | `palette` | a colour over the theme's — `palette = 1=#ff5555`, once per colour; 0–15 are the theme's 16, 16–255 the fixed cube and greys |
 | `scrollback-limit` | `10000000` bytes of text (`KB`, `MB`, `GB` also read) |
-| `scroll-animation` | `120` ms for the view to slide after output that scrolled the screen; `0` and it jumps |
+| `scroll-animation` | `0` — ms for the view to slide after output that scrolled the screen (`120` is a good one); `0` and it jumps |
 | `cursor-style`, `cursor-style-blink` | `bar`, `false` |
 | `macos-option-as-alt` | `false` |
 | `clipboard-write` | `allow` — or `deny` programs setting the clipboard |
