@@ -56,7 +56,61 @@ type Tab = {
   // screen shows that frame, not the terminal now (drawn.almd). None until
   // it is first drawn.
   seen: Option[drawn.Drawn],
+  // Output scrolled the screen: the view slides after it (`view_pos`).
+  slide: Slide,
 }
+
+/// A scroll under way: how many pixels the view still has to slide, when
+/// that was last worked out (ms; 0 never), and the screen's line at the last
+/// frame (-1 before the first), to tell how far output scrolled since.
+type Slide = { px: Int, at: Int, line: Int }
+
+let NO_SLIDE = Slide { px: 0, at: 0, line: -1 }
+
+/// Where `tb` is viewed for a frame at `now`: scrolled `back` lines and
+/// `shift` pixels — and, with `settle` > 0 ms (`scroll-animation`), sliding
+/// after output that scrolled the screen since the last frame, so lines
+/// glide in rather than jump. The slide eases out, most of the way gone in
+/// `settle` ms; output coming meanwhile adds to it, up to half a screen —
+/// past that it jumps, so a firehose never trails far behind. Not on the
+/// alternate screen, nor scrolled back: there the view stays where it is.
+fn view_pos(mut tb: Tab, now: Int, cell_h: Int, settle: Int) -> (Int, Int) = {
+  let t = tb.t
+  let line = view.screen_line(t)
+  let scrolled = if tb.slide.line < 0 then 0 else int.max(0, line - tb.slide.line)
+  let dt = if tb.slide.at == 0 then 0 else int.max(0, now - tb.slide.at)
+  var px = eased(tb.slide.px, dt, int.max(1, settle / 3))
+  if settle > 0 and scrolled > 0 and tb.back == 0 and tb.shift == 0 and not t.alt then {
+    px = int.min(px + scrolled * cell_h, t.rows * cell_h / 2)
+  }
+  px = int.max(0, int.min(px, (view.max_back(t) - tb.back) * cell_h - tb.shift))
+  tb.slide = Slide { px: px, at: now, line: line }
+  viewed(tb, cell_h)
+}
+
+/// `px` pixels left to slide, `dt` ms on: a tenth of what is left goes
+/// every tenth of `tau` ms — 95% in three `tau`s — and at least a pixel, so
+/// it ends.
+fn eased(px: Int, dt: Int, tau: Int) -> Int = {
+  var left = px
+  var step = int.max(1, tau / 10)
+  var gone = 0
+  while left > 0 and gone < dt {
+    let s = int.min(step, dt - gone)
+    left = left - int.max(1, left * s / tau)
+    gone = gone + s
+  }
+  int.max(0, left)
+}
+
+/// Where `tb` is viewed now, its slide as last worked out: (`back`, `shift`).
+fn viewed(tb: Tab, cell_h: Int) -> (Int, Int) = {
+  let pos = tb.back * int.max(1, cell_h) + tb.shift + tb.slide.px
+  (pos / int.max(1, cell_h), pos % int.max(1, cell_h))
+}
+
+/// Whether `tb`'s view is still sliding: another frame is due.
+fn sliding(tb: Tab) -> Bool = tb.slide.px > 0
 
 /// The latest synchronized update and redraw with the cursor hidden that
 /// the tab's program began — by the terminal's counts of them — and when
@@ -188,7 +242,7 @@ fn cwd_of(tabs: List[Tab], i: Int, home: String) -> String = match list.get(tabs
 fn open_tab(cols: Int, rows: Int, command: String, cwd: String, scrollback: Int) -> Option[Tab] = {
   let fd = pty.spawn(command, cwd, cols, rows)
   if fd < 0 then none
-  else some(Tab { t: terminal.with_scrollback(cols, rows, scrollback), fd: fd, back: 0, shift: 0, sel: none, held: none, up: NO_UPDATES, name: "", alert: false, seen: none })
+  else some(Tab { t: terminal.with_scrollback(cols, rows, scrollback), fd: fd, back: 0, shift: 0, sel: none, held: none, up: NO_UPDATES, name: "", alert: false, seen: none, slide: NO_SLIDE })
 }
 
 /// Close tab `i` and its program, keeping the other tabs in order.
@@ -224,6 +278,8 @@ fn fit(mut tabs: List[Tab], sizes: List[(Int, (Int, Int))], live: Bool, hold: Bo
           // would point at other lines.
           scroll_to(cur, 0)
           cur.sel = none
+          // And a slide would read the renumbering as a scroll.
+          cur.slide = NO_SLIDE
           // Timed from the first of a run of resizes, as a held update is.
           if hold and cur.up.resized_at < 0 then cur.up = { ...cur.up, resized_at: sys.now_ms() }
         }
@@ -329,7 +385,7 @@ fn scroll_to(mut tb: Tab, back: Int) -> Unit = {
 test "the frame is held for the shell's prompt from a command's end, to a limit" {
   var t = terminal.new(10, 3)
   terminal.feed_string(t, "\r\n\x1b]133;D;0\x07")
-  var tb = Tab { t: t, fd: -1, back: 0, shift: 0, sel: none, held: none, up: NO_UPDATES, name: "", alert: false, seen: none }
+  var tb = Tab { t: t, fd: -1, back: 0, shift: 0, sel: none, held: none, up: NO_UPDATES, name: "", alert: false, seen: none, slide: NO_SLIDE }
   note_updates(tb, 1000)
   assert_eq(hold_left(tb, 1030), PROMPT_LIMIT - 30)
   assert_eq(hold_left(tb, 1000 + PROMPT_LIMIT), 0)
@@ -340,7 +396,7 @@ test "the frame is held for the shell's prompt from a command's end, to a limit"
 test "the frame is held from Enter at the prompt until the next prompt or the command starts" {
   var t = terminal.new(10, 3)
   terminal.feed_string(t, "\x1b]133;A\x07$ \x1b]133;B\x07")
-  var tb = Tab { t: t, fd: -1, back: 0, shift: 0, sel: none, held: none, up: NO_UPDATES, name: "", alert: false, seen: none }
+  var tb = Tab { t: t, fd: -1, back: 0, shift: 0, sel: none, held: none, up: NO_UPDATES, name: "", alert: false, seen: none, slide: NO_SLIDE }
   note_updates(tb, 1000)
   assert_eq(hold_left(tb, 1000), 0)
   assert_eq(terminal.enter_at_prompt(tb.t), true)
@@ -360,6 +416,32 @@ test "the frame is held from Enter at the prompt until the next prompt or the co
   assert_eq(terminal.enter_at_prompt(tb.t), false)
 }
 
+test "the view slides after output that scrolled the screen, and settles" {
+  var t = terminal.with_scrollback(10, 4, 100000)
+  var tb = Tab { t: t, fd: -1, back: 0, shift: 0, sel: none, held: none, up: NO_UPDATES, name: "", alert: false, seen: none, slide: NO_SLIDE }
+  // The first frame: nothing scrolled yet.
+  assert_eq(view_pos(tb, 1000, 10, 120), (0, 0))
+  // Two lines scrolled off the screen: the view starts two lines back.
+  terminal.feed_string(tb.t, "a\r\nb\r\nc\r\nd\r\ne\r\nf")
+  assert_eq(view.max_back(tb.t), 2)
+  assert_eq(view_pos(tb, 1000, 10, 120), (2, 0))
+  // And slides toward the bottom, most of the way in `settle` ms.
+  let (b1, s1) = view_pos(tb, 1040, 10, 120)
+  assert_eq(b1 * 10 + s1 < 20 and b1 * 10 + s1 > 0, true)
+  let (b2, s2) = view_pos(tb, 1120, 10, 120)
+  assert_eq(b2 * 10 + s2 < 4, true)
+  assert_eq(view_pos(tb, 2000, 10, 120), (0, 0))
+  assert_eq(sliding(tb), false)
+  // More output while sliding adds to it; no more than half a screen.
+  terminal.feed_string(tb.t, "\r\ng\r\nh\r\ni\r\nj\r\nk")
+  assert_eq(view_pos(tb, 2000, 10, 120), (2, 0))
+  // Off (0 ms): it jumps.
+  terminal.feed_string(tb.t, "\r\nl")
+  tb.slide = NO_SLIDE
+  assert_eq(view_pos(tb, 3000, 10, 0), (0, 0))
+  assert_eq(view_pos(tb, 3000, 10, 0), (0, 0))
+}
+
 test "a tab moved keeps the others in order" {
   assert_eq(move_to([0, 1, 2, 3], 0, 2), [1, 2, 0, 3])
   assert_eq(move_to([0, 1, 2, 3], 3, 1), [0, 3, 1, 2])
@@ -367,7 +449,7 @@ test "a tab moved keeps the others in order" {
 }
 
 test "a resized tab's frame waits for its program to draw again, no longer than the limit" {
-  let tb = Tab { t: terminal.new(10, 3), fd: -1, back: 0, shift: 0, sel: none, held: none, up: { ...NO_UPDATES, resized_at: 1000 }, name: "", alert: false, seen: none }
+  let tb = Tab { t: terminal.new(10, 3), fd: -1, back: 0, shift: 0, sel: none, held: none, up: { ...NO_UPDATES, resized_at: 1000 }, name: "", alert: false, seen: none, slide: NO_SLIDE }
   assert_eq(hold_left(tb, 1040), RESIZE_LIMIT - 40)
   assert_eq(hold_left(tb, 1000 + RESIZE_LIMIT), 0)
   assert_eq(hold_left({ ...tb, up: NO_UPDATES }, 1040), 0)

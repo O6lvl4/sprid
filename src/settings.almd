@@ -17,6 +17,9 @@ type Settings = {
   theme_light: String,
   theme_dark: String,
   scrollback: Int,
+  // How long the view takes to slide after output that scrolled the screen,
+  // ms; 0 and it jumps.
+  scroll_animation: Int,
   // The cursor until a program sets one: DECSCUSR's numbers (1 blinking
   // block .. 6 steady bar); 0 leaves it to sprid's default (a steady bar).
   cursor_shape: Int,
@@ -57,7 +60,7 @@ fn defaults() -> Settings = {
   let problems: List[String] = []
   Settings {
     font_family: "", font_size: DEFAULT_FONT_SIZE, cell_height: DEFAULT_CELL_HEIGHT, pad_x: 12.0, pad_y: 8.0,
-    theme_light: DEFAULT_THEME, theme_dark: DEFAULT_THEME, scrollback: DEFAULT_SCROLLBACK,
+    theme_light: DEFAULT_THEME, theme_dark: DEFAULT_THEME, scrollback: DEFAULT_SCROLLBACK, scroll_animation: 120,
     cursor_shape: 0, option_as_alt: 0, clipboard_write: true, clipboard_read: "ask",
     bell_flash: true, bell_attention: true, bell_title: true, bell_system: false, paste_protection: true, copy_on_select: "true", shell_integration: true, window_save_state: "default", file: config.empty(), problems: problems,
   }
@@ -78,6 +81,7 @@ fn from(c: config.Config) -> Settings = {
     theme_light: light,
     theme_dark: dark,
     scrollback: read(c, "scrollback-limit", config.bytes_of) ?? d.scrollback,
+    scroll_animation: read(c, "scroll-animation", ms_of) ?? d.scroll_animation,
     cursor_shape: read(c, "cursor-style", shape_of) |> option.map((shape) => if blink then shape - 1 else shape) ?? (if blink then 1 else 0),
     option_as_alt: read(c, "macos-option-as-alt", option_as_alt_of) ?? d.option_as_alt,
     clipboard_write: read(c, "clipboard-write", (v) => one_of(v, ["allow", "deny"])) |> option.map((v) => v == "allow") ?? d.clipboard_write,
@@ -95,6 +99,12 @@ fn from(c: config.Config) -> Settings = {
   }
 }
 
+/// A time in ms: a whole number from 0 to 2000.
+fn ms_of(v: String) -> Option[Int] = match int.parse(string.trim(v)) {
+  ok(n) => if n >= 0 and n <= 2000 then some(n) else none,
+  err(_) => none,
+}
+
 /// The value `key` sets in `c`, when there is one `parse` makes sense of.
 fn read[T](c: config.Config, key: String, parse: (String) -> Option[T]) -> Option[T] =
   config.get(c, key) |> option.flat_map(parse)
@@ -106,6 +116,7 @@ fn checks() -> List[(String, (String) -> Bool)] = [
   ("window-padding-x", (v) => padding_of(v) != none),
   ("window-padding-y", (v) => padding_of(v) != none),
   ("scrollback-limit", (v) => config.bytes_of(v) != none),
+  ("scroll-animation", (v) => ms_of(v) != none),
   ("cursor-style-blink", (v) => config.flag(v) != none),
   ("cursor-style", (v) => shape_of(v) != none),
   ("macos-option-as-alt", (v) => option_as_alt_of(v) != none),
