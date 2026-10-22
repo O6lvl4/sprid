@@ -64,7 +64,7 @@ fn retitle(mut a: session.Session) -> Unit = {
 
 fn draw(mut a: session.Session, mut cur: tabset.Tab, titles: List[String], clock: Int) -> Unit = {
   let t0 = sys.now_ms()
-  render.draw(a.r, cur.t, cur.back, cur.shift, cur.sel, uistate.compose_of(a.ui), a.width, a.height, titles, groups.current_of(a, cur.fd),
+  render.draw(a.r, cur.t, cur.back, cur.shift, cur.sel, uistate.compose_of(a.ui), a.width, a.height, titles, groups.current_of(a, cur.fd), (a.ui.hover_tab, a.ui.hover_close),
     uistate.bar_of(a.ui), a.ui.link, groups.others(a, cur.fd))
   // What is on screen now, for the pointer to be read against until the
   // next frame: this pane's and the ones beside it.
@@ -119,7 +119,7 @@ effect fn capture_due(mut a: session.Session, path: String) -> Unit = {
       some(tb) => {
         var cur = tb
         stage(a.ui, cur, a.r.cell_h)!
-        render.draw(a.r, cur.t, cur.back, cur.shift, cur.sel, uistate.compose_of(a.ui), a.width, a.height, titles, groups.current_of(a, cur.fd),
+        render.draw(a.r, cur.t, cur.back, cur.shift, cur.sel, uistate.compose_of(a.ui), a.width, a.height, titles, groups.current_of(a, cur.fd), (a.ui.hover_tab, a.ui.hover_close),
           uistate.bar_of(a.ui), a.ui.link, groups.others(a, cur.fd))
         list.push(a.tabs, cur)
       },

@@ -24,6 +24,7 @@ import self.view
 effect fn apply(mut a: session.Session, act: uistate.Act) -> Unit = match act {
   uistate.NewTab => new_tab(a)!,
   uistate.CloseTab => close_pane(a),
+  uistate.CloseTabAt(gi) => close_tab(a, gi),
   uistate.NextTab => groups.go_to(a, (groups.current(a) + 1) % groups.count(a)),
   uistate.PrevTab => groups.go_to(a, (groups.current(a) + groups.count(a) - 1) % groups.count(a)),
   uistate.GoTo(i) => if i < groups.count(a) and i != groups.current(a) then groups.go_to(a, i),
@@ -65,6 +66,12 @@ effect fn window_act(mut a: session.Session, act: uistate.Act) -> Unit = match a
 /// may.
 fn close_pane(mut a: session.Session) -> Unit =
   if tabset.may_close_tab(a.tabs, a.active, a.ja) then groups.close_pane(a, tabset.fd_of(a.tabs, a.active))
+
+/// Tab `gi` closed whole, every pane of it, if it may.
+fn close_tab(mut a: session.Session, gi: Int) -> Unit = {
+  let fds = groups.panes_of(a, gi)
+  if fds != [] and tabset.may_close_panes(a.tabs, fds, a.ja) then for fd in fds { groups.close_pane(a, fd) }
+}
 
 /// A tab in the directory of the pane in front, brought to the front.
 effect fn new_tab(mut a: session.Session) -> Unit = {

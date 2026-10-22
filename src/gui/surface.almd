@@ -234,6 +234,17 @@ fn tab_at(r: Renderer, x: Int, width: Int, tabs: Int) -> Int =
   if tabs_fit(r, width, tabs) then int.clamp(x * tabs / int.max(1, width), 0, tabs - 1)
   else int.clamp((x + r.tab_scroll) / int.max(1, tab_min_width(r)), 0, tabs - 1)
 
+/// The cell a tab's close button takes, half a cell in from its right edge
+/// `x1`: its left and right edges, pixels.
+fn close_span(r: Renderer, x1: Int) -> (Int, Int) = (x1 - r.cell_w * 3 / 2, x1 - r.cell_w / 2)
+
+/// Whether pixel `x` of the tab bar is on the close button of tab `i`: its
+/// last two cells.
+fn on_close(r: Renderer, x: Int, width: Int, tabs: Int, i: Int) -> Bool = {
+  let (_, x1) = tab_span(r, i, width, tabs)
+  x >= x1 - r.cell_w * 2 and x < x1
+}
+
 /// The tab bar scrolled to `to` pixels, kept in range.
 fn scroll_tabs(mut r: Renderer, to: Int, width: Int, tabs: Int) -> Unit = {
   r.tab_scroll = int.clamp(to, 0, tab_scroll_max(r, width, tabs))

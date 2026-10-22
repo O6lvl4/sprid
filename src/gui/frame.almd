@@ -15,6 +15,7 @@ import self.gui.surface
 import self.gui.ink
 import self.gui.rowpaint
 import self.gui.findbar
+import self.gui.chrome
 
 /// What a frame shows, worked out before anything is drawn: the lines in
 /// view (one more, part shown at the top, when scrolled by part of a line),
@@ -111,9 +112,10 @@ fn prepare_rest(mut r: surface.Renderer, extra: List[Int], f: Frame) -> Unit = {
   let no_emoji: List[Int] = []
   r.wanted = none_wanted
   r.wanted_emoji = no_emoji
-  // What a title cut short ends with.
+  // What a title cut short ends with, and a tab's close button.
   if list.len(f.titles) > 1 then {
     let _ = ink.glyph(r, 0x2026, false)
+    let _ = ink.glyph(r, chrome.CLOSE_MARK, false)
   }
 }
 

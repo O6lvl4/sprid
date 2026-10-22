@@ -51,11 +51,14 @@ fn release(cur: tabset.Tab, mut ui: uistate.Ui) -> uistate.Act =
     if cur.sel != none then uistate.Selected else uistate.Stay
   } else uistate.Stay
 
-/// The pointer moved: the link under it found while Cmd is held, and the
-/// pointer shaped for where it is — a hand on a link, the I-beam on the
-/// grid, the arrow on the tab bar and the scrollbar.
+/// The pointer moved: the link under it found while Cmd is held, the tab
+/// under it noted (its close button shows), and the pointer shaped for
+/// where it is — a hand on a link, the I-beam on the grid, the arrow on the
+/// tab bar and the scrollbar.
 fn hover(cur: tabset.Tab, mut ui: uistate.Ui, p: place.Place) -> Unit = {
-  let on_grid = not (p.tabs > 1 and place.py(p) < render.bar_height(p.r)) and not render.on_scrollbar(p.r, cur.t, place.px(p))
+  let on_tabs = p.tabs > 1 and place.py(p) >= 0 and place.py(p) < render.bar_height(p.r)
+  hover_tab(ui, p, on_tabs)
+  let on_grid = not on_tabs and not render.on_scrollbar(p.r, cur.t, place.px(p))
   let link = if on_grid and link_click() then {
     let (col, _) = pointer.cell_at(p.r, cur, p.scale, p.tabs)
     links.link_at(cur.t, pointer.pointer_line(p.r, cur, p.scale, p.tabs), col)
@@ -65,6 +68,18 @@ fn hover(cur: tabset.Tab, mut ui: uistate.Ui, p: place.Place) -> Unit = {
     ui.dirty = true
   }
   uistate.shape_pointer(ui, if link != none then window.POINTER_LINK else if on_grid then window.POINTER_TEXT else window.POINTER_ARROW)
+}
+
+/// The tab under the pointer, and whether its close button is, noted: the
+/// bar is redrawn as they change.
+fn hover_tab(mut ui: uistate.Ui, p: place.Place, on_tabs: Bool) -> Unit = {
+  let tab = if on_tabs then render.tab_at(p.r, place.px(p), p.width, p.tabs) else -1
+  let close = tab >= 0 and render.on_close(p.r, place.px(p), p.width, p.tabs, tab)
+  if tab != ui.hover_tab or close != ui.hover_close then {
+    ui.hover_tab = tab
+    ui.hover_close = close
+    ui.dirty = true
+  }
 }
 
 /// Whether a press opens what it is on: Cmd held, Ctrl on Linux — and
@@ -200,12 +215,15 @@ fn report_motion(cur: tabset.Tab, ui: uistate.Ui, held: Int, at: String) -> Unit
     let _ = pty.write(cur.fd, "\x1b[<${int.to_string(35 + held)}${at}M")
   }
 
-/// A left press on the window: a tab (a double click renames it) or the
-/// grid. A press anywhere ends a rename, keeping the draft.
+/// A left press on the window: a tab (a double click renames it; its
+/// close button closes it) or the grid. A press anywhere ends a rename,
+/// keeping the draft.
 effect fn press(mut cur: tabset.Tab, mut ui: uistate.Ui, p: place.Place) -> uistate.Act = {
   if ui.renaming then findkeys.finish_rename(cur, ui, true)
-  if p.tabs > 1 and place.py(p) < render.bar_height(p.r) then tabbar.press(cur, ui, render.tab_at(p.r, place.px(p), p.width, p.tabs))
-  else {
+  if p.tabs > 1 and place.py(p) < render.bar_height(p.r) then {
+    let i = render.tab_at(p.r, place.px(p), p.width, p.tabs)
+    if render.on_close(p.r, place.px(p), p.width, p.tabs, i) then uistate.CloseTabAt(i) else tabbar.press(cur, ui, i)
+  } else {
     press_grid(cur, ui, p)!
     uistate.Stay
   }
