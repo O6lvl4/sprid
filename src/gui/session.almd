@@ -26,15 +26,33 @@ let MAX_FONT_SIZE = 72.0
 /// on macOS taking the events waits for the display's next update anyway,
 /// and a turn that may not draw yet spends one of them, so at 8 ms a frame
 /// came every 12 ms, 80 a second, while scrolling. Output streaming in gets
-/// a frame a turn too, each turn a `DRAIN_MS` of parsing: 60 a second at the
-/// display's pace, where frames 50 ms apart and 40 ms of parsing between
-/// them showed a firehose at 15 a second and scrolled it in lurches. The
-/// loop doesn't sleep while output waits (`upkeep.wait_for`), so the frames
-/// cost it no throughput.
+/// a frame a turn too, each turn a `drain_ms` of parsing, so a frame lands
+/// on each refresh of the display, where frames 50 ms apart and 40 ms of
+/// parsing between them showed a firehose at 15 a second and scrolled it
+/// in lurches. The loop doesn't sleep while output waits
+/// (`upkeep.wait_for`), so the frames cost it no throughput.
 let FRAME_MS = 4
 
-/// Longest spent draining a tab's PTY before the window gets a turn, ms.
+/// Longest spent draining a tab's PTY before the window gets a turn, ms,
+/// where the display's refresh rate isn't known.
 let DRAIN_MS = 12
+
+/// `DRAIN_MS` for a display refreshing at `refresh_mhz` millihertz (0:
+/// unknown): the refresh's period less 2 ms for the frame and the turn, so
+/// the frame lands on the next refresh, not the one after. At 120 Hz, 6 ms:
+/// measured on one, 12 ms gave 60 frames a second and 8 ms 57 — the frame
+/// missed the refresh by a hair — while 6 ms gave 100, 42 MB of styled lines
+/// taking a fifth longer. At 60 Hz, 14 ms.
+fn drain_ms(refresh_mhz: Int) -> Int =
+  if refresh_mhz <= 0 then DRAIN_MS else int.clamp(1000000 / refresh_mhz - 2, 4, 15)
+
+test "the drain budget leaves 2 ms of the display's refresh for the frame" {
+  assert_eq(drain_ms(120000), 6)
+  assert_eq(drain_ms(60000), 14)
+  assert_eq(drain_ms(0), DRAIN_MS)
+  assert_eq(drain_ms(240000), 4)
+  assert_eq(drain_ms(30000), 15)
+}
 
 /// How long the window's size must hold before scrollback is reflowed to it,
 /// ms: reflowing a full scrollback takes about 0.2 s, too long for every step

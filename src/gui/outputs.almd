@@ -11,14 +11,16 @@ import self.pty
 import self.sys
 import self.terminal
 
-/// Every tab's output, the active tab's with the longer budget.
+/// Every tab's output, each read for the budget the display's refresh
+/// leaves (`session.drain_ms`).
 effect fn read_all(mut a: session.Session) -> Unit = {
   a.streaming = false
+  let budget = session.drain_ms(window.refresh_rate())
   for i in 0..<list.len(a.tabs) {
     match tabset.take(a.tabs, i) {
       some(tb) => {
         var cur = tb
-        read_tab(a, cur, i)!
+        read_tab(a, cur, i, budget)!
         list.push(a.tabs, cur)
         a.tabs = list.swap(a.tabs, i, list.len(a.tabs) - 1)
       },
@@ -27,11 +29,11 @@ effect fn read_all(mut a: session.Session) -> Unit = {
   }
 }
 
-effect fn read_tab(mut a: session.Session, mut cur: tabset.Tab, i: Int) -> Unit = {
+effect fn read_tab(mut a: session.Session, mut cur: tabset.Tab, i: Int, budget: Int) -> Unit = {
   let title_before = (cur.t.title, cur.t.cwd)
   let bells_before = cur.t.bells
   tabset.hold_sel(cur)
-  let (got, more) = tabset.drain(cur, session.DRAIN_MS, i == a.active)
+  let (got, more) = tabset.drain(cur, budget, i == a.active)
   // The text under the selection moved: the selection goes, and a drag
   // making it stops — its anchor is on other text now. Looked at whether
   // output came this turn or not: what moved it may have come while the
