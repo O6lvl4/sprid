@@ -32,14 +32,19 @@ fn wait_for(mut a: session.Session) -> Int = {
     a.flash_until = -1
     a.ui.dirty = true
   }
-  let frame_wait = int.max(0, a.last_frame + session.frame_ms(a) - now)
+  let frame_wait = int.max(0, a.last_frame + session.FRAME_MS - now)
   let idle = if a.capture == none then -1 else 50
   let drawn = if a.ui.dirty then int.max(frame_wait, tabset.sync_wait(a.tabs, a.active, now)) else idle
   let until = (at: Int) => if at < 0 then -1 else int.max(0, at - now)
   // Input a program hasn't taken yet (a big paste) is offered again soon.
   let write = if list.any(a.tabs, (tb) => pty.pending(tb.fd)) then session.WRITE_RETRY_MS else -1
   let settle = if a.resized_at < 0 then -1 else a.resized_at + session.SETTLE_MS
-  list.fold([until(settle), until(a.stats.auto_next), write, until(a.blink_at), until(a.flash_until), until(a.stats.quit_at)], drawn,
+  // Output still waiting on the active tab's PTY (the drain's budget ran
+  // out): no wait at all. Woken by the PTY instead, the loop came back 13
+  // to 20 ms later on macOS, and a tab streaming output drew a frame every
+  // 25 ms with half the time asleep.
+  if a.streaming then 0
+  else list.fold([until(settle), until(a.stats.auto_next), write, until(a.blink_at), until(a.flash_until), until(a.stats.quit_at)], drawn,
     (acc, w) => session.sooner(acc, w))
 }
 

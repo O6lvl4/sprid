@@ -23,7 +23,7 @@ import self.links
 /// Draw the tab in front if it changed and a frame is due.
 fn draw_due(mut a: session.Session) -> Unit = {
   let clock = sys.now_ms()
-  if a.alive and a.ui.dirty and clock - a.last_frame >= session.frame_ms(a) then {
+  if a.alive and a.ui.dirty and clock - a.last_frame >= session.FRAME_MS then {
     retitle(a)
     groups.place_box(a)
     // With every tab still in the list: taken out, the tab in front would

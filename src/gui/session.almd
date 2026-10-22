@@ -20,22 +20,21 @@ let MIN_FONT_SIZE = 6.0
 
 let MAX_FONT_SIZE = 72.0
 
-/// Least time between two frames, ms: short while the program answers keys —
+/// Least time between two frames, ms: short, as the program answers keys —
 /// a shell echoes a key and then redraws the line in colour a few ms later,
-/// and the second must not wait a whole refresh — and longer while its output
-/// streams in, time the parser can use. Under a refresh at 120 Hz: on macOS
-/// taking the events waits for the display's next update anyway, and a
-/// turn that may not draw yet spends one of them, so at 8 ms a frame came
-/// every 12 ms, 80 a second, while scrolling.
+/// and the second must not wait a whole refresh. Under a refresh at 120 Hz:
+/// on macOS taking the events waits for the display's next update anyway,
+/// and a turn that may not draw yet spends one of them, so at 8 ms a frame
+/// came every 12 ms, 80 a second, while scrolling. Output streaming in gets
+/// a frame a turn too, each turn a `DRAIN_MS` of parsing: 60 a second at the
+/// display's pace, where frames 50 ms apart and 40 ms of parsing between
+/// them showed a firehose at 15 a second and scrolled it in lurches. The
+/// loop doesn't sleep while output waits (`upkeep.wait_for`), so the frames
+/// cost it no throughput.
 let FRAME_MS = 4
 
-let STREAM_FRAME_MS = 50
-
-/// Longest spent draining the active tab's PTY before the window gets a
-/// turn, ms; background tabs get the short budget.
+/// Longest spent draining a tab's PTY before the window gets a turn, ms.
 let DRAIN_MS = 12
-
-let STREAM_DRAIN_MS = 40
 
 /// How long the window's size must hold before scrollback is reflowed to it,
 /// ms: reflowing a full scrollback takes about 0.2 s, too long for every step
@@ -122,9 +121,6 @@ type Stats = {
 
 /// The sooner of two waits, ms; -1 is no limit.
 fn sooner(a: Int, b: Int) -> Int = if a < 0 then b else if b < 0 then a else int.min(a, b)
-
-/// The least time between frames now.
-fn frame_ms(a: Session) -> Int = if a.streaming then STREAM_FRAME_MS else FRAME_MS
 
 /// The renderer sized for the font size, padding and line height in use, in
 /// pixels of the display the window is on.
