@@ -3,6 +3,7 @@
 
 import snaidhm.native.window as window
 import self.pty
+import self.sys
 import self.gui.tabset
 import self.gui.session
 import self.gui.groups
@@ -26,6 +27,33 @@ fn waits(mut wins: List[session.Session]) -> (Int, List[Int]) = {
     }
   }
   (timeout, fds)
+}
+
+/// The display's link run while any window draws frames, and for a moment
+/// after (see `session.paced`); stopped when none does, so an idle window
+/// costs nothing. Every window is told whether it runs.
+fn pace(mut wins: List[session.Session]) -> Unit = {
+  let now = sys.now_ms()
+  let wants = (a: session.Session) => a.alive and (a.ui.dirty or now - a.last_frame < session.VSYNC_KEEP_MS)
+  let want = list.any(wins, wants)
+  // The link follows the display of a window that draws.
+  match list.find(wins, wants) {
+    some(a) => window.select(a.id),
+    none => (),
+  }
+  let run = window.vsync(want) and want
+  for i in 0..<list.len(wins) {
+    match take(wins, i) {
+      some(w) => {
+        var a = w
+        if run and not a.vsync_run then a.vsync_at = now
+        if not run then a.vsync_due = false
+        a.vsync_run = run
+        put(wins, i, a)
+      },
+      none => (),
+    }
+  }
 }
 
 /// Quitting asked for (Cmd+Q, or the only window's close button): every

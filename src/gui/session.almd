@@ -104,6 +104,12 @@ type Session = {
   alive: Bool,
   last_frame: Int,
   streaming: Bool,
+  // The display's refresh paces the frames (see `paced`): whether the host's
+  // display link runs, when it last ticked, and whether a tick is waiting
+  // for its frame.
+  vsync_run: Bool,
+  vsync_at: Int,
+  vsync_due: Bool,
   // When the window last changed size, while scrollback waits to be
   // reflowed; -1 when it doesn't.
   resized_at: Int,
@@ -145,6 +151,30 @@ type Stats = {
 
 /// The sooner of two waits, ms; -1 is no limit.
 fn sooner(a: Int, b: Int) -> Int = if a < 0 then b else if b < 0 then a else int.min(a, b)
+
+/// Frames keep step with the display, as Ghostty's do: while frames are
+/// being drawn the host's display link runs, and a frame is drawn only when
+/// it ticks, so each refresh shows what had changed up to the tick before it
+/// — never two frames in one refresh and none in the next, which a wheel
+/// turned at its own pace made of frames drawn as its events came, and
+/// which showed as scrolling that caught. The link is kept running
+/// `VSYNC_KEEP_MS` past the last frame, so the first frame after a pause is
+/// drawn at once, and the ones after it in step. A tick that never comes —
+/// the display asleep, the link lost — is given up on after `VSYNC_LOST_MS`
+/// and the frame drawn unpaced.
+let VSYNC_KEEP_MS = 250
+let VSYNC_LOST_MS = 100
+
+/// Whether a frame waits for the display's next tick: the link runs, the
+/// last tick's frame is drawn, and the link hasn't gone quiet.
+fn paced(run: Bool, due: Bool, at: Int, now: Int) -> Bool = run and not due and now - at < VSYNC_LOST_MS
+
+test "a frame is paced while the link ticks" {
+  assert_eq(paced(true, false, 1000, 1005), true)
+  assert_eq(paced(true, true, 1000, 1005), false)
+  assert_eq(paced(false, false, 1000, 1005), false)
+  assert_eq(paced(true, false, 1000, 1100), false)
+}
 
 /// The renderer sized for the font size, padding and line height in use, in
 /// pixels of the display the window is on.

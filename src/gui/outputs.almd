@@ -15,7 +15,14 @@ import self.terminal
 /// refresh leaves (`session.drain_ms`), the others briefly.
 effect fn read_all(mut a: session.Session) -> Unit = {
   a.streaming = false
-  let budget = session.drain_ms(window.refresh_rate())
+  // Paced by the display, a turn reads up to just before the next tick,
+  // and the tick's turn draws what came. Not shorter on the tick's turn:
+  // cut to 1 ms there, the loop read 1 ms in every 8, and a cat of 22 MB
+  // took 6 s instead of 0.4.
+  let refresh = window.refresh_rate()
+  let period = if refresh <= 0 then 16 else 1000000 / refresh
+  let now = sys.now_ms()
+  let budget = if a.vsync_run then int.clamp(a.vsync_at + period - 2 - now, 1, session.drain_ms(refresh)) else session.drain_ms(refresh)
   for i in 0..<list.len(a.tabs) {
     match tabset.take(a.tabs, i) {
       some(tb) => {

@@ -20,10 +20,22 @@ import self.sys
 import self.view
 import self.links
 
-/// Draw the tab in front if it changed and a frame is due.
+/// The display refreshed: the frame for it is drawn this turn.
+fn refreshed(mut a: session.Session) -> Unit = {
+  a.vsync_at = sys.now_ms()
+  a.vsync_due = true
+  if a.stats.trace then eprintln("vsync ${int.to_string(a.vsync_at)} late ${int.to_string(window.event_code())} refresh ${int.to_string(window.refresh_rate())}")
+}
+
+/// Draw the tab in front if it changed and a frame is due — at the
+/// display's tick while the link runs (see `session.paced`).
 fn draw_due(mut a: session.Session) -> Unit = {
   let clock = sys.now_ms()
-  if a.alive and a.ui.dirty and clock - a.last_frame >= session.FRAME_MS then {
+  let paced = session.paced(a.vsync_run, a.vsync_due, a.vsync_at, clock)
+  // Drawn or not, this tick's chance is taken: what changes after it waits
+  // for the next.
+  a.vsync_due = false
+  if a.alive and a.ui.dirty and not paced and clock - a.last_frame >= session.FRAME_MS then {
     retitle(a)
     groups.place_box(a)
     // With every tab still in the list: taken out, the tab in front would
@@ -75,7 +87,7 @@ fn draw(mut a: session.Session, mut cur: tabset.Tab, titles: List[String], clock
   // are the view's own, not the slide's: a slide is not the view moved.
   cur.seen = some({ ...drawn.of(a.r, cur.t, back, shift), back: cur.back, shift: cur.shift })
   groups.saw_others(a, cur.fd)
-  if a.stats.trace then eprintln("frame ${int.to_string(sys.now_ms())} view ${int.to_string(back)},${int.to_string(shift)} cursor ${int.to_string(cur.t.x)},${int.to_string(cur.t.y)} shown ${if cur.t.cursor_visible then "yes" else "no"}"
+  if a.stats.trace then eprintln("frame ${int.to_string(sys.now_ms())} took ${int.to_string(sys.now_ms() - t0)} view ${int.to_string(back)},${int.to_string(shift)} cursor ${int.to_string(cur.t.x)},${int.to_string(cur.t.y)} shown ${if cur.t.cursor_visible then "yes" else "no"}"
     + " preedit ${int.to_string(list.len(a.ui.preedit))} line ${view.text_of(cur.t, view.screen_line(cur.t) + cur.t.y)}")
   session.count_frame(a.stats, sys.now_ms() - t0)
   place_ime(a, cur, list.len(titles))

@@ -87,7 +87,7 @@ effect fn start(id: Int, capture: Option[String], faces: fonts.Faces, st: settin
       up: tabset.NO_UPDATES, name: "", alert: false, seen: none, slide: tabset.NO_SLIDE }],
     active: 0, groups: [layout.single(first_fd)], ui: fresh_ui(home), width: width, height: height,
     windowed: (int.to_float(width) / scale, int.to_float(height) / scale), font_size: st.font_size,
-    blink_at: -1, flash_until: -1, alive: true, last_frame: 0, streaming: false, resized_at: -1,
+    blink_at: -1, flash_until: -1, alive: true, last_frame: 0, streaming: false, vsync_run: false, vsync_at: -1, vsync_due: false, resized_at: -1,
     front: first_fd, window_title: "", stats: fresh_stats()!,
   }
   if capture != none then staged(a, id, login)!

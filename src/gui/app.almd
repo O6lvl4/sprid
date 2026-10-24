@@ -56,9 +56,13 @@ effect fn first_dir() -> String =
 /// menu bar.
 effect fn opened(st: settings.Settings) -> Unit = {
   window.set_ime(true)
-  // A key's echo shows as soon as it is drawn, not a display refresh or two
+  // Where the host paces frames to the display (see `session.paced`) a
+  // frame never queues behind another, and a swapchain that blocks the loop
+  // until the frame before is off the screen only holds up the reading
+  // between ticks — 6 ms of every 8 at 120 Hz. Where it can't, the short
+  // queue shows a key's echo as soon as it is drawn, not a refresh or two
   // later.
-  gpu.set_low_latency(true)
+  gpu.set_low_latency(not window.vsync(false))
   window.set_option_as_alt(st.option_as_alt)
   menubar.install(string.starts_with(env.get("LANG") ?? "", "ja"))!
 }

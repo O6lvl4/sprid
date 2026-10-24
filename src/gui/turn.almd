@@ -65,6 +65,7 @@ effect fn turn(mut wins: List[session.Session]) -> Unit = {
       none => (),
     }
   }
+  windows.pace(wins)
   windows.open_asked(wins)!
   keep_last(wins, quitting)!
   windows.close_ended(wins)
@@ -127,7 +128,7 @@ effect fn events(mut wins: List[session.Session]) -> Unit = {
 }
 
 /// Input `kind` to window session `a`.
-effect fn input(mut a: session.Session, kind: Int) -> Unit = {
+effect fn input(mut a: session.Session, kind: Int) -> Unit = if kind == window.VSYNC then paint.refreshed(a) else {
   // Typing shows the cursor at once and starts its blink over.
   if kind == window.KEY or kind == window.TEXT then {
     a.r.blink_off = false
