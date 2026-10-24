@@ -33,9 +33,13 @@ fn draw_due(mut a: session.Session) -> Unit = {
   let clock = sys.now_ms()
   let paced = session.paced(a.vsync_run, a.vsync_due, a.vsync_at, clock)
   // Drawn or not, this tick's chance is taken: what changes after it waits
-  // for the next.
+  // for the next. While the link runs the ticks are the pace, and the
+  // least gap between frames doesn't apply: a tick 2 ms after a frame drawn
+  // late for the tick before was passed over, and the wheel's next step
+  // showed a refresh late, twice as long.
   a.vsync_due = false
-  if a.alive and a.ui.dirty and not paced and clock - a.last_frame >= session.FRAME_MS then {
+  let spaced = a.vsync_run or clock - a.last_frame >= session.FRAME_MS
+  if a.alive and a.ui.dirty and not paced and spaced then {
     retitle(a)
     groups.place_box(a)
     // With every tab still in the list: taken out, the tab in front would
