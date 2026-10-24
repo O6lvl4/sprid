@@ -35,6 +35,18 @@ a synchronized update (mode 2026), or with the cursor hidden by a program
 that hides it while it draws, the frame waits for the rest, and the PTY is
 read through to it rather than 1 KB per turn of the loop.
 
+Frames keep step with the display, as Ghostty's do. While frames are being
+drawn snaidhm runs a display link (`window.vsync`), and a frame is drawn
+only at its tick, so every refresh shows what had changed up to the tick
+before it: scrolling moves the same distance every refresh, where frames
+drawn as wheel events came put two in one refresh and none in the next.
+snaidhm holds each tick until the moment the display gives the last frame's
+buffer back (measured, and adjusted frame by frame), so drawing never
+blocks the loop waiting for it; between ticks the loop reads output. The
+link stops a quarter second after the last frame, and the first frame after
+a pause is drawn at once. Where the host has no display link, frames are
+drawn as before.
+
 ## Config and themes
 
 The config is parsed into key/value entries (`src/config.almd`), read into
@@ -87,8 +99,10 @@ a median of 5 runs. Idle CPU is at the resolution of the measurement (one
 10 ms tick in 20 s): sampled, every sprid thread is asleep.
 
 For debugging: `SPRID_DEBUG=1` reports wakes and input-to-frame latency every
-2 s, `SPRID_TRACE=1` logs every read and frame, and
-`SPRID_AUTOSCROLL="dy,start ms,end ms,every ms"` turns the wheel by itself.
+2 s, `SPRID_TRACE=1` logs every read, tick and frame (`SNAIDHM_TRACE=1` adds
+the host's: each pump, each tick's hold, each frame's wait for its buffer),
+and `SPRID_AUTOSCROLL="dy,start ms,end ms,every ms"` turns the wheel by
+itself.
 
 ## Compiler workarounds
 

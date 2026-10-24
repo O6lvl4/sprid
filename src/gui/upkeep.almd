@@ -34,7 +34,11 @@ fn wait_for(mut a: session.Session) -> Int = {
   }
   let frame_wait = int.max(0, a.last_frame + session.FRAME_MS - now)
   let idle = if a.capture == none then -1 else 50
-  let drawn = if a.ui.dirty then int.max(frame_wait, tabset.sync_wait(a.tabs, a.active, now)) else idle
+  // A frame paced by the display waits for its tick, which wakes the loop
+  // by itself; the wait here only catches a link gone quiet.
+  let drawn = if not a.ui.dirty then idle
+    else if session.paced(a.vsync_run, a.vsync_due, a.vsync_at, now) then int.max(0, a.vsync_at + session.VSYNC_LOST_MS - now)
+    else int.max(frame_wait, tabset.sync_wait(a.tabs, a.active, now))
   let until = (at: Int) => if at < 0 then -1 else int.max(0, at - now)
   // Input a program hasn't taken yet (a big paste) is offered again soon.
   let write = if list.any(a.tabs, (tb) => pty.pending(tb.fd)) then session.WRITE_RETRY_MS else -1
