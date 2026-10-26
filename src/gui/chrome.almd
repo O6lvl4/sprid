@@ -105,6 +105,29 @@ fn draw_close(mut r: surface.Renderer, x1: Int, h: Int, baseline: Int, lit: Bool
 /// What a close button reads: "×".
 let CLOSE_MARK = 0xD7
 
+/// A title's caret glyph, which ends a title being typed.
+let CARET = 0x258F
+
+/// What of `title` is shown between `x0` and `x1`, and where it starts:
+/// centred with a cell and a half to spare on each side, cut to fit — from
+/// the front when it is being typed (it ends with its caret), so what is
+/// typed stays in view; from the end when `ends` tells the titles apart.
+fn title_layout(r: surface.Renderer, title: List[Int], ends: Bool, x0: Int, x1: Int) -> (List[Int], Int) = {
+  let room = x1 - x0 - 3 * r.cell_w
+  let typing = (list.last(title) ?? 0) == CARET
+  let shown = if typing then tabtitle.fit_tail(r.cell_w, title, room)
+    else if ends then tabtitle.fit_end(r.cell_w, title, room)
+    else tabtitle.fit(r.cell_w, title, room)
+  (shown, x0 + (x1 - x0 - tabtitle.span(r.cell_w, shown)) / 2)
+}
+
+/// Where the caret of a title being typed is drawn, pixels: for the input
+/// method's candidate window to sit under what is typed.
+fn title_caret(r: surface.Renderer, title: List[Int], x0: Int, x1: Int) -> Int = {
+  let (shown, start) = title_layout(r, title, true, x0, x1)
+  start + tabtitle.span(r.cell_w, shown) - tabtitle.cells_px(r.cell_w, CARET)
+}
+
 /// A fade from the bar's colour at `edge` to clear, two cells into the bar
 /// (`dir` 1 rightward, -1 leftward). How many quads.
 fn draw_fade(mut r: surface.Renderer, edge: Int, h: Int, dir: Int, sx: Float, sy: Float) -> Int = {
@@ -137,15 +160,8 @@ fn draw_tab_back(mut r: surface.Renderer, i: Int, active: Int, x0: Int, x1: Int,
 /// `ends`, where the titles are told apart by their ends
 /// (`tabtitle.keep_ends`). How many quads.
 fn draw_title(mut r: surface.Renderer, title: List[Int], ends: Bool, x0: Int, x1: Int, baseline: Int, color: Int, sx: Float, sy: Float) -> Int = {
-  let room = x1 - x0 - 3 * r.cell_w
-  // A title being typed ends with its caret: cut from the front, so what is
-  // typed stays in view.
-  let typing = (list.last(title) ?? 0) == 0x258F
-  let shown = if typing then tabtitle.fit_tail(r.cell_w, title, room)
-    else if ends then tabtitle.fit_end(r.cell_w, title, room)
-    else tabtitle.fit(r.cell_w, title, room)
-  let w = tabtitle.span(r.cell_w, shown)
-  var pen = x0 + (x1 - x0 - w) / 2
+  let (shown, start) = title_layout(r, title, ends, x0, x1)
+  var pen = start
   var n = 0
   for cp in shown {
     let slot = ink.glyph(r, cp, false)

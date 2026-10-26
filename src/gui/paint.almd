@@ -14,6 +14,7 @@ import self.gui.uistate
 import self.gui.findkeys
 import self.gui.session
 import self.gui.groups
+import self.gui.composition
 import self.field
 import self.pty
 import self.sys
@@ -84,7 +85,9 @@ fn draw(mut a: session.Session, mut cur: tabset.Tab, titles: List[String], clock
   // Where the view is drawn: sliding after output, when it is.
   let (back, shift) = tabset.view_pos(cur, clock, a.r.cell_h, a.st.scroll_animation)
   groups.slide_others(a, cur.fd, clock)
-  render.draw(a.r, cur.t, back, shift, cur.sel, uistate.compose_of(a.ui), a.width, a.height, titles, groups.current_of(a, cur.fd), (a.ui.hover_tab, a.ui.hover_close),
+  // A composition during a rename is in the tab's title, not at the cursor.
+  let compose = if a.ui.renaming then composition.no_compose() else uistate.compose_of(a.ui)
+  render.draw(a.r, cur.t, back, shift, cur.sel, compose, a.width, a.height, titles, groups.current_of(a, cur.fd), (a.ui.hover_tab, a.ui.hover_close),
     uistate.bar_of(a.ui), a.ui.link, groups.others(a, cur.fd))
   // What is on screen now, for the pointer to be read against until the
   // next frame: this pane's and the ones beside it. Its `back` and `shift`
@@ -103,14 +106,18 @@ fn draw(mut a: session.Session, mut cur: tabset.Tab, titles: List[String], clock
 }
 
 /// Tell the input method where it composes: the find bar while it has the
-/// focus, else at the input method's caret in the composition, so its
-/// candidates follow the typing. Told only when it moves: each time it is
-/// told, it lays out its candidate window again, which shows as a flicker
-/// while typing.
+/// focus, the tab's title while one is being renamed, else at the input
+/// method's caret in the composition, so its candidates follow the typing.
+/// Told only when it moves: each time it is told, it lays out its candidate
+/// window again, which shows as a flicker while typing.
 fn place_ime(mut a: session.Session, cur: tabset.Tab, tabs: Int) -> Unit = {
   let r = a.r
   let ui = a.ui
   let (ix, iy) = if ui.finding and ui.find_focus then render.find_caret(r, uistate.bar(ui), ui.preedit, tabs, a.width)
+    else if ui.renaming then {
+      let (x0, x1) = surface.tab_span(r, groups.current(a), a.width, tabs)
+      (render.title_caret(r, text.code_points(ui.draft + uistate.preedit_text(ui) + "▏"), x0, x1), 0)
+    }
     else (surface.grid_left(r) + render.compose_caret(uistate.compose_of(ui), cur.t.x, cur.t.cols) * r.cell_w, surface.grid_y(r) + cur.t.y * r.cell_h)
   if a.stats.trace and list.len(ui.preedit) > 0 then trace_compose(a, cur, ix, iy)
   if (ix, iy) != (ui.ime_x, ui.ime_y) then {
