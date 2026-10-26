@@ -91,6 +91,9 @@ fn bar_of(ui: Ui) -> Option[render.Bar] = if ui.finding then some(bar(ui)) else 
 fn compose_of(ui: Ui) -> render.Compose =
   render.Compose { cps: ui.preedit, caret: ui.preedit_caret, from: ui.preedit_from, to: ui.preedit_to }
 
+/// What the input method is composing, as text.
+fn preedit_text(ui: Ui) -> String = list.fold(ui.preedit, "", (acc, cp) => acc + string.from_codepoint(cp))
+
 /// End what belonged to the tab that was in front: its find bar and
 /// search, a rename, a drag or a press reported to its program.
 fn leave_tab(mut ui: Ui) -> Unit = {

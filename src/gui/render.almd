@@ -94,6 +94,9 @@ fn find_caret(r: surface.Renderer, b: findbar.Bar, preedit: List[Int], tabs: Int
 /// `back` lines and `shift` pixels.
 fn thumb(r: surface.Renderer, t: terminal.Terminal, back: Int, shift: Int) -> (Int, Int) = chrome.thumb(r, t, back, shift)
 
+/// Where a title's caret is drawn, pixels (see `chrome.title_caret`).
+fn title_caret(r: surface.Renderer, title: List[Int], x0: Int, x1: Int) -> Int = chrome.title_caret(r, title, x0, x1)
+
 /// Where the view is scrolled to, pixels back, with the thumb's top at `y`.
 fn scroll_pos_at(r: surface.Renderer, t: terminal.Terminal, y: Int) -> Int = chrome.scroll_pos_at(r, t, y)
 
