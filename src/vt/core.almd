@@ -183,11 +183,11 @@ fn with_scrollback(cols: Int, rows: Int, limit: Int) -> Terminal = {
     rows: rows,
     grid: bytes.repeat(blank, rows),
     top: 0,
-    wrapped: bytes.new(rows),
+    wrapped: bytes.zeros(rows),
     graphemes: [:],
     other_grid: bytes.repeat(blank, rows),
     other_top: 0,
-    other_wrapped: bytes.new(rows),
+    other_wrapped: bytes.zeros(rows),
     other_graphemes: [:],
     alt: false,
     x: 0,
@@ -245,14 +245,14 @@ fn with_scrollback(cols: Int, rows: Int, limit: Int) -> Terminal = {
     command_line: -1,
     sb: scrollback.new(limit),
     state: GROUND,
-    params: bytes.new(MAX_PARAMS * 4),
-    colons: bytes.new(MAX_PARAMS),
+    params: bytes.zeros(MAX_PARAMS * 4),
+    colons: bytes.zeros(MAX_PARAMS),
     n_params: 0,
     param: -1,
     colon: false,
     private: 0,
     intermediate: 0,
-    osc: bytes.new(0),
+    osc: bytes.zeros(0),
     utf8_need: 0,
     utf8_min: 0,
     utf8_cp: 0,
@@ -260,9 +260,9 @@ fn with_scrollback(cols: Int, rows: Int, limit: Int) -> Terminal = {
 }
 
 fn default_tabs(cols: Int) -> Bytes = {
-  var tabs = bytes.new(cols)
+  var tabs = bytes.zeros(cols)
   for x in 0..<cols {
-    if x > 0 and x % 8 == 0 then bytes.set_u8(tabs, x, 1)
+    if x > 0 and x % 8 == 0 then bytes.put_u8(tabs, x, 1)
   }
   tabs
 }
@@ -274,8 +274,8 @@ fn push_param(mut t: Terminal) -> Unit = {
     let at = t.n_params
     let value = t.param
     let colon = if t.colon then 1 else 0
-    bytes.set_i32_le(t.params, at * 4, value)
-    bytes.set_u8(t.colons, at, colon)
+    bytes.put_i32_le(t.params, at * 4, value)
+    bytes.put_u8(t.colons, at, colon)
     t.n_params = at + 1
   }
   t.param = -1
@@ -292,10 +292,10 @@ fn arg(t: Terminal, i: Int, default: Int) -> Int = {
 fn arg0(t: Terminal, i: Int) -> Int = int.max(param_at(t, i), 0)
 
 /// Parameter i as read (-1 when empty or missing).
-fn param_at(t: Terminal, i: Int) -> Int = if i >= 0 and i < t.n_params then bytes.read_i32_le(t.params, i * 4) else -1
+fn param_at(t: Terminal, i: Int) -> Int = if i >= 0 and i < t.n_params then bytes.get_i32_le(t.params, i * 4) ?? 0 else -1
 
 /// Whether parameter i was introduced by ':'.
-fn colon_at(t: Terminal, i: Int) -> Bool = i < t.n_params and bytes.read_u8(t.colons, i) == 1
+fn colon_at(t: Terminal, i: Int) -> Bool = i < t.n_params and bytes.get(t.colons, i) ?? 0 == 1
 
 fn reply(mut t: Terminal, s: String) -> Unit = { t.replies = t.replies + s }
 

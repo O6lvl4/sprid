@@ -99,7 +99,7 @@ effect fn split(mut a: session.Session, across: Bool) -> Unit = {
 /// Cmd+Plus stays quick.
 fn zoom(mut a: session.Session, step: Int) -> Unit = {
   let size = if step == 0 then a.st.font_size
-    else float.clamp(a.font_size + int.to_float(step), session.MIN_FONT_SIZE, session.MAX_FONT_SIZE)
+    else float.clamp(a.font_size + float.from(step), session.MIN_FONT_SIZE, session.MAX_FONT_SIZE)
   if size != a.font_size then {
     a.font_size = size
     a.r = session.sized(a)

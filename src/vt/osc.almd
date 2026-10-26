@@ -18,7 +18,7 @@ fn osc_dispatch(mut t: core.Terminal) -> Unit = {
   let s = bytes.to_string_lossy(t.osc)
   let (cmd, arg) = string.split_once(s, ";") ?? (s, "")
   if not screen_osc(t, cmd, arg) then outward_osc(t, cmd, arg)
-  if bytes.len(t.osc) > core.OSC_KEEP then t.osc = bytes.new(0) else bytes.clear(t.osc)
+  if bytes.len(t.osc) > core.OSC_KEEP then t.osc = bytes.zeros(0) else bytes.clear(t.osc)
 }
 
 /// What a program says of what it shows: the title, its directory, links,
@@ -99,11 +99,11 @@ fn link_id(mut t: core.Terminal, name: String, uri: String) -> Int = {
       let id = t.link_next
       t.link_next = if id >= cell.LINK_MAX then 1 else id + 1
       match map.get(t.links, id) {
-        some(old) => map.delete(t.link_ids, old.0 + "\n" + old.1),
+        some(old) => { t.link_ids = map.remove(t.link_ids, old.0 + "\n" + old.1) },
         none => (),
       }
-      map.insert(t.links, id, (name, uri))
-      map.insert(t.link_ids, key, id)
+      t.links = map.set(t.links, id, (name, uri))
+      t.link_ids = map.set(t.link_ids, key, id)
       id
     },
   }
@@ -212,12 +212,12 @@ fn file_url_path(url: String) -> String = {
     none => "",
   }
   let raw = bytes.from_string(path)
-  var out = bytes.new(0)
+  var out = bytes.zeros(0)
   var i = 0
   let n = bytes.len(raw)
   while i < n {
-    let b = bytes.read_u8(raw, i)
-    let hex = if b == 0x25 and i + 2 < n then int.from_hex(bytes.read_string_at(raw, i + 1, 2)) else err("")
+    let b = bytes.get(raw, i) ?? 0
+    let hex = if b == 0x25 and i + 2 < n then int.parse_radix(bytes.to_string_lossy(bytes.slice(raw, i + 1, i + 3)), 16) else err("")
     match hex {
       ok(v) => {
         bytes.push(out, v)

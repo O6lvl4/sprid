@@ -153,11 +153,11 @@ test "LF, IND and RI end the pending wrap" {
 
 test "erasing a line to its end ends its wrap" {
   var t = run(5, 4, "abcdefgh")
-  assert_eq(bytes.read_u8(t.wrapped, terminal.phys(t, 0)), 1)
+  assert_eq(bytes.get(t.wrapped, terminal.phys(t, 0)) ?? 0, 1)
   terminal.feed_string(t, "\x1b[1;1H\x1b[K")
-  assert_eq(bytes.read_u8(t.wrapped, terminal.phys(t, 0)), 0)
+  assert_eq(bytes.get(t.wrapped, terminal.phys(t, 0)) ?? 0, 0)
   var u = run(5, 4, "abcdefgh\x1b[1;3H\x1b[J")
-  assert_eq(bytes.read_u8(u.wrapped, terminal.phys(u, 0)), 0)
+  assert_eq(bytes.get(u.wrapped, terminal.phys(u, 0)) ?? 0, 0)
 }
 
 test "a resize under the alternate screen keeps the main screen's lines" {

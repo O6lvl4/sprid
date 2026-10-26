@@ -21,7 +21,7 @@ effect fn paste_ok(text: String, ja: Bool) -> Bool = {
   let lines = string.split(string.replace(string.trim_end(text), "\r\n", "\n"), "\n")
   let n = list.len(lines)
   let preview = lines |> list.take(3) |> list.map((l) => if string.len(l) > 60 then string.take(l, 60) + "…" else l)
-  let shown = string.join(preview, "\n") + (if n > 3 then "\n…" else "")
+  let shown = list.join(preview, "\n") + (if n > 3 then "\n…" else "")
   if ja then dialog.confirm("${int.to_string(n)} 行を貼り付けますか？", "改行を含むため、貼り付けると各行がコマンドとして実行されます。\n\n${shown}", "貼り付ける", "キャンセル")
   else dialog.confirm("uistate.Paste ${int.to_string(n)} line${if n > 1 then "s" else ""}?", "The text has line breaks: each line will run as a command as it is pasted.\n\n${shown}", "uistate.Paste", "Cancel")
 }

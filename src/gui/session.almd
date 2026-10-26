@@ -179,8 +179,8 @@ test "a frame is paced while the link ticks" {
 /// The renderer sized for the font size, padding and line height in use, in
 /// pixels of the display the window is on.
 fn sized(a: Session) -> render.Renderer =
-  render.with_size(a.r, float.to_int(float.round(a.font_size * a.scale)),
-    float.to_int(a.st.pad_x * a.scale), float.to_int(a.st.pad_y * a.scale), a.st.cell_height)
+  render.with_size(a.r, int.from_saturating(float.round(a.font_size * a.scale)),
+    int.from_saturating(a.st.pad_x * a.scale), int.from_saturating(a.st.pad_y * a.scale), a.st.cell_height)
 
 /// A frame drawn, taking `ms`.
 fn count_frame(mut s: Stats, ms: Int) -> Unit = {

@@ -94,8 +94,8 @@ effect fn reload(mut a: session.Session) -> Unit = {
 effect fn new_font(mut a: session.Session) -> Unit = match fonts.find(a.st.font_family)! {
   some(f) => {
     let st = a.st
-    a.r = { ...render.new(a.device, f, float.to_int(float.round(st.font_size * a.scale)),
-      float.to_int(st.pad_x * a.scale), float.to_int(st.pad_y * a.scale), st.cell_height), focused: a.r.focused }
+    a.r = { ...render.new(a.device, f, int.from_saturating(float.round(st.font_size * a.scale)),
+      int.from_saturating(st.pad_x * a.scale), int.from_saturating(st.pad_y * a.scale), st.cell_height), focused: a.r.focused }
   },
   none => (),
 }
@@ -125,7 +125,7 @@ fn resized(mut a: session.Session) -> Unit = {
     }
     a.width = window.width()
     a.height = window.height()
-    if not window.is_fullscreen() then a.windowed = (int.to_float(a.width) / a.scale, int.to_float(a.height) / a.scale)
+    if not window.is_fullscreen() then a.windowed = (float.from(a.width) / a.scale, float.from(a.height) / a.scale)
     groups.relayout_window(a)
     a.resized_at = sys.now_ms()
     a.ui.dirty = true
@@ -161,6 +161,6 @@ fn autoscroll(mut a: session.Session) -> Unit = {
       },
       none => (),
     }
-    a.stats.auto_next = if sys.now_ms() >= float.to_int(auto[2]) then -1 else next + float.to_int(auto[3])
+    a.stats.auto_next = if sys.now_ms() >= int.from_saturating(auto[2]) then -1 else next + int.from_saturating(auto[3])
   }
 }

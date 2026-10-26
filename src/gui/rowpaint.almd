@@ -45,11 +45,11 @@ fn draw_backgrounds(mut r: surface.Renderer, row: record.Row, line: Int, sel: Op
 /// quads it pushed.
 fn draw_cell(mut r: surface.Renderer, row: record.Row, x: Int, fg: Int, linked: Bool, top: Int, sx: Float, sy: Float) -> Int = {
   let o = x * cell.SIZE
-  let cp = bytes.read_u32_le(row.cells, o + cell.OFF_CP)
-  let attrs = int.bor(bytes.read_u16_le(row.cells, o + cell.OFF_ATTRS), if linked then cell.ATTR_UNDERLINE else 0)
+  let cp = bytes.get_u32_le(row.cells, o + cell.OFF_CP) ?? 0
+  let attrs = int.bor(bytes.get_u16_le(row.cells, o + cell.OFF_ATTRS) ?? 0, if linked then cell.ATTR_UNDERLINE else 0)
   let alpha = if int.band(attrs, cell.ATTR_FAINT) != 0 then 0.6 else 1.0
   let left = surface.grid_left(r) + x * r.cell_w
-  let w = r.cell_w * int.max(1, bytes.read_u8(row.cells, o + cell.OFF_WIDTH))
+  let w = r.cell_w * int.max(1, bytes.get(row.cells, o + cell.OFF_WIDTH) ?? 0)
   let shown = if int.band(attrs, cell.ATTR_HIDDEN) != 0 then 0
     else if sprite.is_sprite(cp) then draw_sprite(r, cp, left, top, fg, alpha, sx, sy)
     else if cp > 32 then draw_char(r, row, x, cp, int.band(attrs, cell.ATTR_BOLD) != 0, left, w, top, fg, alpha, sx, sy)
@@ -114,8 +114,8 @@ fn draw_lines(mut r: surface.Renderer, attrs: Int, left: Int, w: Int, top: Int, 
 /// The combining marks on cell `x` worth drawing (joiners and variation
 /// selectors only steer how the base is shown).
 fn marks(row: record.Row, x: Int) -> List[Int] =
-  if int.band(bytes.read_u8(row.cells, x * cell.SIZE + cell.OFF_FLAGS), cell.FLAG_GRAPHEME) == 0 then []
-  else text.code_points(map.get_or(row.extras, x, ""))
+  if int.band(bytes.get(row.cells, x * cell.SIZE + cell.OFF_FLAGS) ?? 0, cell.FLAG_GRAPHEME) == 0 then []
+  else text.code_points(map.get(row.extras, x) ?? "")
     |> list.filter((cp) => cp != 0x200D and (cp < 0xFE00 or cp > 0xFE0F))
 
 /// A row's find matches: their columns, and the current one's (`from` -1
@@ -128,9 +128,9 @@ type Lit = { spans: List[(Int, Int)], from: Int, to: Int, link_from: Int, link_t
 /// applied, and a find match's or the selection's colour over it.
 fn colors(r: surface.Renderer, row: record.Row, line: Int, x: Int, sel: Option[view.Selection], lit: Lit) -> (Int, Int) = {
   let o = x * cell.SIZE
-  let fg = surface.resolve(r, bytes.read_u32_le(row.cells, o + cell.OFF_FG), r.theme.fg)
-  let bg = surface.resolve(r, bytes.read_u32_le(row.cells, o + cell.OFF_BG), r.theme.bg)
-  let attrs = bytes.read_u16_le(row.cells, o + cell.OFF_ATTRS)
+  let fg = surface.resolve(r, bytes.get_u32_le(row.cells, o + cell.OFF_FG) ?? 0, r.theme.fg)
+  let bg = surface.resolve(r, bytes.get_u32_le(row.cells, o + cell.OFF_BG) ?? 0, r.theme.bg)
+  let attrs = bytes.get_u16_le(row.cells, o + cell.OFF_ATTRS) ?? 0
   let (f, b) = if int.band(attrs, cell.ATTR_INVERSE) != 0 then (bg, fg) else (fg, bg)
   let (f2, b2) = if int.band(attrs, cell.ATTR_HIDDEN) != 0 then (b, b) else (f, b)
   if x >= lit.from and x < lit.to then (r.theme.match_fg, r.theme.match_current)

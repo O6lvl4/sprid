@@ -44,7 +44,7 @@ fn with_block(limit: Int, block_size: Int) -> Scrollback = Scrollback {
   sealed: [],
   sealed_lines: [],
   sealed_bytes: 0,
-  cur: bytes.new(0),
+  cur: bytes.zeros(0),
   cur_len: 0,
   cur_lines: 0,
   evicted_lines: 0,
@@ -69,7 +69,7 @@ fn push(mut sb: Scrollback, record: Bytes) -> Unit = {
   } else {
     if sb.cur_len + n > bytes.len(sb.cur) then {
       seal(sb)
-      sb.cur = bytes.new(sb.block_size)
+      sb.cur = bytes.zeros(sb.block_size)
     }
     bytes.copy_from(sb.cur, record, sb.cur_len, 0, n)
     sb.cur_len = sb.cur_len + n
@@ -90,7 +90,7 @@ fn push_cells(mut sb: Scrollback, grid: Bytes, off: Int, cols: Int, wrapped: Boo
   else {
     if sb.cur_len + bound > bytes.len(sb.cur) then {
       seal(sb)
-      sb.cur = bytes.new(sb.block_size)
+      sb.cur = bytes.zeros(sb.block_size)
     }
     sb.cur_len = record.write(sb.cur, sb.cur_len, grid, off, used, wrapped, graphemes, base)
     sb.cur_lines = sb.cur_lines + 1
@@ -106,7 +106,7 @@ fn seal(mut sb: Scrollback) -> Unit = {
     sb.sealed_lines = sb.sealed_lines + [sb.cur_lines]
     sb.sealed_bytes = sb.sealed_bytes + sb.cur_len
   }
-  sb.cur = bytes.new(0)
+  sb.cur = bytes.zeros(0)
   sb.cur_len = 0
   sb.cur_lines = 0
 }
@@ -130,7 +130,7 @@ fn clear(mut sb: Scrollback) -> Unit = {
   sb.sealed = no_blocks
   sb.sealed_lines = no_counts
   sb.sealed_bytes = 0
-  sb.cur = bytes.new(0)
+  sb.cur = bytes.zeros(0)
   sb.cur_len = 0
   sb.cur_lines = 0
 }
@@ -150,7 +150,7 @@ fn block_texts(block: Bytes, len: Int) -> List[String] = {
   var out: List[String] = []
   var p = 0
   while p < len {
-    let n = bytes.read_u32_le(block, p)
+    let n = bytes.get_u32_le(block, p) ?? 0
     out = out + [record.text(block, p + 4, p + 4 + n)]
     p = p + 4 + n
   }
@@ -187,10 +187,10 @@ fn place(sb: Scrollback, i: Int) -> Option[(Int, Int, Int)] = {
   let (block, len) = if b < nb then (sb.sealed[b], bytes.len(sb.sealed[b])) else (sb.cur, sb.cur_len)
   var p = 0
   while rest > 0 and p < len {
-    p = p + 4 + bytes.read_u32_le(block, p)
+    p = p + 4 + bytes.get_u32_le(block, p) ?? 0
     rest = rest - 1
   }
-  some((b, p + 4, p + 4 + bytes.read_u32_le(block, p)))
+  some((b, p + 4, p + 4 + bytes.get_u32_le(block, p) ?? 0))
 }
 
 /// Every stored line, oldest first: its block and the record's payload
@@ -202,7 +202,7 @@ fn records(sb: Scrollback) -> List[(Bytes, Int, Int)] = {
     let (block, len) = if b < nb then (sb.sealed[b], bytes.len(sb.sealed[b])) else (sb.cur, sb.cur_len)
     var p = 0
     while p < len {
-      let n = bytes.read_u32_le(block, p)
+      let n = bytes.get_u32_le(block, p) ?? 0
       list.push(out, (block, p + 4, p + 4 + n))
       p = p + 4 + n
     }

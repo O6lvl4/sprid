@@ -64,7 +64,7 @@ effect fn save(wins: List[session.Session], tabs: Bool) -> Unit = {
   let file = path()!
   let parts = string.split(file, "/")
   let _ = fs.mkdir_p(list.take(parts, list.len(parts) - 1) |> list.join("/"))
-  let _ = fs.write(file, encode(shown))
+  let _ = fs.write_text(file, encode(shown))
 }
 
 /// The windows `kept` opened again: the first in `wins[0]`, which opened
@@ -123,7 +123,7 @@ effect fn fill(mut a: session.Session, tabs: List[KeptTab]) -> Unit = {
 fn frame_of(a: session.Session, tabs: Bool) -> Kept = {
   window.select(a.id)
   let kept_tabs = if not tabs then [] else list.map(a.groups, (g) => tab_of(a, g))
-  let (width, height) = if window.is_fullscreen() then a.windowed else (int.to_float(a.width) / a.scale, int.to_float(a.height) / a.scale)
+  let (width, height) = if window.is_fullscreen() then a.windowed else (float.from(a.width) / a.scale, float.from(a.height) / a.scale)
   Kept {
     x: window.x(), y: window.y(),
     width: width, height: height,

@@ -62,9 +62,9 @@ fn luma(c: Int) -> Int = (channel(c, 16) * 299 + channel(c, 8) * 587 + channel(c
 /// `a` moved toward `b` by `t` (0: a, 1: b).
 fn mix(a: Int, b: Int, t: Float) -> Int = {
   let m = (sh: Int) => {
-    let x = int.to_float(channel(a, sh))
-    let y = int.to_float(channel(b, sh))
-    float.to_int(float.round(x + (y - x) * t))
+    let x = float.from(channel(a, sh))
+    let y = float.from(channel(b, sh))
+    int.from_saturating(float.round(x + (y - x) * t))
   }
   m(16) * 65536 + m(8) * 256 + m(0)
 }

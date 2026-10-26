@@ -136,7 +136,7 @@ fn edited(f: field.Field, k: FieldKey, mods: Int) -> Option[field.Field] =
   else if k.key and k.code == window.KEY_DELETE then
     some(field.delete_to(f, if k.alt then field.word_edge(f, f.caret, 1) else f.caret + 1))
   else if k.text and int.band(mods, window.MOD_SUPER + window.MOD_CTRL) == 0 then
-    some(field.insert(f, string.from_codepoint(k.code)))
+    some(field.insert(f, string.from_codepoint(k.code) ?? ""))
   else none
 
 /// Left or right (`dir`): Cmd to the end, Option by word, Shift selecting.
@@ -208,7 +208,7 @@ fn rename_key(mut cur: tabset.Tab, mut ui: uistate.Ui, kind: Int, code: Int, mod
     ui.draft = string.take(ui.draft, int.max(0, string.len(ui.draft) - 1))
     ui.dirty = true
   } else if kind == window.TEXT and int.band(mods, window.MOD_SUPER + window.MOD_CTRL) == 0 then {
-    ui.draft = ui.draft + string.from_codepoint(code)
+    ui.draft = ui.draft + (string.from_codepoint(code) ?? "")
     ui.dirty = true
   } else ()
 }

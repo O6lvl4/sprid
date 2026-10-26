@@ -14,12 +14,13 @@ import self.pty
 import self.scrollback
 import self.sys
 import self.terminal
+import env
 
 let COLS = 100
 let ROWS = 30
 
 effect fn main() -> Unit = {
-  let args = process.args()
+  let args = ["sprid"] + env.args()
   match list.get(args, 1) ?? "" {
     "capture" => app.run(app.Options { command: none, cols: 0, rows: 0, capture: list.get(args, 2) })!,
     "run" => run(list.join(list.drop(args, 2), " "))!,
@@ -99,8 +100,8 @@ effect fn bench(mb: Int) -> Unit = {
     fed = fed + bytes.len(c)
     i = i + 1
     if fed >= next_report then {
-      let secs = int.to_float(int.max(sys.now_ms() - start, 1)) / 1000.0
-      println("${pad(int.to_string(fed / 1000000), 6)}   ${pad(mib(sys.footprint()), 9)}   ${pad(mib(scrollback.bytes_used(t.sb)), 10)}   ${pad(int.to_string(scrollback.line_count(t.sb)), 10)}   ${float.to_string(int.to_float(fed / 100000) / 10.0 / secs)}")
+      let secs = float.from(int.max(sys.now_ms() - start, 1)) / 1000.0
+      println("${pad(int.to_string(fed / 1000000), 6)}   ${pad(mib(sys.footprint()), 9)}   ${pad(mib(scrollback.bytes_used(t.sb)), 10)}   ${pad(int.to_string(scrollback.line_count(t.sb)), 10)}   ${float.to_string(float.from(fed / 100000) / 10.0 / secs)}")
       next_report = next_report + mb * 1000000 / 8
     }
   }

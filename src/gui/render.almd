@@ -142,8 +142,8 @@ fn draw(mut r: surface.Renderer, t: terminal.Terminal, back: Int, shift: Int, se
     + list.len(f.bar) * 3 + findbar.FIND_QUADS + 1 + list.len(shown_hint) + hint.HINT_QUADS + other_frames.2 + 2)
 
   // Pass 2: the quads.
-  let sx = 2.0 / int.to_float(width)
-  let sy = 2.0 / int.to_float(height)
+  let sx = 2.0 / float.from(width)
+  let sy = 2.0 / float.from(height)
   r.missed = false
   r.pushing = true
   gpu.begin_data()

@@ -75,9 +75,9 @@ fn put(mut t: core.Terminal, x: Int, cp: Int, w: Int) -> Unit = {
 fn write_cell(mut t: core.Terminal, o: Int, cp: Int, w: Int) -> Unit = {
   let colors = int.bor(t.fg, int.bshl(t.bg, 32))
   let tail = int.bor(t.attrs, int.bshl(w, 16))
-  bytes.set_u32_le(t.grid, o + cell.OFF_CP, cp)
-  bytes.set_i64_le(t.grid, o + cell.OFF_FG, colors)
-  bytes.set_u32_le(t.grid, o + cell.OFF_ATTRS, tail)
+  bytes.put_u32_le(t.grid, o + cell.OFF_CP, cp)
+  bytes.put_i64_le(t.grid, o + cell.OFF_FG, colors)
+  bytes.put_u32_le(t.grid, o + cell.OFF_ATTRS, tail)
 }
 
 /// A zero-width codepoint joins the cell printed last.
@@ -85,12 +85,12 @@ fn attach(mut t: core.Terminal, cp: Int) -> Unit = {
   if t.last_x >= 0 and t.last_y == t.y then {
     let o = screen.cell_off(t, t.last_x, t.last_y)
     let i = screen.cell_index(t, t.last_x, t.last_y)
-    let flags = bytes.read_u8(t.grid, o + cell.OFF_FLAGS)
-    let prev = if int.band(flags, cell.FLAG_GRAPHEME) != 0 then map.get_or(t.graphemes, i, "") else ""
+    let flags = bytes.get(t.grid, o + cell.OFF_FLAGS) ?? 0
+    let prev = if int.band(flags, cell.FLAG_GRAPHEME) != 0 then map.get(t.graphemes, i) ?? "" else ""
     // Bound what one cell can collect; past this the marks are dropped.
     if string.len(prev) < 32 then {
-      map.insert(t.graphemes, i, prev + string.from_codepoint(cp))
-      bytes.set_u8(t.grid, o + cell.OFF_FLAGS, int.bor(flags, cell.FLAG_GRAPHEME))
+      t.graphemes = map.set(t.graphemes, i, prev + (string.from_codepoint(cp) ?? ""))
+      bytes.put_u8(t.grid, o + cell.OFF_FLAGS, int.bor(flags, cell.FLAG_GRAPHEME))
     }
   }
 }
@@ -132,12 +132,12 @@ fn print_ascii_run(mut t: core.Terminal, data: Bytes, i: Int, n: Int) -> Int = {
     // The row's last column is left to `print_ascii`, which owns the
     // pending-wrap state.
     while go and j < n and x < t.cols - 1 {
-      let b = bytes.read_u8(data, j)
+      let b = bytes.get(data, j) ?? 0
       // Stop at anything else, and at a wide char's half (`put` splits it).
-      if b >= 0x20 and b < 0x7F and bytes.read_u8(t.grid, o + cell.OFF_WIDTH) == 1 then {
-        bytes.set_u32_le(t.grid, o + cell.OFF_CP, b)
-        bytes.set_i64_le(t.grid, o + cell.OFF_FG, colors)
-        bytes.set_u32_le(t.grid, o + cell.OFF_ATTRS, tail)
+      if b >= 0x20 and b < 0x7F and bytes.get(t.grid, o + cell.OFF_WIDTH) ?? 0 == 1 then {
+        bytes.put_u32_le(t.grid, o + cell.OFF_CP, b)
+        bytes.put_i64_le(t.grid, o + cell.OFF_FG, colors)
+        bytes.put_u32_le(t.grid, o + cell.OFF_ATTRS, tail)
         o = o + cell.SIZE
         x = x + 1
         j = j + 1
@@ -146,7 +146,7 @@ fn print_ascii_run(mut t: core.Terminal, data: Bytes, i: Int, n: Int) -> Int = {
     if j > i then {
       t.x = x
       t.last_x = x - 1
-      t.last_cp = bytes.read_u8(data, j - 1)
+      t.last_cp = bytes.get(data, j - 1) ?? 0
     }
     j
   }
@@ -165,7 +165,7 @@ fn print_ascii(mut t: core.Terminal, b: Int) -> Unit = {
   }
   let o = screen.cell_off(t, t.x, t.y)
   // Only a wide char's half needs more than overwriting the cell.
-  if bytes.read_u8(t.grid, o + cell.OFF_WIDTH) != 1 then put(t, t.x, b, 1)
+  if (bytes.get(t.grid, o + cell.OFF_WIDTH) ?? 0) != 1 then put(t, t.x, b, 1)
   else write_cell(t, o, b, 1)
   t.last_x = t.x
   t.last_y = t.y

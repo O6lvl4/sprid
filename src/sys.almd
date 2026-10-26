@@ -61,18 +61,18 @@ fn watch_changed(fd: Int) -> Bool = _
 
 test "a watched file's save is seen" {
   let path = "/tmp/sprid-watch-test-${int.to_string(now_ms())}"
-  let _ = fs.write(path, "a = 1\n")
+  let _ = fs.write_text(path, "a = 1\n")
   let fd = watch(path)
   assert_eq(fd >= 0, true)
   assert_eq(watch_changed(fd), false)
-  let _ = fs.write(path, "a = 2\n")
+  let _ = fs.write_text(path, "a = 2\n")
   assert_eq(watch_changed(fd), true)
   assert_eq(watch_changed(fd), false)
   // Saved the way most editors do: a new file renamed over the old.
-  let _ = fs.write(path + ".new", "a = 3\n")
+  let _ = fs.write_text(path + ".new", "a = 3\n")
   let _ = fs.rename(path + ".new", path)
   assert_eq(watch_changed(fd), true)
-  let _ = fs.write(path, "a = 4\n")
+  let _ = fs.write_text(path, "a = 4\n")
   assert_eq(watch_changed(fd), true)
   let _ = fs.remove(path)
 }

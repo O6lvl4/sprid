@@ -144,7 +144,7 @@ fn scroll_or_tab(mut t: core.Terminal, final: Int) -> Unit = match final {
   0x5A => screen.tab_backward(t, core.arg(t, 0, 1)),                             // Z CBT
   _ => {                                                                          // g TBC
     let mode = core.arg0(t, 0)
-    if mode == 0 then bytes.set_u8(t.tabs, t.x, 0)
+    if mode == 0 then bytes.put_u8(t.tabs, t.x, 0)
     else if mode == 3 then bytes.fill(t.tabs, 0)
   },
 }

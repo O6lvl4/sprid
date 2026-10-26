@@ -53,8 +53,8 @@ fn spots_of(t: terminal.Terminal, l0: Int, l1: Int) -> List[Spot] = {
       some(row) => {
         for x in 0..<t.cols {
           let o = x * cell.SIZE
-          if bytes.read_u8(row.cells, o + cell.OFF_WIDTH) != 0 then
-            list.push(out, Spot { cp: bytes.read_u32_le(row.cells, o + cell.OFF_CP), line: n, col: x, link: cell.link_at(row.cells, o) })
+          if (bytes.get(row.cells, o + cell.OFF_WIDTH) ?? 0) != 0 then
+            list.push(out, Spot { cp: bytes.get_u32_le(row.cells, o + cell.OFF_CP) ?? 0, line: n, col: x, link: cell.link_at(row.cells, o) })
         }
       },
       none => (),
@@ -82,7 +82,7 @@ fn token_at(spots: List[Spot], i: Int) -> Option[(Int, Int)] =
 /// Whether `cp` can be part of a link: anything but blanks, quotes,
 /// brackets that commonly enclose one, and the box drawing around it.
 fn in_link(cp: Int) -> Bool =
-  cp > 32 and cp != 0x7F and not string.contains("\"'`<>{}|^", string.from_codepoint(cp))
+  cp > 32 and cp != 0x7F and not string.contains("\"'`<>{}|^", string.from_codepoint(cp) ?? "")
     and not (cp >= 0x2500 and cp <= 0x257F) and cp != 0x3000
 
 /// What spots `a`..`b` name around spot `i`: a URL — which may hold
@@ -100,7 +100,7 @@ fn classify(spots: List[Spot], a: Int, b: Int, i: Int) -> Option[Link] =
 fn after_open(spots: List[Spot], a: Int, i: Int) -> Int = {
   var start = a
   for k in a..<i {
-    if string.contains("([", string.from_codepoint(spots[k].cp)) then start = k + 1
+    if string.contains("([", string.from_codepoint(spots[k].cp) ?? "") then start = k + 1
   }
   start
 }
@@ -118,12 +118,12 @@ fn named(spots: List[Spot], a1: Int, b: Int) -> Option[Link] = {
 }
 
 fn text_of(spots: List[Spot], a: Int, b: Int) -> String =
-  list.slice(spots, a, b + 1) |> list.map((s) => string.from_codepoint(s.cp)) |> list.join("")
+  list.slice(spots, a, b + 1) |> list.map((s) => string.from_codepoint(s.cp) ?? "") |> list.join("")
 
 /// Past an opening bracket the link starts after.
 fn skip_open(spots: List[Spot], a: Int, b: Int) -> Int = {
   var i = a
-  while i < b and string.contains("([", string.from_codepoint(spots[i].cp)) {
+  while i < b and string.contains("([", string.from_codepoint(spots[i].cp) ?? "") {
     i = i + 1
   }
   i
@@ -135,7 +135,7 @@ fn trim_end(spots: List[Spot], a: Int, b: Int) -> Int = {
   var e = b
   var going = true
   while going and e >= a {
-    let ch = string.from_codepoint(spots[e].cp)
+    let ch = string.from_codepoint(spots[e].cp) ?? ""
     let opens = if ch == ")" then "(" else if ch == "]" then "[" else ""
     let unmatched = opens != "" and count(spots, a, e, opens) < count(spots, a, e, ch)
     if string.contains(".,;:!?", ch) or unmatched then e = e - 1 else going = false
@@ -144,7 +144,7 @@ fn trim_end(spots: List[Spot], a: Int, b: Int) -> Int = {
 }
 
 fn count(spots: List[Spot], a: Int, b: Int, ch: String) -> Int =
-  list.slice(spots, a, b + 1) |> list.filter((s) => string.from_codepoint(s.cp) == ch) |> list.len
+  list.slice(spots, a, b + 1) |> list.filter((s) => (string.from_codepoint(s.cp) ?? "") == ch) |> list.len
 
 /// The schemes taken as URLs.
 let SCHEMES = ["https://", "http://", "file://", "ftp://", "mailto:", "ssh://", "git://"]

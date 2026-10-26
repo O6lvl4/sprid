@@ -13,9 +13,9 @@ fn of(s: String) -> Field = {
   Field { chars: cps, caret: list.len(cps), anchor: list.len(cps) }
 }
 
-fn code_points(s: String) -> List[Int] = list.map(string.chars(s), (ch) => string.codepoint(ch) ?? 32)
+fn code_points(s: String) -> List[Int] = list.map(string.to_list(s), (ch) => string.to_codepoint(ch) ?? 32)
 
-fn text(f: Field) -> String = string.join(list.map(f.chars, (cp) => string.from_codepoint(cp)), "")
+fn text(f: Field) -> String = list.join(list.map(f.chars, (cp) => string.from_codepoint(cp) ?? ""), "")
 
 /// The selection as (start, end), start <= end.
 fn range(f: Field) -> (Int, Int) = (int.min(f.caret, f.anchor), int.max(f.caret, f.anchor))
@@ -24,7 +24,7 @@ fn has_selection(f: Field) -> Bool = f.caret != f.anchor
 
 fn selected(f: Field) -> String = {
   let (a, b) = range(f)
-  string.join(list.map(list.slice(f.chars, a, b), (cp) => string.from_codepoint(cp)), "")
+  list.join(list.map(list.slice(f.chars, a, b), (cp) => string.from_codepoint(cp) ?? ""), "")
 }
 
 fn select_all(f: Field) -> Field = { ...f, anchor: 0, caret: list.len(f.chars) }

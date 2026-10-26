@@ -146,14 +146,14 @@ fn new(device: Int, faces: fonts.Faces, size_px: Int, pad_x: Int, pad_y: Int, ce
 /// layer, its fonts and its atlas stay — glyphs are cached by size, so going
 /// back to a size finds them still there.
 fn with_size(r: Renderer, size_px: Int, pad_x: Int, pad_y: Int, cell_height: Float) -> Renderer = {
-  let size = int.to_float(size_px)
+  let size = float.from(size_px)
   let grid = r.layer.fonts[0]
-  let cell_w = int.max(1, float.to_int(float.round(text.advance_px(r.layer, 0, sfnt.glyph_id(grid, 0x4D), size))))
+  let cell_w = int.max(1, int.from_saturating(float.round(text.advance_px(r.layer, 0, sfnt.glyph_id(grid, 0x4D), size))))
   let ascent = text.ascent(r.layer, size)
   let natural = ascent + text.descent(r.layer, size)
-  let cell_h = int.max(1, float.to_int(float.ceil(natural * cell_height)))
+  let cell_h = int.max(1, int.from_saturating(float.ceil(natural * cell_height)))
   // Extra line height goes half above, half below.
-  let baseline = float.to_int(float.round(ascent + (int.to_float(cell_h) - natural) / 2.0))
+  let baseline = int.from_saturating(float.round(ascent + (float.from(cell_h) - natural) / 2.0))
   let glyphs: Map[Int, Int] = [:]
   let emojis: Map[Int, Int] = [:]
   let sprites: Map[Int, List[sprite.Piece]] = [:]
@@ -162,7 +162,7 @@ fn with_size(r: Renderer, size_px: Int, pad_x: Int, pad_y: Int, cell_height: Flo
     size_px: size_px,
     cell_w: cell_w,
     cell_h: cell_h,
-    font_h: int.max(1, float.to_int(float.ceil(natural))),
+    font_h: int.max(1, int.from_saturating(float.ceil(natural))),
     baseline: baseline,
     pad_x: pad_x,
     pad_y: pad_y,
@@ -178,11 +178,11 @@ fn with_size(r: Renderer, size_px: Int, pad_x: Int, pad_y: Int, cell_height: Flo
 /// opens.
 fn cell_size(faces: fonts.Faces, size_px: Int, cell_height: Float) -> (Int, Int) = {
   let f = faces.regular
-  let size = int.to_float(size_px)
-  let upem = int.to_float(f.units_per_em)
-  let w = int.max(1, float.to_int(float.round(int.to_float(sfnt.advance(f, sfnt.glyph_id(f, 0x4D))) * size / upem)))
-  let natural = (int.to_float(f.ascent) - int.to_float(f.descent)) * size / upem
-  (w, int.max(1, float.to_int(float.ceil(natural * cell_height))))
+  let size = float.from(size_px)
+  let upem = float.from(f.units_per_em)
+  let w = int.max(1, int.from_saturating(float.round(float.from(sfnt.advance(f, sfnt.glyph_id(f, 0x4D))) * size / upem)))
+  let natural = (float.from(f.ascent) - float.from(f.descent)) * size / upem
+  (w, int.max(1, int.from_saturating(float.ceil(natural * cell_height))))
 }
 
 /// Columns and rows that fit a `width` x `height` drawable with `tabs` tabs
@@ -273,7 +273,7 @@ fn resolve(r: Renderer, color: Int, fallback: Int) -> Int = {
 }
 
 fn rgb_floats(rgb: Int) -> (Float, Float, Float) = (
-  int.to_float(int.band(int.bshr(rgb, 16), 0xFF)) / 255.0,
-  int.to_float(int.band(int.bshr(rgb, 8), 0xFF)) / 255.0,
-  int.to_float(int.band(rgb, 0xFF)) / 255.0,
+  float.from(int.band(int.bshr(rgb, 16), 0xFF)) / 255.0,
+  float.from(int.band(int.bshr(rgb, 8), 0xFF)) / 255.0,
+  float.from(int.band(rgb, 0xFF)) / 255.0,
 )

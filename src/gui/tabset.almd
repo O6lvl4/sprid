@@ -341,7 +341,7 @@ fn drain(mut tb: Tab, budget_ms: Int, front: Bool) -> (Bool, Bool) = {
     let gap = if not front then 0 else if hold_left(tb, now) > 0 then MID_UPDATE_GAP_MS else 1
     data = if now < until then pty.read(tb.fd, int.min(gap, until - now)) else {
       more = true
-      bytes.new(0)
+      bytes.zeros(0)
     }
   }
   // What came after a resize is the program drawing itself at the new size.

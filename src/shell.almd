@@ -69,7 +69,7 @@ effect fn write_if_changed(path: String, text: String) -> Bool = {
       ok(_) => true,
       err(_) => false,
     }
-    made and (match fs.write(path, text) {
+    made and (match fs.write_text(path, text) {
       ok(_) => true,
       err(_) => false,
     })

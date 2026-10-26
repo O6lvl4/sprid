@@ -151,12 +151,12 @@ effect fn input(mut a: session.Session, kind: Int) -> Unit = if kind == window.V
 /// iTerm2. Whether it was taken.
 fn tab_wheel(mut a: session.Session, kind: Int) -> Bool = {
   let open = groups.count(a)
-  let on_bar = open > 1 and float.to_int(window.event_y() * a.scale) < render.bar_height(a.r)
+  let on_bar = open > 1 and int.from_saturating(window.event_y() * a.scale) < render.bar_height(a.r)
   let shift = int.band(window.event_mods(), window.MOD_SHIFT) != 0
   let delta = window.event_dx() + (if shift then window.event_dy() else 0.0)
   if kind == window.WHEEL and on_bar and not render.tabs_fit(a.r, a.width, open) and delta != 0.0 then {
     let before = a.r.tab_scroll
-    render.scroll_tabs(a.r, float.to_int(delta * a.scale), a.width, open)
+    render.scroll_tabs(a.r, int.from_saturating(delta * a.scale), a.width, open)
     if a.r.tab_scroll != before then { a.ui.dirty = true }
     true
   } else false
@@ -171,7 +171,7 @@ effect fn event(mut a: session.Session, kind: Int) -> uistate.Act = {
   // A press on another pane of the tab gives it the keys; the wheel
   // scrolls the pane under the pointer, wherever the keys go.
   let pointed = kind == window.MOUSE_DOWN or kind == window.WHEEL
-  let under = if pointed then groups.pane_at(a, float.to_int(window.event_x() * a.scale), float.to_int(window.event_y() * a.scale)) else none
+  let under = if pointed then groups.pane_at(a, int.from_saturating(window.event_x() * a.scale), int.from_saturating(window.event_y() * a.scale)) else none
   if kind == window.MOUSE_DOWN then match under {
     some(fd) => groups.focus(a, fd),
     none => (),

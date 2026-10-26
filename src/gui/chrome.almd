@@ -135,7 +135,7 @@ fn draw_fade(mut r: surface.Renderer, edge: Int, h: Int, dir: Int, sx: Float, sy
   for k in 0..<FADE_STEPS {
     let a = edge + dir * k * step
     let b = a + dir * step
-    let alpha = int.to_float(FADE_STEPS - k) / int.to_float(FADE_STEPS + 1)
+    let alpha = float.from(FADE_STEPS - k) / float.from(FADE_STEPS + 1)
     ink.rect(r, int.min(a, b), 0, int.max(a, b), h, r.theme.tab_bar, alpha, sx, sy)
   }
   FADE_STEPS

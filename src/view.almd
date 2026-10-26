@@ -30,7 +30,7 @@ fn line_at(t: terminal.Terminal, n: Int) -> Option[record.Row] = {
     some(record.Row {
       cells: bytes.slice(t.grid, off, off + t.cols * cell.SIZE),
       extras: terminal.row_extras(t, y),
-      wrapped: bytes.read_u8(t.wrapped, terminal.phys(t, y)) == 1,
+      wrapped: bytes.get(t.wrapped, terminal.phys(t, y)) ?? 0 == 1,
     })
   } else none
 }
@@ -204,8 +204,8 @@ fn wraps_into(t: terminal.Terminal, n: Int) -> Bool = wraps(t, n - 1)
 /// wide character counting as the character.
 fn kind_at(row: record.Row, x: Int) -> Int = {
   let o = x * cell.SIZE
-  let tail = x > 0 and bytes.read_u8(row.cells, o + cell.OFF_WIDTH) == 0
-  kind_of(bytes.read_u32_le(row.cells, if tail then o - cell.SIZE + cell.OFF_CP else o + cell.OFF_CP))
+  let tail = x > 0 and bytes.get(row.cells, o + cell.OFF_WIDTH) ?? 0 == 0
+  kind_of(bytes.get_u32_le(row.cells, if tail then o - cell.SIZE + cell.OFF_CP else o + cell.OFF_CP) ?? 0)
 }
 
 /// Characters of one kind make one word: blanks (0); letters, digits and
@@ -215,7 +215,7 @@ fn kind_at(row: record.Row, x: Int) -> Int = {
 /// any other symbol (5), each kind apart from the others.
 fn kind_of(cp: Int) -> Int =
   if cp <= 32 or cp == 0x3000 then 0
-  else if cp < 0x80 then (if string.contains(WORD_ASCII, string.from_codepoint(cp)) then 1 else 5)
+  else if cp < 0x80 then (if string.contains(WORD_ASCII, string.from_codepoint(cp) ?? "") then 1 else 5)
   else list.find(KIND_RANGES, (r) => cp >= r.0 and cp <= r.1) |> option.map((r) => r.2) ?? 1
 
 /// The ASCII that words, paths, URLs and options are made of.

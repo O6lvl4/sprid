@@ -9,3 +9,8 @@ snaidhm = { git = "https://github.com/almide-graphics/snaidhm.git" }
 [native-deps]
 libc = "0.2"
 png = "0.17"
+
+# Dialect epoch 15 (#4093): a git dependency outside github.com/almide is fetched only
+# from an owner the root manifest trusts.
+[trust]
+owners = ["github.com/almide-graphics"]
