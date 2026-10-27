@@ -89,16 +89,20 @@ before closing a busy tab or pasting line breaks, are macOS only for now.
   front and under the pointer), drag to reorder — or out of the tab bar for
   a window of their own. A tab is titled by its directory, or by what the program in it
   says of itself while it runs (Claude Code, ssh); the window takes the
-  title of the tab in front. Closing a tab,
-  the window or the app asks first while a program is running.
+  title of the tab in front. Closing a tab or a window asks first while a
+  program is running; so does the app, when its tabs won't come back.
+  Rename a tab by a double click or from the right-click menu.
 - **Split panes**: split a tab across or down, again and again; move
   between panes by keys or a click, drag a divider or move it by keys, zoom
   a pane to fill the tab for a while, and make them equal again. The panes
   beside the one in front are dimmed.
 - **Windows**: all in one app (one Dock icon), with a full menu bar on
-  macOS. They reopen where they were; their tabs — split as they were —
-  come back too when the system keeps windows on quitting, or with
-  `window-save-state = always`.
+  macOS. Closing the app — quitting, or the last window's close button —
+  keeps them as they are: they reopen where they were, with their tabs
+  split as they were, each in its directory with its name, and a tab that
+  ran Claude Code runs it again on the same session (`claude --resume`).
+  They are kept every few seconds while sprid runs, so a restart or a
+  power cut finds them too. Closing a tab is what ends it.
 - **Resize**: lines are rewrapped at the new width, scrollback included.
 
 ### Keys
@@ -159,7 +163,7 @@ macos-option-as-alt = left      # true, false, left, right
 | `clipboard-paste-protection` | `true` — ask before pasting line breaks |
 | `copy-on-select` | `true` — a selection becomes the PRIMARY selection (Linux); `clipboard` copies it too; `false` |
 | `shell-integration` | `detect` — or `none` to start the shell as it is |
-| `window-save-state` | `default` — tabs come back as the system's setting says; `always`, `never` |
+| `window-save-state` | `always` — tabs come back; `default` as the system's setting says; `never` |
 
 Themes built in: Tokyo Night Storm, Almide Light, Almide Dark, Catppuccin
 Mocha, Catppuccin Latte, Dracula, Solarized Dark, Solarized Light. Any other
