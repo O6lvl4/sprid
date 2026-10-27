@@ -30,6 +30,7 @@ import self.gui.findbar
 import self.gui.hint
 import self.gui.grid
 import self.gui.beside
+import self.gui.fonts
 
 /// The renderer (its fields: surface.almd).
 type Renderer = surface.Renderer
