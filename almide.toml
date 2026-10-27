@@ -14,3 +14,8 @@ png = "0.17"
 # from an owner the root manifest trusts.
 [trust]
 owners = ["github.com/almide-graphics"]
+
+# Dialect epoch 15 (#4093): a dependency that brings native code is built only when
+# the root manifest grants it by name.
+[permissions]
+native = ["snaidhm"]
