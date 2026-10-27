@@ -47,8 +47,11 @@ fn wait_for(mut a: session.Session) -> Int = {
   // out): no wait at all. Woken by the PTY instead, the loop came back 13
   // to 20 ms later on macOS, and a tab streaming output drew a frame every
   // 25 ms with half the time asleep.
+  // A keep of the windows waiting (restore.keep_running) wakes the loop
+  // once more, so the last change is kept with nothing after it.
+  let keep = if a.stats.keep_due then until(a.stats.kept_at + session.KEEP_MS) else -1
   if a.streaming then 0
-  else list.fold([until(settle), until(a.stats.auto_next), write, until(a.blink_at), until(a.flash_until), until(a.stats.quit_at)], drawn,
+  else list.fold([until(settle), until(a.stats.auto_next), write, until(a.blink_at), until(a.flash_until), until(a.stats.quit_at), keep], drawn,
     (acc, w) => session.sooner(acc, w))
 }
 

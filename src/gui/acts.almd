@@ -143,8 +143,12 @@ effect fn menu(mut a: session.Session) -> Unit = {
   let has_sel = (front |> option.flat_map((tb) => tb.sel)) != none
   // The output of the command the pointer is on, as the shell marks it.
   let output = front |> option.flat_map((tb) => prompts.output_at(tb.t, pointer.pointer_line(a.r, tb, a.scale, groups.count(a))))
-  let names = if a.ja then ["コピー", "貼り付け", "-", "すべてを選択", "コマンドの出力を選択", "検索", "クリア"]
-    else ["Copy", "Paste", "-", "Select All", "Select Command Output", "Find", "Clear"]
+  // Renaming is here too, not only a double click on the tab: a double
+  // click counts by when its presses are handled, and with the machine
+  // short of memory the frame drawn between them can take long enough that
+  // they no longer count as one.
+  let names = if a.ja then ["コピー", "貼り付け", "-", "すべてを選択", "コマンドの出力を選択", "検索", "クリア", "-", "タブ名を変更"]
+    else ["Copy", "Paste", "-", "Select All", "Select Command Output", "Find", "Clear", "-", "Rename Tab"]
   let off = (i: Int) => (i == 0 and not has_sel) or (i == 4 and output == none)
   let items = list.enumerate(names) |> list.map(((i, n)) => if off(i) then "!" + n else n)
   let picked = dialog.context_menu(list.join(items, "\n"))
@@ -163,6 +167,10 @@ effect fn menu_pick(mut a: session.Session, picked: Int, output: Option[(Int, In
     else if picked == 4 then shortcuts.select_lines(cur, output)
     else if picked == 5 then shortcuts.open_find(cur, a.ui)
     else if picked == 6 then shortcuts.clear(cur, a.ui)
+    else if picked == 8 then {
+      a.ui.renaming = true
+      a.ui.draft = tabset.title_of(cur, a.ui.home)
+    }
     a.ui.dirty = true
     list.push(a.tabs, cur)
     a.tabs = list.swap(a.tabs, a.active, list.len(a.tabs) - 1)

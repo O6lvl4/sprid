@@ -43,8 +43,8 @@ type Settings = {
   copy_on_select: String,
   // Load sprid's shell integration into zsh, bash and fish.
   shell_integration: Bool,
-  // Whether quitting keeps the windows' tabs to open again: "default" as
-  // the system does, "always", "never".
+  // Whether closing the app keeps the windows' tabs to open again:
+  // "always" (the default), "default" as the system does, "never".
   window_save_state: String,
   // The file as parsed, for the colours it sets over the theme.
   file: config.Config,
@@ -62,7 +62,7 @@ fn defaults() -> Settings = {
     font_family: "", font_size: DEFAULT_FONT_SIZE, cell_height: DEFAULT_CELL_HEIGHT, pad_x: 12.0, pad_y: 8.0,
     theme_light: DEFAULT_THEME, theme_dark: DEFAULT_THEME, scrollback: DEFAULT_SCROLLBACK, scroll_animation: 0,
     cursor_shape: 0, option_as_alt: 0, clipboard_write: true, clipboard_read: "ask",
-    bell_flash: true, bell_attention: true, bell_title: true, bell_system: false, paste_protection: true, copy_on_select: "true", shell_integration: true, window_save_state: "default", file: config.empty(), problems: problems,
+    bell_flash: true, bell_attention: true, bell_title: true, bell_system: false, paste_protection: true, copy_on_select: "true", shell_integration: true, window_save_state: "always", file: config.empty(), problems: problems,
   }
 }
 

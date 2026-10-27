@@ -121,9 +121,9 @@ let TEMPLATE = [
   "",
   "# detect, or none to start the shell as it is.",
   "# shell-integration = detect",
-  "# Whether tabs come back when sprid opens again: default (as the system",
-  "# says), always, never.",
-  "# window-save-state = default",
+  "# Whether tabs come back when sprid opens again: always, default (as the",
+  "# system says), never.",
+  "# window-save-state = always",
   "",
 ] |> list.join("\n")
 

@@ -5,6 +5,7 @@ import snaidhm.native.window as window
 import self.pty
 import self.sys
 import self.gui.tabset
+import self.gui.dialog
 import self.gui.session
 import self.gui.groups
 import self.gui.setup
@@ -56,14 +57,24 @@ fn pace(mut wins: List[session.Session]) -> Unit = {
   }
 }
 
-/// Quitting asked for (Cmd+Q, or the only window's close button): every
-/// window closes, asked first while a program is running in one. Whether
-/// they do.
+/// Whether the tabs come back when sprid starts again, as
+/// `window-save-state` says.
+fn reopens(setting: String) -> Bool =
+  if setting == "never" then false
+  else if setting == "default" then dialog.keeps_windows()
+  else true
+
+/// Quitting asked for (Cmd+Q, the Dock's Quit, the system restarting, or
+/// the only window's close button): every window closes. Asked first while
+/// a program is running in one — unless the tabs come back, when nothing
+/// is lost by closing (Claude Code comes back too), and a question would
+/// only hold up a restart. Whether they do.
 fn quit_asked(mut wins: List[session.Session]) -> Bool = {
   let tabs = list.flat_map(wins, (a) => a.tabs)
   let ja = list.any(wins, (a) => a.ja)
   let capturing = list.any(wins, (a) => a.capture != none)
-  if capturing or list.len(tabs) == 0 or tabset.may_close_window(tabs, ja) then {
+  let kept = list.len(wins) > 0 and reopens(wins[0].st.window_save_state)
+  if capturing or kept or list.len(tabs) == 0 or tabset.may_close_window(tabs, ja) then {
     for i in 0..<list.len(wins) {
       wins = list.set(wins, i, { ...wins[i], alive: false })
     }

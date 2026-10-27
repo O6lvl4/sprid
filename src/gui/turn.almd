@@ -39,7 +39,7 @@ effect fn turn(mut wins: List[session.Session]) -> Unit = {
   // With no time to wait, just take the events: arming the fd watcher on
   // every turn of a streaming loop costs more than it saves.
   let alive = if timeout == 0 then window.pump() else window.wait_fds(fds, timeout)
-  let quitting = (not alive or quit_due(wins)) and windows.quit_asked(wins)
+  if not alive or quit_due(wins) then { let _ = windows.quit_asked(wins) }
   for i in 0..<list.len(wins) {
     match windows.take(wins, i) {
       some(w) => {
@@ -67,7 +67,8 @@ effect fn turn(mut wins: List[session.Session]) -> Unit = {
   }
   windows.pace(wins)
   windows.open_asked(wins)!
-  keep_last(wins, quitting)!
+  keep_last(wins)!
+  restore.keep_running(wins)!
   windows.close_ended(wins)
 }
 
@@ -75,11 +76,12 @@ effect fn turn(mut wins: List[session.Session]) -> Unit = {
 fn quit_due(wins: List[session.Session]) -> Bool =
   list.any(wins, (a) => a.stats.quit_at >= 0 and sys.now_ms() >= a.stats.quit_at)
 
-/// The last windows going: where they were kept, and on `quitting` their
-/// tabs too, if they are to come back.
-effect fn keep_last(wins: List[session.Session], quitting: Bool) -> Unit =
+/// The last windows going — by quitting or by the last one's close button,
+/// both closing the app: where they were kept, and their tabs too, if they
+/// are to come back. (A window whose tabs were all closed keeps none.)
+effect fn keep_last(wins: List[session.Session]) -> Unit =
   if list.len(wins) > 0 and list.all(wins, (a) => not a.alive) and wins[0].capture == none then
-    restore.save(wins, quitting and restore.reopens(wins[0].st.window_save_state))!
+    restore.save(wins, restore.reopens(wins[0].st.window_save_state))!
 
 /// What follows the input: output read, exited tabs closed, the frame drawn.
 effect fn after_events(mut a: session.Session) -> Unit = {

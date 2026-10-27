@@ -147,7 +147,15 @@ type Stats = {
   // SPRID_QUIT_MS: when to quit as Cmd+Q does, for a test of what quitting
   // keeps; -1 when not.
   quit_at: Int,
+  // The windows kept while sprid runs (restore.keep_running): when last,
+  // the text kept, and whether a keep waits for KEEP_MS to pass.
+  kept_at: Int,
+  kept: String,
+  keep_due: Bool,
 }
+
+/// How often, at most, the windows are kept while sprid runs, ms.
+let KEEP_MS = 3000
 
 /// The sooner of two waits, ms; -1 is no limit.
 fn sooner(a: Int, b: Int) -> Int = if a < 0 then b else if b < 0 then a else int.min(a, b)
