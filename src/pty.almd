@@ -51,3 +51,7 @@ fn cwd(fd: Int) -> String = _
 /// was started with (a command the shell runs); "" at the shell's prompt.
 @extern(rust, "crate::pty", "busy")
 fn busy(fd: Int) -> String = _
+
+/// The pid of the program `busy` names; 0 at the shell's prompt.
+@extern(rust, "crate::pty", "busy_pid")
+fn busy_pid(fd: Int) -> Int = _

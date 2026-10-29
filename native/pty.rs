@@ -229,6 +229,12 @@ pub fn busy(fd: i64) -> String {
     }
 }
 
+/// The pid of the program `busy` names, 0 when the shell runs none.
+pub fn busy_pid(fd: i64) -> i64 {
+    let Some(shell) = STARTED.with(|m| m.borrow().get(&(fd as i32)).copied()) else { return 0 };
+    children(shell).first().map(|&p| p as i64).unwrap_or(0)
+}
+
 #[cfg(target_os = "macos")]
 fn children(pid: i32) -> Vec<i32> {
     let mut buf = vec![0i32; 64];

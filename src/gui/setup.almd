@@ -153,6 +153,7 @@ effect fn fresh_stats() -> session.Stats = {
       ok(ms) => sys.now_ms() + ms,
       err(_) => -1,
     },
+    kept_at: 0, kept: "", keep_due: false,
   }
 }
 

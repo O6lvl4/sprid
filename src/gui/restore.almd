@@ -1,24 +1,33 @@
 // Windows as they were: where each was and how big, and its tabs — each
-// tab's directory and name — kept when sprid quits and opened again when it
-// starts. Whether the tabs come back is `window-save-state`: by default as
-// the system does it (macOS's "Close windows when quitting an application");
-// where the window was always does.
+// tab's directory and name, and the Claude Code session running in it — kept
+// while sprid runs and opened again when it starts. Whether the tabs come
+// back is `window-save-state`: by default always, as quitting and closing the
+// last window keep them; `default` asks the system (macOS's "Close windows
+// when quitting an application"). Where the window was always comes back.
+//
+// The file is written every few seconds while something changes, not only
+// on quitting: a Mac that loses power, a restart that ends sprid, a crash
+// still find the tabs as they were a moment before.
 //
 // The file is lines of tab-separated fields:
 //
 //   window  x  y  width  height      (logical pixels, the frame's top left)
 //   tab     directory  name  [shape  focus]
 //   pane    directory  name
+//   claude  session                  (the pane above runs Claude Code)
 //
 // A tab line for each tab, under its window: its first pane's directory
 // and name, and when it has others, a `pane` line for each — in reading
 // order — and its layout's shape (`layout.shape`) and the pane keys go to.
+// A pane running Claude Code has a `claude` line under its own, and opens
+// again with `claude --resume` on that session.
 
 import env
 import fs
+import json
 import snaidhm.native.window as window
+import self.pty
 import self.sys
-import self.gui.dialog
 import self.gui.session
 import self.gui.tabset
 import self.gui.groups
@@ -30,11 +39,11 @@ import self.shell
 /// A window kept: its frame, and its tabs.
 type Kept = { x: Float, y: Float, width: Float, height: Float, tabs: List[KeptTab] }
 
-/// A tab kept: its panes as (directory, name), their layout's shape and
-/// which of them keys go to.
-type KeptTab = { panes: List[(String, String)], shape: String, focus: Int }
+/// A tab kept: its panes as (directory, name, Claude Code session — "" for
+/// none), their layout's shape and which of them keys go to.
+type KeptTab = { panes: List[(String, String, String)], shape: String, focus: Int }
 
-fn single(dir: String, name: String) -> KeptTab = KeptTab { panes: [(dir, name)], shape: ".", focus: 0 }
+fn single(dir: String, name: String) -> KeptTab = KeptTab { panes: [(dir, name, "")], shape: ".", focus: 0 }
 
 effect fn path() -> String = {
   let home = env.get("HOME") ?? ""
@@ -45,10 +54,7 @@ effect fn path() -> String = {
 }
 
 /// Whether the tabs come back, as `window-save-state` says.
-fn reopens(setting: String) -> Bool =
-  if setting == "always" then true
-  else if setting == "never" then false
-  else dialog.keeps_windows()
+fn reopens(setting: String) -> Bool = windows.reopens(setting)
 
 /// The windows kept, none when there are none.
 effect fn load() -> List[Kept] = match fs.read_text_if_exists(path()!) {
@@ -59,13 +65,46 @@ effect fn load() -> List[Kept] = match fs.read_text_if_exists(path()!) {
 /// `wins` kept — with their tabs when `tabs`, else only where the first
 /// was. Nothing kept when that fails.
 effect fn save(wins: List[session.Session], tabs: Bool) -> Unit = {
-  let kept = list.map(0..<list.len(wins), (i) => frame_of(wins[i], tabs))
-  let shown = if tabs then kept else list.take(kept, 1)
+  let _ = write(text_of(wins, tabs)!)
+}
+
+/// The file's text for `wins` (see `save`).
+effect fn text_of(wins: List[session.Session], tabs: Bool) -> String = {
+  let home = env.get("HOME") ?? ""
+  var kept: List[Kept] = []
+  for a in (if tabs then wins else list.take(wins, 1)) {
+    kept = kept + [frame_of(a, tabs, home)!]
+  }
+  encode(kept)
+}
+
+effect fn write(text: String) -> Unit = {
   let file = path()!
   let parts = string.split(file, "/")
   let _ = fs.mkdir_p(list.take(parts, list.len(parts) - 1) |> list.join("/"))
-  let _ = fs.write_text(file, encode(shown))
+  // Written beside and renamed over: power lost mid-write leaves the old
+  // file, not half of the new one.
+  let _ = fs.write_text(file + ".new", text)
+  let _ = fs.rename(file + ".new", file)
 }
+
+/// While sprid runs: the windows kept, with their tabs, when `KEEP_MS` have
+/// passed since they last were (`session.KEEP_MS`) and they changed. Until
+/// then a keep is due,
+/// and the loop wakes for it (`upkeep.wait_for`), so the last change is
+/// kept even when nothing follows it.
+effect fn keep_running(mut wins: List[session.Session]) -> Unit =
+  if list.len(wins) > 0 and wins[0].capture == none and list.any(wins, (a) => a.alive) then {
+    let now = sys.now_ms()
+    let s = wins[0].stats
+    if now - s.kept_at >= session.KEEP_MS then {
+      let live = list.filter(wins, (a) => a.alive)
+      let text = text_of(live, reopens(wins[0].st.window_save_state))!
+      if text != s.kept then write(text)!
+      wins = list.set(wins, 0, { ...wins[0], stats: { ...s, kept_at: now, kept: text, keep_due: false } })
+    } else if not s.keep_due then
+      wins = list.set(wins, 0, { ...wins[0], stats: { ...s, keep_due: true } })
+  }
 
 /// The windows `kept` opened again: the first in `wins[0]`, which opened
 /// with the first tab's shell; the others after it.
@@ -94,35 +133,81 @@ effect fn reopen(mut wins: List[session.Session], kept: List[Kept]) -> Unit = {
 }
 
 /// Window session `a`'s first pane named as `tabs` says, and the rest of
-/// its tabs and panes opened, each in its directory with its name.
+/// its tabs and panes opened, each in its directory with its name, Claude
+/// Code resumed where it ran.
 effect fn fill(mut a: session.Session, tabs: List[KeptTab]) -> Unit = {
   let login = shell.command(a.st.shell_integration)!
   for (k, t) in list.enumerate(tabs) {
-    let first = list.first(t.panes) ?? ("", "")
+    let first = list.first(t.panes) ?? ("", "", "")
     if k == 0 then {
-      if list.len(a.tabs) > 0 then { a.tabs = list.set(a.tabs, 0, { ...a.tabs[0], name: first.1 }) }
+      if list.len(a.tabs) > 0 then {
+        a.tabs = list.set(a.tabs, 0, { ...a.tabs[0], name: first.1 })
+        resume(a.tabs[0].fd, first.2)
+      }
     } else {
       let (cols, rows) = groups.new_tab_grid(a)
       match tabset.open_tab(cols, rows, login, first.0, a.st.scrollback) {
-        some(tb) => groups.add_tab(a, { ...tb, name: first.1 }),
+        some(tb) => {
+          resume(tb.fd, first.2)
+          groups.add_tab(a, { ...tb, name: first.1 })
+        },
         none => (),
       }
     }
     if list.len(t.panes) > 1 then {
       let (cols, rows) = groups.new_tab_grid(a)
-      let others = list.filter_map(list.drop(t.panes, 1), (p) => tabset.open_tab(cols, rows, login, p.0, a.st.scrollback) |> option.map((tb) => { ...tb, name: p.1 }))
+      let others = list.filter_map(list.drop(t.panes, 1), (p) => tabset.open_tab(cols, rows, login, p.0, a.st.scrollback) |> option.map((tb) => {
+        resume(tb.fd, p.2)
+        { ...tb, name: p.1 }
+      }))
       groups.arrange(a, groups.count(a) - 1, others, t.shape, t.focus)
     }
   }
   groups.go_to(a, 0)
 }
 
+/// Claude Code session `id` resumed in the shell just started on `fd`: the
+/// command typed ahead, so the shell runs it once it is up, and quitting
+/// Claude Code leaves the shell, as it was.
+fn resume(fd: Int, id: String) -> Unit =
+  if is_session(id) then { let _ = pty.write(fd, "claude --resume " + id + "\r") }
+
+/// Whether `id` is a Claude Code session's id: a UUID, nothing a shell
+/// would read as more than a word.
+fn is_session(id: String) -> Bool =
+  string.len(id) == 36 and list.all(string.to_list(id), (c) => string.contains("0123456789abcdefABCDEF-", c))
+
+/// The Claude Code session running on `fd`, "" when none: the program the
+/// shell runs, as Claude Code lists it in ~/.claude/sessions/<pid>.json.
+effect fn claude_on(fd: Int, home: String) -> String = {
+  let pid = pty.busy_pid(fd)
+  if pid <= 0 or home == "" then ""
+  else match fs.read_text_if_exists(home + "/.claude/sessions/" + int.to_string(pid) + ".json") {
+    ok(some(text)) => session_in(text, pid),
+    _ => "",
+  }
+}
+
+/// The session in a Claude Code session file's `text`, when it is for `pid`.
+fn session_in(text: String, pid: Int) -> String = match json.parse(text) {
+  ok(v) => {
+    let id = value.get_string(v, "sessionId") ?? ""
+    if value.get_int(v, "pid") == some(pid) and is_session(id) then id else ""
+  },
+  err(_) => "",
+}
+
 /// Window session `a` as kept: its frame, and its tabs when `tabs`. Full
 /// screen, its size out of it: kept as the screen's, it opened again too
 /// big for the screen with its title bar.
-fn frame_of(a: session.Session, tabs: Bool) -> Kept = {
+effect fn frame_of(a: session.Session, tabs: Bool, home: String) -> Kept = {
   window.select(a.id)
-  let kept_tabs = if not tabs then [] else list.map(a.groups, (g) => tab_of(a, g))
+  var kept_tabs: List[KeptTab] = []
+  if tabs then {
+    for g in a.groups {
+      kept_tabs = kept_tabs + [tab_of(a, g, home)!]
+    }
+  }
   let (width, height) = if window.is_fullscreen() then a.windowed else (float.from(a.width) / a.scale, float.from(a.height) / a.scale)
   Kept {
     x: window.x(), y: window.y(),
@@ -131,9 +216,13 @@ fn frame_of(a: session.Session, tabs: Bool) -> Kept = {
   }
 }
 
-fn tab_of(a: session.Session, g: layout.Group) -> KeptTab = {
+effect fn tab_of(a: session.Session, g: layout.Group, home: String) -> KeptTab = {
   let ids = layout.panes(g.layout)
-  let panes = ids |> list.map((fd) => groups.index_of(a.tabs, fd)) |> list.map((i) => (tabset.cwd_of(a.tabs, i, a.home), a.tabs[i].name))
+  var panes: List[(String, String, String)] = []
+  for fd in ids {
+    let i = groups.index_of(a.tabs, fd)
+    panes = panes + [(tabset.cwd_of(a.tabs, i, a.home), a.tabs[i].name, claude_on(a.tabs[i].fd, home)!)]
+  }
   KeptTab { panes: panes, shape: layout.shape(g.layout), focus: list.index_of(ids, g.focus) ?? 0 }
 }
 
@@ -144,10 +233,13 @@ fn encode(kept: List[Kept]) -> String =
   }) |> list.map((s) => s + "\n") |> list.join("")
 
 fn tab_lines(t: KeptTab) -> List[String] = {
-  let first = list.first(t.panes) ?? ("", "")
+  let first = list.first(t.panes) ?? ("", "", "")
   let layout = if list.len(t.panes) > 1 then "\t" + t.shape + "\t" + int.to_string(t.focus) else ""
-  ["tab\t" + clean(first.0) + "\t" + clean(first.1) + layout] + list.map(list.drop(t.panes, 1), (p) => "pane\t" + clean(p.0) + "\t" + clean(p.1))
+  ["tab\t" + clean(first.0) + "\t" + clean(first.1) + layout] + claude_line(first.2)
+    + list.flat_map(list.drop(t.panes, 1), (p) => ["pane\t" + clean(p.0) + "\t" + clean(p.1)] + claude_line(p.2))
 }
+
+fn claude_line(id: String) -> List[String] = if is_session(id) then ["claude\t" + id] else []
 
 /// `s` without what would break a line apart.
 fn clean(s: String) -> String = string.replace(string.replace(string.replace(s, "\t", " "), "\n", " "), "\r", " ")
@@ -169,26 +261,38 @@ fn read_line(out: List[Kept], f: List[String]) -> List[Kept] = {
     let t = if list.len(f) == 5 then KeptTab { ...single(f[1], f[2]), shape: f[3], focus: int.parse(f[4]) ?? 0 } else single(f[1], f[2])
     list.set(out, n, { ...out[n], tabs: out[n].tabs + [t] })
   } else if list.len(f) == 3 and f[0] == "pane" and list.len(out[n].tabs) > 0 then
-    list.set(out, n, { ...out[n], tabs: with_pane(out[n].tabs, (f[1], f[2])) })
+    list.set(out, n, { ...out[n], tabs: with_pane(out[n].tabs, (f[1], f[2], "")) })
+  else if list.len(f) == 2 and f[0] == "claude" and list.len(out[n].tabs) > 0 and is_session(f[1]) then
+    list.set(out, n, { ...out[n], tabs: with_claude(out[n].tabs, f[1]) })
   else out
 }
 
 /// `tabs` with `pane` added to the last.
-fn with_pane(tabs: List[KeptTab], pane: (String, String)) -> List[KeptTab] = {
+fn with_pane(tabs: List[KeptTab], pane: (String, String, String)) -> List[KeptTab] = {
   let n = list.len(tabs) - 1
   list.set(tabs, n, { ...tabs[n], panes: tabs[n].panes + [pane] })
 }
 
+/// `tabs` with the last pane of the last running Claude Code session `id`.
+fn with_claude(tabs: List[KeptTab], id: String) -> List[KeptTab] = {
+  let n = list.len(tabs) - 1
+  let ps = tabs[n].panes
+  let m = list.len(ps) - 1
+  if m < 0 then tabs else list.set(tabs, n, { ...tabs[n], panes: list.set(ps, m, (ps[m].0, ps[m].1, id)) })
+}
+
+let ID = "138ee738-3cee-4823-8bca-fc10f8010c68"
+
 test "windows and their tabs round-trip, odd names cleaned" {
-  let split = KeptTab { panes: [("/a", ""), ("/b", "b"), ("/c", "")], shape: "a0.5(.,d0.5(.,.))", focus: 2 }
+  let split = KeptTab { panes: [("/a", "", ""), ("/b", "b", ID), ("/c", "", "")], shape: "a0.5(.,d0.5(.,.))", focus: 2 }
   let kept = [
     Kept { x: 10.0, y: -900.0, width: 960.0, height: 620.0, tabs: [single("/Users/me", ""), single("/tmp/a b", "build\tlog"), split] },
-    Kept { x: 200.0, y: 40.0, width: 500.0, height: 300.0, tabs: [single("/srv", "srv")] },
+    Kept { x: 200.0, y: 40.0, width: 500.0, height: 300.0, tabs: [{ ...single("/srv", "srv"), panes: [("/srv", "srv", ID)] }] },
   ]
   let back = decode(encode(kept))
   assert_eq(list.len(back), 2)
   assert_eq((back[0].y, back[0].tabs), (-900.0, [single("/Users/me", ""), single("/tmp/a b", "build log"), split]))
-  assert_eq((back[1].width, back[1].tabs), (500.0, [single("/srv", "srv")]))
+  assert_eq((back[1].width, back[1].tabs), (500.0, [{ ...single("/srv", "srv"), panes: [("/srv", "srv", ID)] }]))
 }
 
 test "a file that isn't one keeps nothing" {
@@ -196,4 +300,19 @@ test "a file that isn't one keeps nothing" {
   assert_eq(decode("window\t0\t0\t10\t10"), [])
   // A pane before any tab is no pane.
   assert_eq(decode("window\t0\t0\t500\t300\npane\t/a\t\ntab\t/b\t") |> list.map((k) => k.tabs), [[single("/b", "")]])
+  // A session that isn't one is not typed into a shell.
+  assert_eq(decode("window\t0\t0\t500\t300\ntab\t/b\t\nclaude\t$(rm -rf ~)") |> list.map((k) => k.tabs), [[single("/b", "")]])
+}
+
+test "a Claude Code session file names the session of its own pid" {
+  let text = "{\"pid\":17085,\"sessionId\":\"${ID}\",\"cwd\":\"/a\"}"
+  assert_eq(session_in(text, 17085), ID)
+  assert_eq(session_in(text, 1), "")
+  assert_eq(session_in("{\"pid\":1,\"sessionId\":\"x; rm\"}", 1), "")
+  assert_eq(session_in("not json", 1), "")
+}
+
+test "the tabs come back unless the setting says never" {
+  assert_eq(reopens("always"), true)
+  assert_eq(reopens("never"), false)
 }
