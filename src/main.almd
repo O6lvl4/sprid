@@ -77,7 +77,7 @@ fn chunk(i: Int) -> Bytes = {
   for j in 0..<64 {
     let n = int.to_string(i * 64 + j)
     s = s + "\x1b[1;38;2;215;119;87m⏺\x1b[0m Update(src/terminal.almd) #${n}\r\n"
-    s = s + "  ⎿  \x1b[48;2;34;78;45m+ 日本語のテキスト 👩‍💻 café e\u{0301}\x1b[0m ✻ Thinking… (${n}s · ↓ 1.2k tokens)\r\n"
+    s = s + "  ⎿  \x1b[48;2;34;78;45m+ 日本語のテキスト 👩\u{200D}💻 café e\u{0301}\x1b[0m ✻ Thinking… (${n}s · ↓ 1.2k tokens)\r\n"
     s = s + "\x1b[2m╭──────────────────────────────────────────────╮\x1b[0m\r\n"
   }
   bytes.from_string(s)

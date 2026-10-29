@@ -14,7 +14,7 @@ test "scrollback memory stays inside its budget under endless output" {
   let limit = 200000
   var t = terminal.with_scrollback(80, 24, limit)
   for i in 0..<20000 {
-    terminal.feed_string(t, "\x1b[1;36m⏺\x1b[0m line ${int.to_string(i)} 日本語 👩‍💻 e\u{0301} \x1b[38;2;200;100;50mcolored\x1b[0m\r\n")
+    terminal.feed_string(t, "\x1b[1;36m⏺\x1b[0m line ${int.to_string(i)} 日本語 👩\u{200D}💻 e\u{0301} \x1b[38;2;200;100;50mcolored\x1b[0m\r\n")
     assert(scrollback.bytes_used(t.sb) <= limit)
   }
   assert(t.sb.evicted_lines > 0)

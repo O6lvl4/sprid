@@ -6,7 +6,6 @@ import self.gui.dialog
 import self.gui.tabset
 import self.gui.clip
 import self.gui.session
-import self.gui.uistate
 import self.pty
 import self.sys
 import self.terminal

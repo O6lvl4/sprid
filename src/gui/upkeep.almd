@@ -8,7 +8,6 @@ import self.gui.render
 import self.pty
 import self.sys
 import self.gui.tabset
-import self.gui.uistate
 import self.gui.prefs
 import self.gui.findkeys
 import self.gui.pointer

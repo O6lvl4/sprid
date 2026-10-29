@@ -9,7 +9,6 @@ import self.pty
 import self.sys
 import self.terminal
 import self.view
-import self.gui.uistate
 
 /// Longest a synchronized update (mode 2026) may hold the screen, ms.
 let SYNC_LIMIT = 150
