@@ -1,3 +1,3 @@
 # almide.lock — auto-generated, do not edit
 
-snaidhm = { git = "https://github.com/almide-graphics/snaidhm.git", ref = "main", commit = "db3eac643d59a56df7d9fdd3768e2942780d4830" }
+snaidhm = { git = "https://github.com/almide-graphics/snaidhm.git", ref = "main", commit = "ca7c5aca2699a2152bc4144b0845b9662635b171" }
