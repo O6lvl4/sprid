@@ -25,7 +25,7 @@ fn keyed(title: String, equiv: String, mask: Int, key: String, extra: Int) -> St
   let input = if key == "up" then "${int.to_string(window.KEY)}:${int.to_string(window.KEY_UP)}"
     else if key == "down" then "${int.to_string(window.KEY)}:${int.to_string(window.KEY_DOWN)}"
     else if key == "return" then "${int.to_string(window.KEY)}:${int.to_string(window.KEY_ENTER)}"
-    else "${int.to_string(window.TEXT)}:${int.to_string(string.codepoint(key) ?? 0)}"
+    else "${int.to_string(window.TEXT)}:${int.to_string(string.to_codepoint(key) ?? 0)}"
   "${title}\t${equiv}\t${int.to_string(mask)}\tkey:${input}:${int.to_string(mods)}"
 }
 

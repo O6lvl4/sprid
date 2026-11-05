@@ -116,7 +116,7 @@ fn feed(mut t: core.Terminal, data: Bytes) -> Unit = {
   let n = bytes.len(data)
   var i = 0
   while i < n {
-    let b = bytes.read_u8(data, i)
+    let b = bytes.get(data, i) ?? 0
     // Printable ASCII in the ground state — most of any output — skips the
     // state machine, the width lookup and the combining-mark path.
     if b >= 0x20 and b < 0x7F and t.state == core.GROUND and t.utf8_need == 0 and not t.dec_graphics and not t.insert then {
@@ -241,7 +241,7 @@ fn enter_csi(mut t: core.Terminal) -> Unit = {
 /// The escape sequences that are one byte after ESC.
 fn escape_final(mut t: core.Terminal, b: Int) -> Unit =
   if list.contains([0x37, 0x38, 0x44, 0x45, 0x4D], b) then escape_cursor(t, b)
-  else if b == 0x48 then bytes.set_u8(t.tabs, t.x, 1)             // H HTS
+  else if b == 0x48 then bytes.put_u8(t.tabs, t.x, 1)             // H HTS
   else if b == 0x63 then modes.reset(t)                          // c RIS
   else if b == 0x3D or b == 0x3E then { t.app_keypad = b == 0x3D }  // = DECKPAM, > DECKPNM
   else ()
@@ -290,10 +290,10 @@ fn full_text(t: core.Terminal) -> String =
   list.join(scrollback.texts(t.sb) + [screen_text(t)], "\n")
 
 /// Attributes of the cell at (x, y), for tests and renderers.
-fn cell_fg(t: core.Terminal, x: Int, y: Int) -> Int = bytes.read_u32_le(t.grid, screen.cell_off(t, x, y) + cell.OFF_FG)
+fn cell_fg(t: core.Terminal, x: Int, y: Int) -> Int = bytes.get_u32_le(t.grid, screen.cell_off(t, x, y) + cell.OFF_FG) ?? 0
 
-fn cell_bg(t: core.Terminal, x: Int, y: Int) -> Int = bytes.read_u32_le(t.grid, screen.cell_off(t, x, y) + cell.OFF_BG)
+fn cell_bg(t: core.Terminal, x: Int, y: Int) -> Int = bytes.get_u32_le(t.grid, screen.cell_off(t, x, y) + cell.OFF_BG) ?? 0
 
-fn cell_attrs(t: core.Terminal, x: Int, y: Int) -> Int = int.band(bytes.read_u16_le(t.grid, screen.cell_off(t, x, y) + cell.OFF_ATTRS), cell.ATTR_MASK)
+fn cell_attrs(t: core.Terminal, x: Int, y: Int) -> Int = int.band(bytes.get_u16_le(t.grid, screen.cell_off(t, x, y) + cell.OFF_ATTRS) ?? 0, cell.ATTR_MASK)
 
 fn cell_link(t: core.Terminal, x: Int, y: Int) -> Int = cell.link_at(t.grid, screen.cell_off(t, x, y))

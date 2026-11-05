@@ -135,7 +135,7 @@ fn unknown(c: Config) -> List[String] =
 fn color(v: String) -> Option[Int] = {
   let hex = if string.starts_with(v, "#") then string.drop(v, 1) else v
   if string.len(hex) != 6 then none
-  else match int.from_hex(hex) {
+  else match int.parse_radix(hex, 16) {
     ok(n) => some(n),
     err(_) => none,
   }

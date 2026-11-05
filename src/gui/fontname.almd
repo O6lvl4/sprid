@@ -13,13 +13,13 @@ type Face = { index: Int, family: String, style: String }
 fn faces(data: Bytes) -> List[Face] =
   if bytes.len(data) < 12 then []
   else {
-    let collection = bytes.read_u32_be(data, 0) == sfnt.tag("ttcf")
+    let collection = bytes.get_u32_be(data, 0) ?? 0 == sfnt.tag("ttcf")
     list.range(0, int.min(sfnt.face_count(data), 64)) |> list.filter_map((i) => face_at(data, i, collection))
   }
 
 /// Face `i` of `data`, when it has a family name.
 fn face_at(data: Bytes, i: Int, collection: Bool) -> Option[Face] = {
-  let dir = if collection then bytes.read_u32_be(data, 12 + i * 4) else 0
+  let dir = if collection then bytes.get_u32_be(data, 12 + i * 4) ?? 0 else 0
   let at = if dir >= 0 and dir + 12 <= bytes.len(data) then sfnt.table(data, dir, sfnt.tag("name")) else 0
   let family = if at > 0 then pick(data, at, 16, 1) else ""
   if family == "" then none else some(Face { index: i, family: family, style: pick(data, at, 17, 2) })
@@ -36,8 +36,8 @@ fn pick(data: Bytes, at: Int, id: Int, fallback: Int) -> String = {
 fn lookup(data: Bytes, at: Int, id: Int) -> String =
   if at + 6 > bytes.len(data) then ""
   else {
-    let count = bytes.read_u16_be(data, at + 2)
-    let strings = at + bytes.read_u16_be(data, at + 4)
+    let count = bytes.get_u16_be(data, at + 2) ?? 0
+    let strings = at + bytes.get_u16_be(data, at + 4) ?? 0
     list.range(0, count)
       |> list.filter_map((i) => record(data, at + 6 + i * 12, strings, id))
       |> list.fold((0, ""), (best, r) => if r.0 > best.0 then r else best)
@@ -47,12 +47,12 @@ fn lookup(data: Bytes, at: Int, id: Int) -> String =
 /// The name record at `rec` when it is name `id` and readable: (how good a
 /// record it is, its text).
 fn record(data: Bytes, rec: Int, strings: Int, id: Int) -> Option[(Int, String)] =
-  if rec + 12 > bytes.len(data) or bytes.read_u16_be(data, rec + 6) != id then none
+  if rec + 12 > bytes.len(data) or (bytes.get_u16_be(data, rec + 6) ?? 0) != id then none
   else {
-    let platform = bytes.read_u16_be(data, rec)
-    let rank = rank_of(platform, bytes.read_u16_be(data, rec + 4))
-    let len = bytes.read_u16_be(data, rec + 8)
-    let off = strings + bytes.read_u16_be(data, rec + 10)
+    let platform = bytes.get_u16_be(data, rec) ?? 0
+    let rank = rank_of(platform, bytes.get_u16_be(data, rec + 4) ?? 0)
+    let len = bytes.get_u16_be(data, rec + 8) ?? 0
+    let off = strings + bytes.get_u16_be(data, rec + 10) ?? 0
     let text = if rank == 0 or off + len > bytes.len(data) then ""
       else if platform == 1 then latin(data, off, len) else utf16(data, off, len)
     if text == "" then none else some((rank, text))
@@ -70,13 +70,13 @@ fn utf16(data: Bytes, off: Int, len: Int) -> String = {
   var s = ""
   var i = 0
   while i + 1 < len {
-    let u = bytes.read_u16_be(data, off + i)
+    let u = bytes.get_u16_be(data, off + i) ?? 0
     if u >= 0xD800 and u <= 0xDBFF and i + 3 < len then {
-      let lo = bytes.read_u16_be(data, off + i + 2)
-      s = s + string.from_codepoint(0x10000 + (u - 0xD800) * 1024 + (lo - 0xDC00))
+      let lo = bytes.get_u16_be(data, off + i + 2) ?? 0
+      s = s + (string.from_codepoint(0x10000 + (u - 0xD800) * 1024 + (lo - 0xDC00)) ?? "")
       i = i + 4
     } else {
-      s = s + string.from_codepoint(u)
+      s = s + (string.from_codepoint(u) ?? "")
       i = i + 2
     }
   }
@@ -86,8 +86,8 @@ fn utf16(data: Bytes, off: Int, len: Int) -> String = {
 fn latin(data: Bytes, off: Int, len: Int) -> String = {
   var s = ""
   for i in 0..<len {
-    let b = bytes.read_u8(data, off + i)
-    s = s + string.from_codepoint(if b < 0x80 then b else 0xFFFD)
+    let b = bytes.get(data, off + i) ?? 0
+    s = s + (string.from_codepoint(if b < 0x80 then b else 0xFFFD) ?? "")
   }
   s
 }

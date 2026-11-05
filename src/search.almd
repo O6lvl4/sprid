@@ -53,7 +53,7 @@ fn scan(t: terminal.Terminal, query: String) -> List[(Int, Int)] =
   else if t.alt then scan_screen(t, view.screen_line(t), query)
   else {
     let (q, fold) = needle(query)
-    let counts = scrollback.records(t.sb) |> list.map(((block, start, end)) => string.count(folded(record.text(block, start, end), fold), q))
+    let counts = scrollback.records(t.sb) |> list.map(((block, start, end)) => string.count_matches(folded(record.text(block, start, end), fold), q))
     let first = view.first_line(t)
     let held = list.enumerate(counts) |> list.filter(((_, c)) => c > 0) |> list.map(((i, c)) => (first + i, c))
     held + scan_screen(t, first + list.len(counts), query)
@@ -78,7 +78,7 @@ fn row_spans(row: record.Row, cols: Int, query: String) -> List[(Int, Int)] =
   if query == "" then []
   else {
     let (q, fold) = needle(query)
-    let qs = list.map(string.chars(q), (ch) => string.codepoint(ch) ?? 32)
+    let qs = list.map(string.to_list(q), (ch) => string.to_codepoint(ch) ?? 32)
     let text = stored(row, cols, fold)
     let m = list.len(qs)
     occurrences(list.map(text, (c) => c.0), qs) |> list.map((i) => (text[i].1, text[i + m - 1].2))
@@ -91,8 +91,8 @@ fn stored(row: record.Row, cols: Int, fold: Bool) -> List[(Int, Int, Int)] = {
   var out: List[(Int, Int, Int)] = []
   for x in 0..<record.used_cols(row.cells, cols) {
     let end = x + int.max(1, width_at(row, x))
-    for ch in string.chars(folded(record.cell_text(row.cells, x, row.extras), fold)) {
-      list.push(out, (string.codepoint(ch) ?? 32, x, end))
+    for ch in string.to_list(folded(record.cell_text(row.cells, x, row.extras), fold)) {
+      list.push(out, (string.to_codepoint(ch) ?? 32, x, end))
     }
   }
   out
@@ -123,7 +123,7 @@ fn matches_at(hay: List[Int], needle: List[Int], i: Int) -> Bool = {
 }
 
 /// Columns cell `x` of `row` takes.
-fn width_at(row: record.Row, x: Int) -> Int = bytes.read_u8(row.cells, x * cell.SIZE + cell.OFF_WIDTH)
+fn width_at(row: record.Row, x: Int) -> Int = bytes.get(row.cells, x * cell.SIZE + cell.OFF_WIDTH) ?? 0
 
 /// The match nearest (`line`, `col`) going `dir` — at it too when
 /// `inclusive` — wrapping past the end; `f` found anew, with no current

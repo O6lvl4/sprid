@@ -15,7 +15,7 @@ import self.gui.uistate
 /// ends a press the program was sent.
 fn app_mouse(t: terminal.Terminal, ui: uistate.Ui, r: render.Renderer, scale: Float, tabs: Int, kind: Int) -> Bool = {
   let wanted = t.mouse_mode != 0 and t.mouse_sgr and int.band(window.event_mods(), window.MOD_SHIFT) == 0
-  let on_bar = tabs > 1 and float.to_int(window.event_y() * scale) < render.bar_height(r)
+  let on_bar = tabs > 1 and int.from_saturating(window.event_y() * scale) < render.bar_height(r)
   (wanted and not on_bar and not ui.dragging and ui.tab_drag < 0) or (kind == window.MOUSE_UP and ui.app_button >= 0)
 }
 
@@ -33,8 +33,8 @@ fn wheel(mut cur: tabset.Tab, mut ui: uistate.Ui, r: render.Renderer, scale: Flo
 /// Scrollback moved by `px` pixels (positive: toward the end).
 fn wheel_scroll(mut cur: tabset.Tab, mut ui: uistate.Ui, r: render.Renderer, px: Float) -> Unit = {
   ui.wheel_acc = ui.wheel_acc + px
-  let whole = float.to_int(ui.wheel_acc)
-  ui.wheel_acc = ui.wheel_acc - int.to_float(whole)
+  let whole = int.from_saturating(ui.wheel_acc)
+  ui.wheel_acc = ui.wheel_acc - float.from(whole)
   if whole < 0 then terminal.settle(cur.t)
   let pos = int.clamp(cur.back * r.cell_h + cur.shift - whole, 0, view.max_back(cur.t) * r.cell_h)
   if pos != cur.back * r.cell_h + cur.shift then {
@@ -49,9 +49,9 @@ fn wheel_scroll(mut cur: tabset.Tab, mut ui: uistate.Ui, r: render.Renderer, px:
 /// program reads them together.
 fn wheel_lines(mut cur: tabset.Tab, mut ui: uistate.Ui, r: render.Renderer, scale: Float, dy: Float, reports: Bool, col: Int, row: Int) -> Unit = {
   ui.wheel_acc = ui.wheel_acc + dy
-  let line_px = int.to_float(r.cell_h) / scale
-  let lines = float.to_int(ui.wheel_acc / line_px)
-  ui.wheel_acc = ui.wheel_acc - int.to_float(lines) * line_px
+  let line_px = float.from(r.cell_h) / scale
+  let lines = int.from_saturating(ui.wheel_acc / line_px)
+  ui.wheel_acc = ui.wheel_acc - float.from(lines) * line_px
   if lines != 0 then {
     let one = if reports then "\x1b[<${int.to_string(if lines < 0 then 64 else 65)};${int.to_string(col + 1)};${int.to_string(row + 1)}M"
       else keys.encode(keys.KEY, if lines < 0 then keys.KEY_UP else keys.KEY_DOWN, 0, cur.t.app_cursor)
@@ -62,7 +62,7 @@ fn wheel_lines(mut cur: tabset.Tab, mut ui: uistate.Ui, r: render.Renderer, scal
 /// Scroll to where the pointer puts the scrollbar's thumb.
 fn drag_scrollbar(mut cur: tabset.Tab, mut ui: uistate.Ui, r: render.Renderer, scale: Float, tabs: Int) -> Unit = {
   terminal.settle(cur.t)
-  let py = float.to_int(window.event_y() * scale)
+  let py = int.from_saturating(window.event_y() * scale)
   let pos = render.scroll_pos_at(r, cur.t, py - ui.scroll_grab)
   if pos != cur.back * r.cell_h + cur.shift then {
     cur.back = pos / r.cell_h
@@ -79,11 +79,11 @@ fn seen(r: render.Renderer, tb: tabset.Tab) -> drawn.Drawn =
 
 /// The line under the pointer: the one `tb`'s frame on screen shows there.
 fn pointer_line(r: render.Renderer, tb: tabset.Tab, scale: Float, tabs: Int) -> Int =
-  drawn.line_at(seen(r, tb), tb.t, float.to_int(window.event_y() * scale))
+  drawn.line_at(seen(r, tb), tb.t, int.from_saturating(window.event_y() * scale))
 
 /// The cell under the pointer: (column, row of the viewport), as `tb`'s
 /// frame on screen has them.
 fn cell_at(r: render.Renderer, tb: tabset.Tab, scale: Float, tabs: Int) -> (Int, Int) = {
   let d = seen(r, tb)
-  (drawn.col_at(d, tb.t, float.to_int(window.event_x() * scale)), drawn.row_at(d, tb.t, float.to_int(window.event_y() * scale)))
+  (drawn.col_at(d, tb.t, int.from_saturating(window.event_x() * scale)), drawn.row_at(d, tb.t, int.from_saturating(window.event_y() * scale)))
 }

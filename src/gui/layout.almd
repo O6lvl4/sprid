@@ -68,7 +68,7 @@ fn regions(l: Layout, x: Int, y: Int, w: Int, h: Int, gap: Int) -> List[Region] 
 }
 
 /// The first part's length, of `len` split at `f` with `gap` between.
-fn part(len: Int, gap: Int, f: Float) -> Int = int.max(1, float.to_int(int.to_float(len - gap) * f))
+fn part(len: Int, gap: Int, f: Float) -> Int = int.max(1, int.from_saturating(float.from(len - gap) * f))
 
 /// Every divider, outermost first, laid out as `regions` lays the panes.
 fn dividers(l: Layout, x: Int, y: Int, w: Int, h: Int, gap: Int) -> List[Divider] = dividers_in(l, [], x, y, w, h, gap)
@@ -96,7 +96,7 @@ fn divider_at(ds: List[Divider], px: Int, py: Int, slop: Int) -> Option[Divider]
 /// The fraction divider `d` splits at with the pointer at (`px`, `py`).
 fn fraction_at(d: Divider, px: Int, py: Int, gap: Int) -> Float = {
   let (from, len) = if d.across then (px - d.x, d.w) else (py - d.y, d.h)
-  clamp(int.to_float(from) / int.to_float(int.max(1, len - gap)))
+  clamp(float.from(from) / float.from(int.max(1, len - gap)))
 }
 
 /// `l` with the split at `path` (see `Divider`) at fraction `f`.
@@ -165,7 +165,7 @@ fn deeper(across: Bool, f: Float, a: Layout, b: Layout, id: Int, dx: Int, dy: In
 /// across the way asked.
 fn own(across: Bool, f: Float, a: Layout, b: Layout, dx: Int, dy: Int, step: Float) -> Option[Layout] = {
   let along = if across then dx else dy
-  if along == 0 then none else some(Split(across, clamp(f + int.to_float(along) * step), a, b))
+  if along == 0 then none else some(Split(across, clamp(f + float.from(along) * step), a, b))
 }
 
 fn clamp(f: Float) -> Float = float.clamp(f, MIN_FRACTION, 1.0 - MIN_FRACTION)
@@ -186,7 +186,7 @@ fn shape(l: Layout) -> String = match l {
 
 /// The layout of `shape` with `ids` its panes in reading order; none when
 /// it isn't one, or has another number of panes.
-fn of_shape(text: String, ids: List[Int]) -> Option[Layout] = match parse(string.chars(text), 0, ids, 0) {
+fn of_shape(text: String, ids: List[Int]) -> Option[Layout] = match parse(string.to_list(text), 0, ids, 0) {
   some((l, at, used)) => if at == string.len(text) and used == list.len(ids) then some(l) else none,
   none => none,
 }

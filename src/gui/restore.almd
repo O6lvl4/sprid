@@ -84,7 +84,7 @@ effect fn write(text: String) -> Unit = {
   let _ = fs.mkdir_p(list.take(parts, list.len(parts) - 1) |> list.join("/"))
   // Written beside and renamed over: power lost mid-write leaves the old
   // file, not half of the new one.
-  let _ = fs.write(file + ".new", text)
+  let _ = fs.write_text(file + ".new", text)
   let _ = fs.rename(file + ".new", file)
 }
 
@@ -175,7 +175,7 @@ fn resume(fd: Int, id: String) -> Unit =
 /// Whether `id` is a Claude Code session's id: a UUID, nothing a shell
 /// would read as more than a word.
 fn is_session(id: String) -> Bool =
-  string.len(id) == 36 and list.all(string.chars(id), (c) => string.contains("0123456789abcdefABCDEF-", c))
+  string.len(id) == 36 and list.all(string.to_list(id), (c) => string.contains("0123456789abcdefABCDEF-", c))
 
 /// The Claude Code session running on `fd`, "" when none: the program the
 /// shell runs, as Claude Code lists it in ~/.claude/sessions/<pid>.json.
@@ -191,8 +191,8 @@ effect fn claude_on(fd: Int, home: String) -> String = {
 /// The session in a Claude Code session file's `text`, when it is for `pid`.
 fn session_in(text: String, pid: Int) -> String = match json.parse(text) {
   ok(v) => {
-    let id = json.get_string(v, "sessionId") ?? ""
-    if json.get_int(v, "pid") == some(pid) and is_session(id) then id else ""
+    let id = value.get_string(v, "sessionId") ?? ""
+    if value.get_int(v, "pid") == some(pid) and is_session(id) then id else ""
   },
   err(_) => "",
 }
@@ -208,7 +208,7 @@ effect fn frame_of(a: session.Session, tabs: Bool, home: String) -> Kept = {
       kept_tabs = kept_tabs + [tab_of(a, g, home)!]
     }
   }
-  let (width, height) = if window.is_fullscreen() then a.windowed else (int.to_float(a.width) / a.scale, int.to_float(a.height) / a.scale)
+  let (width, height) = if window.is_fullscreen() then a.windowed else (float.from(a.width) / a.scale, float.from(a.height) / a.scale)
   Kept {
     x: window.x(), y: window.y(),
     width: width, height: height,

@@ -13,7 +13,7 @@ let HINT_QUADS = 5
 /// What the hint shows for `link`, cut to `cols` columns with an ellipsis:
 /// nothing but for a link the program made.
 fn chars(link: Option[links.Link], cols: Int) -> List[Int] = match link {
-  some(l) => if l.made then fit(string.chars(l.target) |> list.filter_map(string.codepoint), cols) else [],
+  some(l) => if l.made then fit(string.to_list(l.target) |> list.filter_map(string.to_codepoint), cols) else [],
   none => [],
 }
 
@@ -62,7 +62,7 @@ fn draw(mut r: surface.Renderer, cps: List[Int], width: Int, height: Int, sx: Fl
   }
 
 test "a long target is cut to fit, with an ellipsis" {
-  let cps = string.chars("https://example.com/") |> list.filter_map(string.codepoint)
+  let cps = string.to_list("https://example.com/") |> list.filter_map(string.to_codepoint)
   assert_eq(fit(cps, 30), cps)
   assert_eq(fit(cps, 8), list.take(cps, 7) + [0x2026])
 }

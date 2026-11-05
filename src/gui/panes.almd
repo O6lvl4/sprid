@@ -4,7 +4,6 @@ import self.gui.groups
 import self.gui.layout
 import self.gui.session
 import self.gui.tabset
-import self.gui.uistate
 
 /// How much a resize key moves a divider, of what it splits.
 let RESIZE_STEP = 0.05

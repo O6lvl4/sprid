@@ -121,8 +121,8 @@ fn place_ime(mut a: session.Session, cur: tabset.Tab, tabs: Int) -> Unit = {
     else (surface.grid_left(r) + render.compose_caret(uistate.compose_of(ui), cur.t.x, cur.t.cols) * r.cell_w, surface.grid_y(r) + cur.t.y * r.cell_h)
   if a.stats.trace and list.len(ui.preedit) > 0 then trace_compose(a, cur, ix, iy)
   if (ix, iy) != (ui.ime_x, ui.ime_y) then {
-    window.set_ime_area(int.to_float(ix) / a.scale, int.to_float(iy) / a.scale,
-      int.to_float(r.cell_w) / a.scale, int.to_float(r.cell_h) / a.scale)
+    window.set_ime_area(float.from(ix) / a.scale, float.from(iy) / a.scale,
+      float.from(r.cell_w) / a.scale, float.from(r.cell_h) / a.scale)
     uistate.set_ime(a.ui, ix, iy)
   }
 }
@@ -132,7 +132,7 @@ fn trace_compose(a: session.Session, cur: tabset.Tab, ix: Int, iy: Int) -> Unit 
   let (x0, ca, cb) = render.compose_span(uistate.compose_of(ui), cur.t.x, cur.t.cols)
   eprintln("compose ${int.to_string(sys.now_ms())} x ${int.to_string(cur.t.x)} cols ${int.to_string(cur.t.cols)} span ${int.to_string(x0)} ${int.to_string(ca)}..${int.to_string(cb)}"
     + " caret ${int.to_string(ui.preedit_caret)} sel ${int.to_string(ui.preedit_from)}..${int.to_string(ui.preedit_to)} ime_px ${int.to_string(ix)},${int.to_string(iy)} cell_w ${int.to_string(a.r.cell_w)} pad ${int.to_string(a.r.pad_x)}"
-    + " text \"${list.join(list.map(ui.preedit, (c) => string.from_codepoint(c)), "")}\"")
+    + " text \"${list.join(list.map(ui.preedit, (c) => string.from_codepoint(c) ?? ""), "")}\"")
 }
 
 /// Capturing: once the first tab's program has ended or SPRID_CAPTURE_MS

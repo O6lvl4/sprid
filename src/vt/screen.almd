@@ -36,7 +36,7 @@ fn erase_cells(mut t: core.Terminal, y: Int, x0: Int, x1: Int) -> Unit = {
 fn erase_row(mut t: core.Terminal, y: Int) -> Unit = {
   erase_cells(t, y, 0, t.cols)
   let p = phys(t, y)
-  bytes.set_u8(t.wrapped, p, 0)
+  bytes.put_u8(t.wrapped, p, 0)
 }
 
 /// The line of the cursor's row, numbered as `view` numbers lines.
@@ -53,15 +53,15 @@ fn mark_failed(mut t: core.Terminal, line: Int) -> Unit = {
     let off = row_off(t, rel - kept)
     for x in 0..<t.cols {
       let o = off + x * cell.SIZE + cell.OFF_FLAGS
-      let flags = bytes.read_u8(t.grid, o)
-      if int.band(flags, cell.FLAG_PROMPT) != 0 then bytes.set_u8(t.grid, o, int.bor(flags, cell.FLAG_FAILED))
+      let flags = bytes.get(t.grid, o) ?? 0
+      if int.band(flags, cell.FLAG_PROMPT) != 0 then bytes.put_u8(t.grid, o, int.bor(flags, cell.FLAG_FAILED))
     }
   }
 }
 
 fn mark_wrapped(mut t: core.Terminal) -> Unit = {
   let p = phys(t, t.y)
-  bytes.set_u8(t.wrapped, p, 1)
+  bytes.put_u8(t.wrapped, p, 1)
 }
 
 /// Copy row `from` over row `to`, carrying its combining marks along.
@@ -70,13 +70,13 @@ fn copy_row(mut t: core.Terminal, from: Int, to: Int) -> Unit = {
   let dst = row_off(t, to)
   bytes.copy_within(t.grid, src, src + t.cols * cell.SIZE, dst)
   let dst_row = phys(t, to)
-  let src_wrapped = bytes.read_u8(t.wrapped, phys(t, from))
-  bytes.set_u8(t.wrapped, dst_row, src_wrapped)
+  let src_wrapped = bytes.get(t.wrapped, phys(t, from)) ?? 0
+  bytes.put_u8(t.wrapped, dst_row, src_wrapped)
   for x in 0..<t.cols {
-    if int.band(bytes.read_u8(t.grid, cell_off(t, x, to) + cell.OFF_FLAGS), cell.FLAG_GRAPHEME) != 0 then {
+    if int.band(bytes.get(t.grid, cell_off(t, x, to) + cell.OFF_FLAGS) ?? 0, cell.FLAG_GRAPHEME) != 0 then {
       let key = cell_index(t, x, to)
-      let marks = map.get_or(t.graphemes, cell_index(t, x, from), "")
-      map.insert(t.graphemes, key, marks)
+      let marks = map.get(t.graphemes, cell_index(t, x, from)) ?? ""
+      t.graphemes = map.set(t.graphemes, key, marks)
     }
   }
 }
@@ -90,8 +90,8 @@ fn row_extras(t: core.Terminal, y: Int) -> Map[Int, String] = {
   // for.
   let cols = if map.len(t.graphemes) == 0 then 0 else t.cols
   for x in 0..<cols {
-    if int.band(bytes.read_u8(t.grid, base + x * cell.SIZE + cell.OFF_FLAGS), cell.FLAG_GRAPHEME) != 0 then
-      map.insert(extras, x, map.get_or(t.graphemes, first + x, ""))
+    if int.band(bytes.get(t.grid, base + x * cell.SIZE + cell.OFF_FLAGS) ?? 0, cell.FLAG_GRAPHEME) != 0 then
+      extras = map.set(extras, x, map.get(t.graphemes, first + x) ?? "")
   }
   extras
 }
@@ -104,7 +104,7 @@ fn forget_marks(mut t: core.Terminal, y: Int, marks: Map[Int, String]) -> Unit =
   if map.len(marks) > 0 then {
     let first = phys(t, y) * t.cols
     for x in map.keys(marks) {
-      map.delete(t.graphemes, first + x)
+      t.graphemes = map.remove(t.graphemes, first + x)
     }
   }
 }
@@ -121,7 +121,7 @@ fn scroll_up(mut t: core.Terminal, n: Int) -> Unit = {
       let marks = row_extras(t, 0)
       if not t.alt then {
         let p = phys(t, 0)
-        let wrapped = bytes.read_u8(t.wrapped, p) == 1
+        let wrapped = bytes.get(t.wrapped, p) ?? 0 == 1
         let off = row_off(t, 0)
         let cols = t.cols
         scrollback.push_cells(t.sb, t.grid, off, cols, wrapped, marks, 0)
@@ -226,7 +226,7 @@ fn move_vertical(mut t: core.Terminal, dy: Int) -> Unit = {
 fn tab_forward(mut t: core.Terminal, n: Int) -> Unit = {
   for _ in 0..<n {
     var x = t.x + 1
-    while x < t.cols - 1 and bytes.read_u8(t.tabs, x) == 0 {
+    while x < t.cols - 1 and bytes.get(t.tabs, x) ?? 0 == 0 {
       x = x + 1
     }
     t.x = int.min(x, t.cols - 1)
@@ -237,7 +237,7 @@ fn tab_forward(mut t: core.Terminal, n: Int) -> Unit = {
 fn tab_backward(mut t: core.Terminal, n: Int) -> Unit = {
   for _ in 0..<n {
     var x = t.x - 1
-    while x > 0 and bytes.read_u8(t.tabs, x) == 0 {
+    while x > 0 and bytes.get(t.tabs, x) ?? 0 == 0 {
       x = x - 1
     }
     t.x = int.max(x, 0)

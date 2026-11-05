@@ -31,7 +31,7 @@ fn glyph(mut r: surface.Renderer, cp: Int, bold: Bool) -> Int = {
         if list.len(r.layer.rects) < before then map.clear(r.glyphs)
         map.get(r.layer.keys, text.key(fi, gid, size_px)) ?? -1
       }
-      map.insert(r.glyphs, k, slot)
+      r.glyphs = map.set(r.glyphs, k, slot)
       slot
     }
   }
@@ -49,7 +49,7 @@ fn emoji_slot(mut r: surface.Renderer, cp: Int) -> Int =
       -1
     } else {
       let slot = if cell_width.of(cp) != 2 or sfnt.glyph_id(r.layer.fonts[0], cp) != 0 then -1 else place_emoji(r, cp)
-      map.insert(r.emojis, cp, slot)
+      r.emojis = map.set(r.emojis, cp, slot)
       slot
     }
   }
@@ -62,7 +62,7 @@ fn place_emoji(mut r: surface.Renderer, cp: Int) -> Int = {
   else {
     let before = list.len(r.layer.color_rects)
     let device = r.device
-    r.layer = text.place_color(device, r.layer, cp, img, 8, bytes.read_u32_le(img, 0), bytes.read_u32_le(img, 4))
+    r.layer = text.place_color(device, r.layer, cp, img, 8, bytes.get_u32_le(img, 0) ?? 0, bytes.get_u32_le(img, 4) ?? 0)
     // The atlas started over: every slot known before is gone.
     if list.len(r.layer.color_rects) <= before then map.clear(r.emojis)
     text.color_slot(r.layer, cp)
@@ -73,9 +73,9 @@ fn place_emoji(mut r: surface.Renderer, cp: Int) -> Int = {
 fn emoji_quad(r: surface.Renderer, slot: Int, x: Int, top: Int, alpha: Float, sx: Float, sy: Float) -> Unit = {
   let o = slot * 4
   let (ax, ay, w, h) = (r.layer.color_rects[o], r.layer.color_rects[o + 1], r.layer.color_rects[o + 2], r.layer.color_rects[o + 3])
-  let atlas = int.to_float(text.COLOR_ATLAS)
-  quad(r, int.to_float(x), int.to_float(top), int.to_float(x + w), int.to_float(top + h),
-    2.0 + int.to_float(ax) / atlas, int.to_float(ay) / atlas, 2.0 + int.to_float(ax + w) / atlas, int.to_float(ay + h) / atlas,
+  let atlas = float.from(text.COLOR_ATLAS)
+  quad(r, float.from(x), float.from(top), float.from(x + w), float.from(top + h),
+    2.0 + float.from(ax) / atlas, float.from(ay) / atlas, 2.0 + float.from(ax + w) / atlas, float.from(ay + h) / atlas,
     r.theme.fg, alpha, sx, sy)
 }
 
@@ -144,7 +144,7 @@ fn sprite_pieces(mut r: surface.Renderer, cp: Int) -> List[sprite.Piece] =
     some(ps) => ps,
     none => {
       let ps = sprite.pieces(cp, r.cell_w, r.cell_h, r.line_w)
-      map.insert(r.sprites, cp, ps)
+      r.sprites = map.set(r.sprites, cp, ps)
       ps
     }
   }
@@ -154,9 +154,9 @@ fn sprite_pieces(mut r: surface.Renderer, cp: Int) -> List[sprite.Piece] =
 fn quad(r: surface.Renderer, x0: Float, y0: Float, x1: Float, y1: Float,
         u0: Float, v0: Float, u1: Float, v1: Float, rgb: Int, alpha: Float,
         sx: Float, sy: Float) -> Unit = {
-  let cr = int.to_float(int.band(int.bshr(rgb, 16), 0xFF)) / 255.0
-  let cg = int.to_float(int.band(int.bshr(rgb, 8), 0xFF)) / 255.0
-  let cb = int.to_float(int.band(rgb, 0xFF)) / 255.0
+  let cr = float.from(int.band(int.bshr(rgb, 16), 0xFF)) / 255.0
+  let cg = float.from(int.band(int.bshr(rgb, 8), 0xFF)) / 255.0
+  let cb = float.from(int.band(rgb, 0xFF)) / 255.0
   let nx0 = x0 * sx - 1.0
   let nx1 = x1 * sx - 1.0
   let ny0 = 1.0 - y0 * sy
@@ -169,10 +169,10 @@ fn quad(r: surface.Renderer, x0: Float, y0: Float, x1: Float, y1: Float,
 /// A filled rectangle, sampling the atlas's solid texel.
 fn rect(r: surface.Renderer, x0: Int, y0: Int, x1: Int, y1: Int, rgb: Int, alpha: Float, sx: Float, sy: Float) -> Unit = {
   let slot = map.get(r.layer.keys, text.SOLID) ?? 0
-  let atlas = int.to_float(text.ATLAS)
-  let u = (int.to_float(r.layer.rects[slot * 6]) + 0.5) / atlas
-  let v = (int.to_float(r.layer.rects[slot * 6 + 1]) + 0.5) / atlas
-  quad(r, int.to_float(x0), int.to_float(y0), int.to_float(x1), int.to_float(y1), u, v, u, v, rgb, alpha, sx, sy)
+  let atlas = float.from(text.ATLAS)
+  let u = (float.from(r.layer.rects[slot * 6]) + 0.5) / atlas
+  let v = (float.from(r.layer.rects[slot * 6 + 1]) + 0.5) / atlas
+  quad(r, float.from(x0), float.from(y0), float.from(x1), float.from(y1), u, v, u, v, rgb, alpha, sx, sy)
 }
 
 /// The glyph in `slot` with its pen at `x` on the baseline `y`.
@@ -188,11 +188,11 @@ fn glyph_quad(r: surface.Renderer, slot: Int, x: Int, y: Int, rgb: Int, alpha: F
   else {
     let left = x + r.layer.rects[o + 4]
     let top = y - r.layer.rects[o + 5]
-    let atlas = int.to_float(text.ATLAS)
-    let ax = int.to_float(r.layer.rects[o])
-    let ay = int.to_float(r.layer.rects[o + 1])
-    quad(r, int.to_float(left), int.to_float(top), int.to_float(left + w), int.to_float(top + h),
-      ax / atlas, ay / atlas, (ax + int.to_float(w)) / atlas, (ay + int.to_float(h)) / atlas,
+    let atlas = float.from(text.ATLAS)
+    let ax = float.from(r.layer.rects[o])
+    let ay = float.from(r.layer.rects[o + 1])
+    quad(r, float.from(left), float.from(top), float.from(left + w), float.from(top + h),
+      ax / atlas, ay / atlas, (ax + float.from(w)) / atlas, (ay + float.from(h)) / atlas,
       rgb, alpha, sx, sy)
   }
 }

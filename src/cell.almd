@@ -69,14 +69,14 @@ fn link_bits(id: Int) -> Int = int.bor(int.bshl(int.band(id, 63), 10), int.bshl(
 fn link_of(word: Int) -> Int = int.bor(int.band(int.bshr(word, 10), 63), int.bshl(int.band(int.bshr(word, 25), 31), 6))
 
 /// Whether the cell at byte `o` of `cells` is part of a prompt.
-fn is_prompt(cells: Bytes, o: Int) -> Bool = int.band(bytes.read_u8(cells, o + OFF_FLAGS), FLAG_PROMPT) != 0
+fn is_prompt(cells: Bytes, o: Int) -> Bool = int.band(bytes.get(cells, o + OFF_FLAGS) ?? 0, FLAG_PROMPT) != 0
 
 /// Whether the cell at byte `o` of `cells` is part of a prompt after a
 /// failed command.
-fn is_failed(cells: Bytes, o: Int) -> Bool = int.band(bytes.read_u8(cells, o + OFF_FLAGS), FLAG_FAILED) != 0
+fn is_failed(cells: Bytes, o: Int) -> Bool = int.band(bytes.get(cells, o + OFF_FLAGS) ?? 0, FLAG_FAILED) != 0
 
 /// The link of the cell at byte `o` of `cells`.
-fn link_at(cells: Bytes, o: Int) -> Int = link_of(bytes.read_u32_le(cells, o + OFF_ATTRS))
+fn link_at(cells: Bytes, o: Int) -> Int = link_of(bytes.get_u32_le(cells, o + OFF_ATTRS) ?? 0)
 
 let COLOR_DEFAULT = 0
 
@@ -89,10 +89,10 @@ fn rgb(r: Int, g: Int, b: Int) -> Int =
 /// the row, so an erased cell takes the current background (xterm's
 /// background color erase).
 fn blank_row(cols: Int, bg: Int) -> Bytes = {
-  var row = bytes.new(cols * SIZE)
+  var row = bytes.zeros(cols * SIZE)
   for x in 0..<cols {
-    bytes.set_u32_le(row, x * SIZE + OFF_BG, bg)
-    bytes.set_u8(row, x * SIZE + OFF_WIDTH, 1)
+    bytes.put_u32_le(row, x * SIZE + OFF_BG, bg)
+    bytes.put_u8(row, x * SIZE + OFF_WIDTH, 1)
   }
   row
 }

@@ -33,7 +33,7 @@ effect fn edit_config() -> Unit = {
   }
   if held == none or held == some(OLD_TEMPLATE) then {
     let _ = fs.mkdir_p(config_dir()!)
-    let _ = fs.write(path, config.TEMPLATE)
+    let _ = fs.write_text(path, config.TEMPLATE)
   }
   let _ = sys.open_text(path)
 }

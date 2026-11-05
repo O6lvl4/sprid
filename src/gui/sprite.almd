@@ -69,7 +69,7 @@ let QUADRANTS = [4, 8, 1, 1 + 4 + 8, 1 + 8, 1 + 2 + 4, 1 + 2 + 8, 2, 2 + 4, 2 + 
 fn block(cp: Int, w: Int, h: Int) -> List[Piece] =
   if cp >= 0x2596 then quadrants(QUADRANTS[cp - 0x2596], w, h)
   // ░ ▒ ▓
-  else if cp >= 0x2591 and cp <= 0x2593 then shade(w, h, int.to_float(cp - 0x2590) * 0.25)
+  else if cp >= 0x2591 and cp <= 0x2593 then shade(w, h, float.from(cp - 0x2590) * 0.25)
   else [edge_block(cp, w, h)]
 
 /// ▀ ▐ ▔ ▕, U+2581..U+2587 (lower k eighths) and U+2588..U+258F (full,
@@ -130,16 +130,16 @@ fn rounded(cp: Int, w: Int, h: Int, lw: Int) -> List[Piece] = {
   if sy > 0 then list.push(ps, piece(x0, cy + rad, x0 + lw, h)) else list.push(ps, piece(x0, 0, x0 + lw, cy - rad + 1))
   // The arc, centred a radius into the corner, from the vertical stroke's
   // end to the horizontal one's.
-  let ccx = int.to_float(cx + sx * rad)
-  let ccy = int.to_float(cy + sy * rad)
-  let r = int.to_float(rad)
+  let ccx = float.from(cx + sx * rad)
+  let ccy = float.from(cy + sy * rad)
+  let r = float.from(rad)
   let steps = int.max(8, rad * 3)
   for i in 0...steps {
-    let phi = math.pi() / 2.0 * int.to_float(i) / int.to_float(steps)
-    let px = ccx - int.to_float(sx) * r * math.cos(phi)
-    let py = ccy - int.to_float(sy) * r * math.sin(phi)
-    let qx = float.to_int(float.round(px)) - lw / 2
-    let qy = float.to_int(float.round(py)) - lw / 2
+    let phi = math.pi() / 2.0 * float.from(i) / float.from(steps)
+    let px = ccx - float.from(sx) * r * math.cos(phi)
+    let py = ccy - float.from(sy) * r * math.sin(phi)
+    let qx = int.from_saturating(float.round(px)) - lw / 2
+    let qy = int.from_saturating(float.round(py)) - lw / 2
     list.push(ps, piece(qx, qy, qx + lw, qy + lw))
   }
   ps

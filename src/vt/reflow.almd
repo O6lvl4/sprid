@@ -36,11 +36,11 @@ type Rewrap = {
 fn gather(mut w: Rewrap, src: Bytes, off: Int, n: Int, marks: Map[Int, String]) -> Unit = {
   let need = (w.len + n) * cell.SIZE
   if need > bytes.len(w.buf) then {
-    w.buf = bytes.concat(w.buf, bytes.new(int.max(need, bytes.len(w.buf))))
+    w.buf = w.buf + bytes.zeros(int.max(need, bytes.len(w.buf)))
   }
   bytes.copy_from(w.buf, src, w.len * cell.SIZE, off, n * cell.SIZE)
   for x in map.keys(marks) {
-    if x < n then map.insert(w.marks, w.len + x, map.get_or(marks, x, ""))
+    if x < n then { w.marks = map.set(w.marks, w.len + x, map.get(marks, x) ?? "") }
   }
   w.len = w.len + n
 }
@@ -53,7 +53,7 @@ fn flush_line(mut w: Rewrap) -> Unit = {
   while more {
     var b = int.min(a + w.cols, w.len)
     // A wide character that would straddle the edge starts the next row.
-    if b < w.len and b - 1 > a and bytes.read_u8(w.buf, (b - 1) * cell.SIZE + cell.OFF_WIDTH) == 2 then b = b - 1
+    if b < w.len and b - 1 > a and bytes.get(w.buf, (b - 1) * cell.SIZE + cell.OFF_WIDTH) ?? 0 == 2 then b = b - 1
     more = b < w.len
     if w.cursor >= a and (w.cursor < b or not more) then {
       w.cursor_row = list.len(w.rows)
@@ -74,7 +74,7 @@ fn emit_row(mut w: Rewrap, a: Int, b: Int, wrapped: Bool) -> Unit = {
   if map.len(w.marks) > 0 then {
     for x in a..<b {
       match map.get(w.marks, x) {
-        some(m) => map.insert(marks, x - a, m),
+        some(m) => { marks = map.set(marks, x - a, m) },
         none => (),
       }
     }
@@ -96,7 +96,7 @@ fn reflow(mut t: core.Terminal, cols: Int, rows: Int, all: Bool) -> Unit = {
   let no_flags: List[Bool] = []
   let no_row_marks: List[Map[Int, String]] = []
   var w = Rewrap {
-    cols: cols, buf: bytes.new(0), len: 0, marks: no_marks, cursor: -1,
+    cols: cols, buf: bytes.zeros(0), len: 0, marks: no_marks, cursor: -1,
     sb: fresh, to_screen: false, rows: no_rows, rows_wrapped: no_flags, rows_marks: no_row_marks,
     cursor_row: 0, cursor_x: 0,
   }
@@ -112,7 +112,7 @@ fn reflow(mut t: core.Terminal, cols: Int, rows: Int, all: Bool) -> Unit = {
 fn rewrap_scrollback(mut w: Rewrap, sb: scrollback.Scrollback) -> Unit = {
   for (block, start, end) in scrollback.records(sb) {
     let used = record.used(block, start)
-    let whole = w.len == 0 and bytes.read_u8(block, start + 2) == 0 and used <= w.cols
+    let whole = w.len == 0 and bytes.get(block, start + 2) ?? 0 == 0 and used <= w.cols
     if whole then scrollback.push(w.sb, bytes.slice(block, start - 4, end))
     else {
       let row = record.decode(block, start, end, used)
@@ -129,8 +129,8 @@ fn spaced(cells: Bytes, used: Int) -> Bytes = {
   var out = cells
   for x in 0..<used {
     let o = x * cell.SIZE
-    if bytes.read_u32_le(out, o + cell.OFF_CP) == 0 and bytes.read_u8(out, o + cell.OFF_WIDTH) == 1 then
-      bytes.set_u32_le(out, o + cell.OFF_CP, 32)
+    if bytes.get_u32_le(out, o + cell.OFF_CP) ?? 0 == 0 and bytes.get(out, o + cell.OFF_WIDTH) ?? 0 == 1 then
+      bytes.put_u32_le(out, o + cell.OFF_CP, 32)
   }
   out
 }
@@ -143,7 +143,7 @@ fn rewrap_screen(mut w: Rewrap, t: core.Terminal) -> Unit = {
     let used = record.used_cols_at(t.grid, off, t.cols)
     if y == t.y then gather_cursor_row(w, t, off, used)
     else gather(w, t.grid, off, used, screen.row_extras(t, y))
-    if bytes.read_u8(t.wrapped, screen.phys(t, y)) != 1 or y == last then flush_line(w)
+    if (bytes.get(t.wrapped, screen.phys(t, y)) ?? 0) != 1 or y == last then flush_line(w)
   }
 }
 
@@ -151,7 +151,7 @@ fn rewrap_screen(mut w: Rewrap, t: core.Terminal) -> Unit = {
 fn last_row(t: core.Terminal) -> Int = {
   var last = t.y
   for y in 0..<t.rows {
-    if record.used_cols_at(t.grid, screen.row_off(t, y), t.cols) > 0 or bytes.read_u8(t.wrapped, screen.phys(t, y)) == 1 then last = int.max(last, y)
+    if record.used_cols_at(t.grid, screen.row_off(t, y), t.cols) > 0 or bytes.get(t.wrapped, screen.phys(t, y)) ?? 0 == 1 then last = int.max(last, y)
   }
   last
 }
@@ -207,15 +207,15 @@ fn place(mut t: core.Terminal, w: Rewrap, cols: Int, rows: Int) -> Unit = {
 /// Rows `first` on of `w` as a `cols` x `rows` screen.
 fn rows_to_screen(w: Rewrap, first: Int, cols: Int, rows: Int) -> Screen = {
   var grid = bytes.repeat(cell.blank_row(cols, cell.COLOR_DEFAULT), rows)
-  var wrapped_rows = bytes.new(rows)
+  var wrapped_rows = bytes.zeros(rows)
   var graphemes: Map[Int, String] = [:]
   for i in first..<int.min(list.len(w.rows), first + rows) {
     let y = i - first
     bytes.copy_from(grid, w.rows[i], y * cols * cell.SIZE, 0, cols * cell.SIZE)
-    bytes.set_u8(wrapped_rows, y, if w.rows_wrapped[i] then 1 else 0)
+    bytes.put_u8(wrapped_rows, y, if w.rows_wrapped[i] then 1 else 0)
     let marks = w.rows_marks[i]
     for x in map.keys(marks) {
-      map.insert(graphemes, y * cols + x, map.get_or(marks, x, ""))
+      graphemes = map.set(graphemes, y * cols + x, map.get(marks, x) ?? "")
     }
   }
   Screen { grid: grid, wrapped: wrapped_rows, graphemes: graphemes }
@@ -226,7 +226,7 @@ fn rows_to_screen(w: Rewrap, first: Int, cols: Int, rows: Int) -> Screen = {
 fn copy_screen(grid: Bytes, top: Int, wrapped: Bytes, graphemes: Map[Int, String],
                cols: Int, rows: Int, new_cols: Int, new_rows: Int) -> Screen = {
   var out = bytes.repeat(cell.blank_row(new_cols, cell.COLOR_DEFAULT), new_rows)
-  var out_wrapped = bytes.new(new_rows)
+  var out_wrapped = bytes.zeros(new_rows)
   var out_graphemes: Map[Int, String] = [:]
   let keep_cols = int.min(cols, new_cols)
   for y in 0..<int.min(rows, new_rows) {
@@ -234,16 +234,16 @@ fn copy_screen(grid: Bytes, top: Int, wrapped: Bytes, graphemes: Map[Int, String
     let src = p * cols * cell.SIZE
     let dst = y * new_cols * cell.SIZE
     bytes.copy_from(out, grid, dst, src, keep_cols * cell.SIZE)
-    bytes.set_u8(out_wrapped, y, if new_cols >= cols then bytes.read_u8(wrapped, p) else 0)
+    bytes.put_u8(out_wrapped, y, if new_cols >= cols then bytes.get(wrapped, p) ?? 0 else 0)
     // A wide char cut in half at the new edge becomes a blank.
     let last = dst + (keep_cols - 1) * cell.SIZE
-    if keep_cols < cols and bytes.read_u8(out, last + cell.OFF_WIDTH) == 2 then {
-      bytes.set_u32_le(out, last + cell.OFF_CP, 0)
-      bytes.set_u8(out, last + cell.OFF_WIDTH, 1)
+    if keep_cols < cols and bytes.get(out, last + cell.OFF_WIDTH) ?? 0 == 2 then {
+      bytes.put_u32_le(out, last + cell.OFF_CP, 0)
+      bytes.put_u8(out, last + cell.OFF_WIDTH, 1)
     }
     for x in 0..<keep_cols {
-      if int.band(bytes.read_u8(out, dst + x * cell.SIZE + cell.OFF_FLAGS), cell.FLAG_GRAPHEME) != 0 then
-        map.insert(out_graphemes, y * new_cols + x, map.get_or(graphemes, p * cols + x, ""))
+      if int.band(bytes.get(out, dst + x * cell.SIZE + cell.OFF_FLAGS) ?? 0, cell.FLAG_GRAPHEME) != 0 then
+        out_graphemes = map.set(out_graphemes, y * new_cols + x, map.get(graphemes, p * cols + x) ?? "")
     }
   }
   Screen { grid: out, wrapped: out_wrapped, graphemes: out_graphemes }

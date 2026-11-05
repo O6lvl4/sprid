@@ -11,7 +11,7 @@ type Place = { r: render.Renderer, scale: Float, tabs: Int, width: Int }
 let DOUBLE_CLICK_MS = 500
 
 /// The pointer, in the drawable's pixels.
-fn px(p: Place) -> Int = float.to_int(window.event_x() * p.scale)
+fn px(p: Place) -> Int = int.from_saturating(window.event_x() * p.scale)
 
-fn py(p: Place) -> Int = float.to_int(window.event_y() * p.scale)
+fn py(p: Place) -> Int = int.from_saturating(window.event_y() * p.scale)
 

@@ -48,18 +48,18 @@ let WIDE = [
 let BMP = bmp_table()
 
 fn bmp_table() -> Bytes = {
-  var table = bytes.new(65536)
+  var table = bytes.zeros(65536)
   bytes.fill(table, 1)
   for r in WIDE {
     let (lo, hi) = r
     for cp in lo...int.min(hi, 0xFFFF) {
-      bytes.set_u8(table, cp, 2)
+      bytes.put_u8(table, cp, 2)
     }
   }
   for r in ZERO_WIDTH {
     let (lo, hi) = r
     for cp in lo...int.min(hi, 0xFFFF) {
-      bytes.set_u8(table, cp, 0)
+      bytes.put_u8(table, cp, 0)
     }
   }
   table
@@ -75,7 +75,7 @@ fn in_ranges(cp: Int, ranges: List[(Int, Int)]) -> Bool =
 /// executes them instead of printing.
 fn of(cp: Int) -> Int =
   if cp < 0x0300 then 1
-  else if cp < 0x10000 then bytes.read_u8(BMP, cp)
+  else if cp < 0x10000 then bytes.get(BMP, cp) ?? 0
   else if in_ranges(cp, ZERO_WIDTH) then 0
   else if in_ranges(cp, WIDE) then 2
   else 1

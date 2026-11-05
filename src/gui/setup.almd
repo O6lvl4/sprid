@@ -22,7 +22,7 @@ import self.gui.layout
 /// Another window, its first tab's shell started in `cwd`, sized and set up
 /// as `from` is; none when it can't be opened.
 effect fn open_window(from: session.Session, cwd: String) -> Option[session.Session] = {
-  let id = window.open_window("sprid", float.to_int(int.to_float(from.width) / from.scale), float.to_int(int.to_float(from.height) / from.scale))
+  let id = window.open_window("sprid", int.from_saturating(float.from(from.width) / from.scale), int.from_saturating(float.from(from.height) / from.scale))
   guard id > 0 else none
   window.select(id)
   window.set_ime(true)
@@ -45,7 +45,7 @@ effect fn open_window(from: session.Session, cwd: String) -> Option[session.Sess
 effect fn adopt(from: session.Session, taken: (layout.Group, List[tabset.Tab])) -> Option[session.Session] = {
   let (g, panes) = taken
   let tb = panes[groups.index_of(panes, g.focus)]
-  let id = window.open_window("sprid", float.to_int(int.to_float(from.width) / from.scale), float.to_int(int.to_float(from.height) / from.scale))
+  let id = window.open_window("sprid", int.from_saturating(float.from(from.width) / from.scale), int.from_saturating(float.from(from.height) / from.scale))
   guard id > 0 else none
   window.select(id)
   window.set_ime(true)
@@ -65,8 +65,8 @@ effect fn start(id: Int, capture: Option[String], faces: fonts.Faces, st: settin
   let device = 1
   // The theme also colours what a window being resized uncovers, until it is
   // drawn for its size.
-  var r = prefs.styled(render.new(device, faces, float.to_int(float.round(st.font_size * scale)),
-    float.to_int(st.pad_x * scale), float.to_int(st.pad_y * scale), st.cell_height), st)!
+  var r = prefs.styled(render.new(device, faces, int.from_saturating(float.round(st.font_size * scale)),
+    int.from_saturating(st.pad_x * scale), int.from_saturating(st.pad_y * scale), st.cell_height), st)!
   // Opened behind another app's window, it has no focus until clicked.
   r.focused = window.focused()
   let width = window.width()
@@ -86,7 +86,7 @@ effect fn start(id: Int, capture: Option[String], faces: fonts.Faces, st: settin
     tabs: [tabset.Tab { t: terminal.with_scrollback(cols, rows, st.scrollback), fd: first_fd, back: 0, shift: 0, sel: none, held: none,
       up: tabset.NO_UPDATES, name: "", alert: false, seen: none, slide: tabset.NO_SLIDE }],
     active: 0, groups: [layout.single(first_fd)], ui: fresh_ui(home), width: width, height: height,
-    windowed: (int.to_float(width) / scale, int.to_float(height) / scale), font_size: st.font_size,
+    windowed: (float.from(width) / scale, float.from(height) / scale), font_size: st.font_size,
     blink_at: -1, flash_until: -1, alive: true, last_frame: 0, streaming: false, vsync_run: false, vsync_at: -1, vsync_due: false, resized_at: -1,
     front: first_fd, window_title: "", stats: fresh_stats()!,
   }
@@ -111,7 +111,7 @@ effect fn staged(mut a: session.Session, id: Int, login: String) -> Unit = {
     }
   }
   if extra > 1 then groups.go_to(a, 0)
-  for c in string.chars(env.get("SPRID_CAPTURE_SPLITS") ?? "") {
+  for c in string.to_list(env.get("SPRID_CAPTURE_SPLITS") ?? "") {
     let (sc, sr) = groups.split_grid(a, c == "r")
     match tabset.open_tab(sc, sr, login, "", a.st.scrollback) {
       some(tb) => groups.add_pane(a, tb, c == "r"),
@@ -148,7 +148,7 @@ effect fn fresh_stats() -> session.Stats = {
     debug: env.get("SPRID_DEBUG") != none, trace: env.get("SPRID_TRACE") != none,
     frames: 0, draw_ms: 0, wakes: 0, wake_report: 0,
     input_at: -1, latency_max: 0, latency_sum: 0, latency_n: 0,
-    auto: auto, auto_next: if list.len(auto) == 4 then float.to_int(auto[1]) else -1,
+    auto: auto, auto_next: if list.len(auto) == 4 then int.from_saturating(auto[1]) else -1,
     quit_at: match int.parse(env.get("SPRID_QUIT_MS") ?? "") {
       ok(ms) => sys.now_ms() + ms,
       err(_) => -1,

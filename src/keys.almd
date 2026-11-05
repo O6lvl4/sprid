@@ -69,7 +69,7 @@ fn csi_u(code: Int, mods: Int) -> String = {
 /// A typed character. Ctrl makes a control character of it; Alt (Option, as
 /// macos-option-as-alt) sends ESC before it.
 fn text(cp: Int, mods: Int) -> String = {
-  let base = if int.band(mods, MOD_CTRL) != 0 then control(cp) else string.from_codepoint(cp)
+  let base = if int.band(mods, MOD_CTRL) != 0 then control(cp) else string.from_codepoint(cp) ?? ""
   if int.band(mods, MOD_ALT) != 0 then "\x1b" + base else base
 }
 
@@ -85,7 +85,7 @@ let CONTROL_KEYS = [(0x20, 0x00), (0x32, 0x00), (0x33, 0x1B), (0x34, 0x1C), (0x3
 fn control(cp: Int) -> String = {
   let letter = (cp >= 0x40 and cp <= 0x5F) or (cp >= 0x61 and cp <= 0x7A)
   let mapped = if letter then some(int.band(cp, 0x1F)) else lookup(CONTROL_KEYS, cp)
-  string.from_codepoint(mapped ?? cp)
+  string.from_codepoint(mapped ?? cp) ?? ""
 }
 
 /// The value paired with `k` in `pairs`.
@@ -133,7 +133,7 @@ fn key(code: Int, mods: Int, app_cursor: Bool) -> String =
 
 /// F1..F4: SS3 P..S, or CSI 1;m P..S when modified.
 fn f1_to_f4(code: Int, mods: Int) -> String = {
-  let final = string.from_codepoint(0x50 + code - KEY_F1)
+  let final = string.from_codepoint(0x50 + code - KEY_F1) ?? ""
   let m = modifier_param(mods)
   if m > 1 then "\x1b[1;${int.to_string(m)}${final}" else "\x1bO${final}"
 }
@@ -181,7 +181,7 @@ fn mac_edit(kind: Int, code: Int, mods: Int) -> String =
 /// otherwise — spaces, quotes, globs, `$` and the like — escaped with a
 /// backslash, as Finder's drop into Terminal.app writes it.
 fn shell_escape(path: String) -> String =
-  string.join(list.map(string.chars(path), (ch) => if string.contains(" \t'\"\\$`!&*()[]{}|;<>?#~=%^", ch) then "\\" + ch else ch), "")
+  list.join(list.map(string.to_list(path), (ch) => if string.contains(" \t'\"\\$`!&*()[]{}|;<>?#~=%^", ch) then "\\" + ch else ch), "")
 
 /// Pasted text: newlines become CR, as typed Enter would, and with
 /// bracketed paste (mode 2004) the program is told where it starts and ends.
@@ -209,7 +209,7 @@ test "ctrl makes control characters" {
   assert_eq(encode(TEXT, 0x63, MOD_CTRL, false), "\x03")
   assert_eq(encode(TEXT, 0x64, MOD_CTRL, false), "\x04")
   assert_eq(encode(TEXT, 0x5B, MOD_CTRL, false), "\x1b")
-  assert_eq(encode(TEXT, 0x20, MOD_CTRL, false), string.from_codepoint(0))
+  assert_eq(encode(TEXT, 0x20, MOD_CTRL, false), string.from_codepoint(0) ?? "")
 }
 
 test "alt prefixes ESC" {
@@ -287,7 +287,7 @@ test "dropped paths are escaped for the shell" {
 
 test "ctrl with digits and symbols, as xterm" {
   assert_eq(encode(TEXT, 0x33, MOD_CTRL, false), "\x1b")
-  assert_eq(encode(TEXT, 0x36, MOD_CTRL + MOD_SHIFT, false), string.from_codepoint(0x1E))
-  assert_eq(encode(TEXT, 0x2D, MOD_CTRL + MOD_SHIFT, false), string.from_codepoint(0x1F))
+  assert_eq(encode(TEXT, 0x36, MOD_CTRL + MOD_SHIFT, false), string.from_codepoint(0x1E) ?? "")
+  assert_eq(encode(TEXT, 0x2D, MOD_CTRL + MOD_SHIFT, false), string.from_codepoint(0x1F) ?? "")
   assert_eq(encode(TEXT, 0x38, MOD_CTRL, false), "\x7f")
 }

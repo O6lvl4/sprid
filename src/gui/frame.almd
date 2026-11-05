@@ -80,11 +80,11 @@ fn prepare_rows(mut r: surface.Renderer, lines: List[Option[record.Row]], cols: 
 /// many quads its marks or sprite take.
 fn prepare_cell(mut r: surface.Renderer, row: record.Row, x: Int) -> Int = {
   let o = x * cell.SIZE
-  let cp = bytes.read_u32_le(row.cells, o + cell.OFF_CP)
+  let cp = bytes.get_u32_le(row.cells, o + cell.OFF_CP) ?? 0
   if sprite.is_sprite(cp) then list.len(ink.sprite_pieces(r, cp))
   else if cp <= 32 then 0
   else {
-    let bold = int.band(bytes.read_u16_le(row.cells, o + cell.OFF_ATTRS), cell.ATTR_BOLD) != 0
+    let bold = int.band(bytes.get_u16_le(row.cells, o + cell.OFF_ATTRS) ?? 0, cell.ATTR_BOLD) != 0
     if ink.emoji_slot(r, cp) < 0 then {
       let _ = ink.glyph(r, cp, bold)
     }
