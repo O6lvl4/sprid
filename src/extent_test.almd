@@ -1,0 +1,13 @@
+// The per-row extent (core.extent): the column from which a row is known
+// to be default blanks, raised as cells are written and reset as rows go.
+
+import self.terminal
+import self.vt.screen
+
+test "extent follows the text" {
+  var t = terminal.new(20, 5)
+  terminal.feed_string(t, "1\r\n22\r\n333\r\n")
+  assert_eq([screen.extent(t, 0), screen.extent(t, 1), screen.extent(t, 2), screen.extent(t, 3)], [1, 2, 3, 0])
+  terminal.feed_string(t, "4\r\n5\r\n6\r\n7\r\n")
+  assert_eq([screen.extent(t, 0), screen.extent(t, 1), screen.extent(t, 2), screen.extent(t, 3), screen.extent(t, 4)], [1, 1, 1, 1, 0])
+}

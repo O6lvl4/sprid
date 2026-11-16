@@ -90,10 +90,12 @@ fn write_run(mut out: Bytes, at: Int, grid: Bytes, off: Int, from: Int, used: In
     // A cell's second 8 bytes in one read: background and attributes, then
     // width and flags in the top two.
     let c = off + x * cell.SIZE
+    // And its first 8: character, then foreground in the top 32.
+    let head = bytes.get_i64_le(grid, c + cell.OFF_CP) ?? 0
     let tail = bytes.get_i64_le(grid, c + cell.OFF_BG) ?? 0
-    more = int.band(tail, STYLE_MASK) == style and bytes.get_u32_le(grid, c + cell.OFF_FG) ?? 0 == fg
+    more = int.band(tail, STYLE_MASK) == style and int.band(int.bshr(head, 32), 0xFFFFFFFF) == fg
     if more then {
-      p = write_cell(out, p, bytes.get_u32_le(grid, c + cell.OFF_CP) ?? 0, tail)
+      p = write_cell(out, p, int.band(head, 0xFFFFFFFF), tail)
       if int.band(int.bshr(tail, 56), cell.FLAG_GRAPHEME) != 0 then p = write_marks(out, p, map.get(graphemes, base + x) ?? "")
       x = x + 1
     }

@@ -8,6 +8,9 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 
 thread_local! {
+    /// Whether the last `read` found data without polling: the next tries
+    /// that first again.
+    static EAGER: std::cell::Cell<bool> = std::cell::Cell::new(false);
     /// Master fds whose child side has closed: a read hit the end.
     static ENDED: RefCell<HashSet<i32>> = RefCell::new(HashSet::new());
     static SCRATCH: RefCell<Vec<u8>> = RefCell::new(vec![0u8; 65536]);
@@ -97,17 +100,34 @@ fn errno() -> i32 { std::io::Error::last_os_error().raw_os_error().unwrap_or(0) 
 /// Wait up to `timeout_ms` for output on `fd` and return what is there; empty
 /// on timeout, and once the child side has closed (`eof` then says so).
 pub fn read(fd: i64, timeout_ms: i64) -> AlmideRcCow<Vec<u8>> {
-    let mut pfd = libc::pollfd { fd: fd as i32, events: libc::POLLIN, revents: 0 };
-    let n = unsafe { libc::poll(&mut pfd, 1, timeout_ms as i32) };
-    if n <= 0 { return AlmideRcCow::new(Vec::new()); }
-    // One scratch buffer for every read; what comes back is a copy of just
-    // the bytes read. A fresh 64 KB per call, zeroed, cost more than the
-    // parsing when macOS hands over a PTY 1 KB at a time.
-    let out = SCRATCH.with(|b| {
-        let mut buf = b.borrow_mut();
-        let r = unsafe { libc::read(fd as i32, buf.as_mut_ptr() as *mut _, buf.len()) };
-        if r > 0 { Ok(buf[..r as usize].to_vec()) } else { Err(if r == 0 { 0 } else { errno() }) }
-    });
+    // The master is non-blocking. While a program streams, the PTY has its
+    // next KB ready at every turn, and polling first was one of two system
+    // calls per KB: after a read that found data, the next reads first and
+    // polls only when nothing was there. After one that found nothing — a
+    // program writing a line at a time — the next polls first, as the read
+    // would mostly fail.
+    let eager = EAGER.with(|e| e.get());
+    let mut out = if eager { take(fd) } else { Err(libc::EAGAIN) };
+    // A streaming program refills the KB within microseconds of it being
+    // taken: a few more tries before sleeping in poll — whose wake-up costs
+    // more than they do — keep the handoff tight.
+    let mut tries = if eager && timeout_ms > 0 { 40 } else { 0 };
+    while tries > 0 && matches!(out, Err(libc::EAGAIN)) {
+        std::hint::spin_loop();
+        out = take(fd);
+        tries -= 1;
+    }
+    if matches!(out, Err(libc::EAGAIN)) {
+        let mut pfd = libc::pollfd { fd: fd as i32, events: libc::POLLIN, revents: 0 };
+        let n = unsafe { libc::poll(&mut pfd, 1, timeout_ms as i32) };
+        if n <= 0 {
+            EAGER.with(|e| e.set(false));
+            return AlmideRcCow::new(Vec::new());
+        }
+        out = take(fd);
+    }
+    // Whole KBs mean a stream; less, a program writing as it goes.
+    EAGER.with(|e| e.set(matches!(out, Ok(ref v) if v.len() >= 1024)));
     match out {
         Ok(v) => AlmideRcCow::new(v),
         // Interrupted, or nothing after all: not the end.
@@ -126,6 +146,19 @@ pub fn wait(fds: &[i64], timeout_ms: i64) {
         fds.iter().map(|&fd| libc::pollfd { fd: fd as i32, events: libc::POLLIN, revents: 0 }).collect();
     if pfds.is_empty() { return; }
     unsafe { libc::poll(pfds.as_mut_ptr(), pfds.len() as libc::nfds_t, timeout_ms as i32) };
+}
+
+/// One read of `fd` into the scratch buffer; what came, or the errno (0 at
+/// the end of the child's output). One scratch buffer for every read; what
+/// comes back is a copy of just the bytes read. A fresh 64 KB per call,
+/// zeroed, cost more than the parsing when macOS hands over a PTY 1 KB at a
+/// time.
+fn take(fd: i64) -> Result<Vec<u8>, i32> {
+    SCRATCH.with(|b| {
+        let mut buf = b.borrow_mut();
+        let r = unsafe { libc::read(fd as i32, buf.as_mut_ptr() as *mut _, buf.len()) };
+        if r > 0 { Ok(buf[..r as usize].to_vec()) } else { Err(if r == 0 { 0 } else { errno() }) }
+    })
 }
 
 /// `true` once a read of `fd` has hit the end of the child's output.

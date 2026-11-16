@@ -25,6 +25,31 @@ fn csi(mut t: core.Terminal, b: Int) -> Unit =
   }
   else { t.state = core.CSI_IGNORE }
 
+/// The digits and `;` separators of a CSI sequence's parameters at `i` of
+/// `data`, in the entry or parameter state (`param_byte`, in bulk): where
+/// they stop. Any other byte — `:`, a private marker, the final byte — is
+/// left for `csi`.
+fn params(mut t: core.Terminal, data: Bytes, i: Int, n: Int) -> Int = {
+  t.state = core.CSI_PARAM
+  var j = i
+  var p = t.param
+  var go = true
+  while go and j < n {
+    let b = bytes.get(data, j) ?? 0
+    if b >= 0x30 and b <= 0x39 then {
+      p = int.min(if p < 0 then b - 0x30 else p * 10 + b - 0x30, 65535)
+      j = j + 1
+    } else if b == 0x3B then {
+      t.param = p
+      core.push_param(t)
+      p = -1
+      j = j + 1
+    } else go = false
+  }
+  t.param = p
+  j
+}
+
 /// `?`, `>`, `<` or `=`: a private sequence, when it comes first.
 fn private_marker(mut t: core.Terminal, b: Int) -> Unit =
   if t.state == core.CSI_ENTRY then {

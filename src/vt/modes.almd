@@ -108,14 +108,17 @@ fn swap_screens(mut t: core.Terminal) -> Unit = {
   let grid = t.grid
   let top = t.top
   let wrapped = t.wrapped
+  let extent = t.extent
   let graphemes = t.graphemes
   t.grid = t.other_grid
   t.top = t.other_top
   t.wrapped = t.other_wrapped
+  t.extent = t.other_extent
   t.graphemes = t.other_graphemes
   t.other_grid = grid
   t.other_top = top
   t.other_wrapped = wrapped
+  t.other_extent = extent
   t.other_graphemes = graphemes
 }
 

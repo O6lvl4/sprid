@@ -62,11 +62,13 @@ fn advance(mut t: core.Terminal, cp: Int, w: Int) -> Unit = {
 /// Write `cp` of width `w` at column x of the cursor row, first splitting any
 /// wide char it overwrites half of.
 fn put(mut t: core.Terminal, x: Int, cp: Int, w: Int) -> Unit = {
-  erase.clear_wide_at(t, x)
-  if w == 2 then erase.clear_wide_at(t, x + 1)
   let o = screen.cell_off(t, x, t.y)
+  // Only a wide char's half under either cell needs more than overwriting.
+  if (bytes.get(t.grid, o + cell.OFF_WIDTH) ?? 0) != 1 then erase.clear_wide_at(t, x)
+  if w == 2 and (bytes.get(t.grid, o + cell.SIZE + cell.OFF_WIDTH) ?? 0) != 1 then erase.clear_wide_at(t, x + 1)
   write_cell(t, o, cp, w)
   if w == 2 then write_cell(t, o + cell.SIZE, 0, 0)
+  screen.touched(t, t.y, x + w)
 }
 
 /// Write a whole cell at byte `o` with the pen's colours, attributes and
@@ -101,6 +103,7 @@ fn shift_right(mut t: core.Terminal, x: Int, n: Int) -> Unit = {
   let row = screen.row_off(t, t.y)
   let keep = t.cols - x - n
   if keep > 0 then bytes.copy_within(t.grid, row + x * cell.SIZE, row + (x + keep) * cell.SIZE, row + (x + n) * cell.SIZE)
+  screen.touched(t, t.y, t.cols)
   screen.erase_cells(t, t.y, x, x + n)
 }
 
@@ -117,38 +120,33 @@ fn delete_chars(mut t: core.Terminal, n: Int) -> Unit = {
   t.pending_wrap = false
 }
 
+/// Printable ASCII bytes of `data` from `i` (before `n`) into the cells
+/// from byte `o` of `grid`, at most `max`, each over a cell one column
+/// wide; `colors` and `tail` as `write_cell` lays them out. How many were
+/// written: the run stops at any other byte and at a wide char's half
+/// (`put` splits it). Native (native/glyphs.rs): most output is such runs.
+@extern(rust, "crate::glyphs", "print_ascii_run")
+fn ascii_run(mut grid: Bytes, o: Int, data: Bytes, i: Int, n: Int, max: Int, colors: Int, tail: Int) -> Int = _
+
 /// After `print_ascii`: the printable ASCII bytes that follow at `i`, while
-/// they fit on the cursor's row, written with the cell offset carried along
-/// instead of recomputed. Returns where it stopped.
+/// they fit on the cursor's row. Returns where it stopped.
 fn print_ascii_run(mut t: core.Terminal, data: Bytes, i: Int, n: Int) -> Int = {
-  if t.pending_wrap then i
+  // The row's last column is left to `print_ascii`, which owns the
+  // pending-wrap state.
+  let max = t.cols - 1 - t.x
+  if t.pending_wrap or max <= 0 then i
   else {
-    var j = i
-    var x = t.x
-    var o = screen.cell_off(t, x, t.y)
+    let o = screen.cell_off(t, t.x, t.y)
     let colors = int.bor(t.fg, int.bshl(t.bg, 32))
     let tail = int.bor(t.attrs, int.bshl(1, 16))
-    var go = true
-    // The row's last column is left to `print_ascii`, which owns the
-    // pending-wrap state.
-    while go and j < n and x < t.cols - 1 {
-      let b = bytes.get(data, j) ?? 0
-      // Stop at anything else, and at a wide char's half (`put` splits it).
-      if b >= 0x20 and b < 0x7F and bytes.get(t.grid, o + cell.OFF_WIDTH) ?? 0 == 1 then {
-        bytes.put_u32_le(t.grid, o + cell.OFF_CP, b)
-        bytes.put_i64_le(t.grid, o + cell.OFF_FG, colors)
-        bytes.put_u32_le(t.grid, o + cell.OFF_ATTRS, tail)
-        o = o + cell.SIZE
-        x = x + 1
-        j = j + 1
-      } else go = false
+    let k = ascii_run(t.grid, o, data, i, n, max, colors, tail)
+    if k > 0 then {
+      t.x = t.x + k
+      t.last_x = t.x - 1
+      t.last_cp = bytes.get(data, i + k - 1) ?? 0
+      screen.touched(t, t.y, t.x)
     }
-    if j > i then {
-      t.x = x
-      t.last_x = x - 1
-      t.last_cp = bytes.get(data, j - 1) ?? 0
-    }
-    j
+    i + k
   }
 }
 
@@ -166,7 +164,10 @@ fn print_ascii(mut t: core.Terminal, b: Int) -> Unit = {
   let o = screen.cell_off(t, t.x, t.y)
   // Only a wide char's half needs more than overwriting the cell.
   if (bytes.get(t.grid, o + cell.OFF_WIDTH) ?? 0) != 1 then put(t, t.x, b, 1)
-  else write_cell(t, o, b, 1)
+  else {
+    write_cell(t, o, b, 1)
+    screen.touched(t, t.y, t.x + 1)
+  }
   t.last_x = t.x
   t.last_y = t.y
   t.last_cp = b

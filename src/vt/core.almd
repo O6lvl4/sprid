@@ -54,10 +54,16 @@ type Terminal = {
   grid: Bytes,
   top: Int,
   wrapped: Bytes,
+  // Per physical row, a u16: the column from which every cell is a never
+  // written, default blank — an upper bound of the columns in use, raised
+  // by whatever writes cells (`screen.touched`), so a line leaving the
+  // screen is not searched from its last column for where its text ends.
+  extent: Bytes,
   graphemes: Map[Int, String],
   other_grid: Bytes,
   other_top: Int,
   other_wrapped: Bytes,
+  other_extent: Bytes,
   other_graphemes: Map[Int, String],
   alt: Bool,
   // Cursor and pen.
@@ -173,6 +179,15 @@ type Terminal = {
   utf8_cp: Int,
 }
 
+/// `extent` for a screen whose rows may be used to their last column.
+fn full_extent(cols: Int, rows: Int) -> Bytes = {
+  var e = bytes.zeros(rows * 2)
+  for p in 0..<rows {
+    bytes.put_u16_le(e, p * 2, cols)
+  }
+  e
+}
+
 fn new(cols: Int, rows: Int) -> Terminal = with_scrollback(cols, rows, DEFAULT_SCROLLBACK)
 
 fn with_scrollback(cols: Int, rows: Int, limit: Int) -> Terminal = {
@@ -184,10 +199,12 @@ fn with_scrollback(cols: Int, rows: Int, limit: Int) -> Terminal = {
     grid: bytes.repeat(blank, rows),
     top: 0,
     wrapped: bytes.zeros(rows),
+    extent: bytes.zeros(rows * 2),
     graphemes: [:],
     other_grid: bytes.repeat(blank, rows),
     other_top: 0,
     other_wrapped: bytes.zeros(rows),
+    other_extent: bytes.zeros(rows * 2),
     other_graphemes: [:],
     alt: false,
     x: 0,

@@ -122,6 +122,14 @@ fn feed(mut t: core.Terminal, data: Bytes) -> Unit = {
     if b >= 0x20 and b < 0x7F and t.state == core.GROUND and t.utf8_need == 0 and not t.dec_graphics and not t.insert then {
       glyphs.print_ascii(t, b)
       i = glyphs.print_ascii_run(t, data, i + 1, n)
+    } else if b == 0x1B and t.state == core.GROUND and t.utf8_need == 0 and i + 1 < n and bytes.get(data, i + 1) ?? 0 == 0x5B then {
+      // ESC [ in the ground state: into the CSI state at once.
+      enter_csi(t)
+      i = i + 2
+    } else if b >= 0x30 and b <= 0x3B and b != 0x3A and t.utf8_need == 0 and (t.state == core.CSI_PARAM or t.state == core.CSI_ENTRY) then {
+      // The parameters of a CSI sequence — `38;5;123` — taken in one go,
+      // not a byte at a time through the state machine.
+      i = csi.params(t, data, i, n)
     } else {
       step(t, b)
       i = i + 1
