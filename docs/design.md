@@ -106,8 +106,11 @@ itself.
 
 ## Compiler workarounds
 
-sprid builds with Almide's develop branch at the commit CI pins
-(`ALMIDE_REF` in `.github/workflows/release.yml`; 0.67.1-dev). 0.65.1 and
+sprid builds with the Almide release CI pins (`ALMIDE_REF` in
+`.github/workflows/release.yml`; v0.69.1, dialect epoch 15 — v0.69.0 left a
+dependency's `[native-deps]` out of the generated Cargo.toml, so snaidhm's
+wgpu and winit went missing; the v0.70.0 release candidates read dialect
+16, whose `??` groups differently, and need `almide fix` first). 0.65.1 and
 earlier lack the fix for
 [almide#3049](https://github.com/almide/almide/issues/3049): calls such as
 `erase_cells(t, t.y, t.x, t.cols)` silently pass the wrong arguments.

@@ -15,6 +15,7 @@ import self.pty
 import self.shell
 import self.sys
 import self.gui.dialog
+import self.gui.tabmenu
 import self.gui.shortcuts
 import self.gui.findkeys
 import self.gui.pointer
@@ -28,8 +29,13 @@ effect fn apply(mut a: session.Session, act: uistate.Act) -> Unit = match act {
   uistate.NextTab => groups.go_to(a, (groups.current(a) + 1) % groups.count(a)),
   uistate.PrevTab => groups.go_to(a, (groups.current(a) + groups.count(a) - 1) % groups.count(a)),
   uistate.GoTo(i) => if i < groups.count(a) and i != groups.current(a) then groups.go_to(a, i),
+  uistate.LastTab => groups.go_to(a, groups.count(a) - 1),
   uistate.MoveTab(to) => groups.move_tab(a, to),
   uistate.DetachTab => { a.adopting = groups.take_out(a, groups.current(a)) },
+  uistate.TabMenu(gi) => tab_menu(a, gi)!,
+  uistate.CloseOthers(gi) => close_tabs(a, tabmenu.others(tab_or_front(a, gi), groups.count(a))),
+  uistate.CloseRight(gi) => close_tabs(a, tabmenu.right_of(tab_or_front(a, gi), groups.count(a))),
+  uistate.CloseLeft(gi) => close_tabs(a, tabmenu.left_of(tab_or_front(a, gi))),
   _ => pane_act(a, act)!,
 }
 
@@ -71,6 +77,45 @@ fn close_pane(mut a: session.Session) -> Unit =
 fn close_tab(mut a: session.Session, gi: Int) -> Unit = {
   let fds = groups.panes_of(a, gi)
   if fds != [] and tabset.may_close_panes(a.tabs, fds, a.ja) then for fd in fds { groups.close_pane(a, fd) }
+}
+
+/// Tab `gi`, or the one in front for -1.
+fn tab_or_front(a: session.Session, gi: Int) -> Int = if gi < 0 then groups.current(a) else gi
+
+/// Tabs `gis` closed whole, if they may: asked once, about every program
+/// still running in any of them.
+fn close_tabs(mut a: session.Session, gis: List[Int]) -> Unit = {
+  let fds = list.flat_map(gis, (gi) => groups.panes_of(a, gi))
+  if fds != [] and tabset.may_close_panes(a.tabs, fds, a.ja) then for fd in fds { groups.close_pane(a, fd) }
+}
+
+/// The menu a right click on tab `gi` opens (see `tabmenu.items`), and what
+/// was picked from it done. A move keeps the tab in front where it is: the
+/// tab moves by its place, not by being the active one.
+effect fn tab_menu(mut a: session.Session, gi: Int) -> Unit = {
+  let n = groups.count(a)
+  let picked = dialog.context_menu(list.join(tabmenu.items(gi, n, a.ja), "\n"))
+  if picked == tabmenu.PICK_RENAME then {
+    groups.go_to(a, gi)
+    match list.get(a.tabs, a.active) {
+      some(tb) => {
+        a.ui.renaming = true
+        a.ui.draft = tabset.title_of(tb, a.ui.home)
+        a.ui.dirty = true
+      },
+      none => (),
+    }
+  } else if picked == tabmenu.PICK_CLOSE then close_tab(a, gi)
+  else if picked == tabmenu.PICK_OTHERS then close_tabs(a, tabmenu.others(gi, n))
+  else if picked == tabmenu.PICK_RIGHT then close_tabs(a, tabmenu.right_of(gi, n))
+  else if picked == tabmenu.PICK_LEFT then close_tabs(a, tabmenu.left_of(gi))
+  else if picked == tabmenu.PICK_MOVE_LEFT or picked == tabmenu.PICK_MOVE_RIGHT then {
+    let to = if picked == tabmenu.PICK_MOVE_LEFT then gi - 1 else gi + 1
+    if to >= 0 and to < n then {
+      a.groups = tabset.move_to(a.groups, gi, to)
+      a.ui.dirty = true
+    }
+  } else if picked == tabmenu.PICK_DETACH then { a.adopting = groups.take_out(a, gi) }
 }
 
 /// A tab in the directory of the pane in front, brought to the front.

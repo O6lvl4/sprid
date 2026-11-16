@@ -33,15 +33,23 @@ effect fn mouse(mut cur: tabset.Tab, mut ui: uistate.Ui, kind: Int, p: place.Pla
   else if kind == window.MOUSE_UP then release(cur, ui)
   else uistate.Stay
 
-/// A button pressed on the grid.
-effect fn button_down(mut cur: tabset.Tab, mut ui: uistate.Ui, p: place.Place) -> uistate.Act = match window.event_code() {
-  0 => press(cur, ui, p)!,
-  // A right click: copy, paste, select all, find, clear.
-  1 => uistate.Menu,
-  // A middle click pastes the PRIMARY selection, as X11 has it.
-  2 => if sys.is_linux() then uistate.PastePrimary else uistate.Stay,
-  _ => uistate.Stay,
+/// A button pressed: on a tab, a right click opens the tab's menu and a
+/// middle click closes it, as browsers have it; on the grid, a right click
+/// opens the terminal's menu — copy, paste, select all, find, clear — and
+/// a middle click pastes the PRIMARY selection, as X11 has it.
+effect fn button_down(mut cur: tabset.Tab, mut ui: uistate.Ui, p: place.Place) -> uistate.Act = {
+  let tab = bar_tab(p)
+  match window.event_code() {
+    0 => press(cur, ui, p)!,
+    1 => if tab >= 0 then uistate.TabMenu(tab) else uistate.Menu,
+    2 => if tab >= 0 then uistate.CloseTabAt(tab) else if sys.is_linux() then uistate.PastePrimary else uistate.Stay,
+    _ => uistate.Stay,
+  }
 }
+
+/// The tab under the pointer, -1 when it is not on the tab bar.
+fn bar_tab(p: place.Place) -> Int =
+  if p.tabs > 1 and place.py(p) >= 0 and place.py(p) < render.bar_height(p.r) then render.tab_at(p.r, place.px(p), p.width, p.tabs) else -1
 
 /// A button released: a selecting drag ends, with the selection made — for
 /// copy-on-select.

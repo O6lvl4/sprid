@@ -79,7 +79,9 @@ type Ui = {
 /// `Zoom` changes the font size by that many points, or with 0 resets it;
 /// `Restyle` follows the system's light or dark appearance; `Focus` the
 /// window gaining or losing the keyboard.
-type Act = | Stay | NewTab | CloseTab | CloseTabAt(Int) | NextTab | PrevTab | GoTo(Int) | NewWindow | CloseWindow | Zoom(Int) | Restyle | Focus(Bool) | Paste | PastePrimary | Selected | Menu | MoveTab(Int) | DetachTab
+type Act = | Stay | NewTab | CloseTab | CloseTabAt(Int) | NextTab | PrevTab | GoTo(Int) | LastTab | NewWindow | CloseWindow | Zoom(Int) | Restyle | Focus(Bool) | Paste | PastePrimary | Selected | Menu | MoveTab(Int) | DetachTab
+  // A tab's own menu, and what it closes (-1: the tab in front).
+  | TabMenu(Int) | CloseOthers(Int) | CloseRight(Int) | CloseLeft(Int)
   | SplitPane(Bool) | FocusPane(Int, Int) | CyclePane(Int) | ResizePane(Int, Int) | ZoomPane | EqualPanes
 
 /// The find bar as drawn.

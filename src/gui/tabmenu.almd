@@ -1,0 +1,57 @@
+// The menu a right click on a tab opens, and which tabs each of its items
+// is about — pure, for the tests; `acts.tab_menu` shows it and acts.
+
+/// The items, in order: `PICK_*` are their indexes. Items that have nothing
+/// to do — no other tabs, none to the right — are disabled (`!`).
+fn items(gi: Int, n: Int, ja: Bool) -> List[String] = {
+  let names = if ja then ["タブ名を変更", "-", "タブを閉じる", "ほかのタブを閉じる", "右側のタブを閉じる", "左側のタブを閉じる", "-", "タブを左へ移動", "タブを右へ移動", "タブを新規ウインドウへ移動"]
+    else ["Rename Tab", "-", "Close Tab", "Close Other Tabs", "Close Tabs to the Right", "Close Tabs to the Left", "-", "Move Tab Left", "Move Tab Right", "Move Tab to New Window"]
+  let off = (i: Int) => (i == PICK_OTHERS and n < 2) or (i == PICK_RIGHT and gi >= n - 1) or (i == PICK_LEFT and gi <= 0)
+    or (i == PICK_MOVE_LEFT and gi <= 0) or (i == PICK_MOVE_RIGHT and gi >= n - 1) or (i == PICK_DETACH and n < 2)
+  list.enumerate(names) |> list.map(((i, name)) => if off(i) then "!" + name else name)
+}
+
+let PICK_RENAME = 0
+let PICK_CLOSE = 2
+let PICK_OTHERS = 3
+let PICK_RIGHT = 4
+let PICK_LEFT = 5
+let PICK_MOVE_LEFT = 7
+let PICK_MOVE_RIGHT = 8
+let PICK_DETACH = 9
+
+/// The tabs other than `gi` of `n`.
+fn others(gi: Int, n: Int) -> List[Int] = list.filter(list.range(0, n), (g) => g != gi)
+
+/// The tabs to the right of `gi` of `n`.
+fn right_of(gi: Int, n: Int) -> List[Int] = list.range(gi + 1, n)
+
+/// The tabs to the left of `gi`.
+fn left_of(gi: Int) -> List[Int] = list.range(0, gi)
+
+test "the menu disables what has nothing to do" {
+  let only = items(0, 1, false)
+  assert_eq(only[PICK_OTHERS], "!Close Other Tabs")
+  assert_eq(only[PICK_RIGHT], "!Close Tabs to the Right")
+  assert_eq(only[PICK_LEFT], "!Close Tabs to the Left")
+  assert_eq(only[PICK_DETACH], "!Move Tab to New Window")
+  assert_eq(only[PICK_CLOSE], "Close Tab")
+  let middle = items(1, 3, false)
+  assert_eq(middle[PICK_OTHERS], "Close Other Tabs")
+  assert_eq(middle[PICK_RIGHT], "Close Tabs to the Right")
+  assert_eq(middle[PICK_LEFT], "Close Tabs to the Left")
+  assert_eq(middle[PICK_MOVE_LEFT], "Move Tab Left")
+  assert_eq(middle[PICK_MOVE_RIGHT], "Move Tab Right")
+  let last = items(2, 3, true)
+  assert_eq(last[PICK_RIGHT], "!右側のタブを閉じる")
+  assert_eq(last[PICK_MOVE_RIGHT], "!タブを右へ移動")
+  assert_eq(last[PICK_LEFT], "左側のタブを閉じる")
+}
+
+test "which tabs each item is about" {
+  assert_eq(others(1, 4), [0, 2, 3])
+  assert_eq(right_of(1, 4), [2, 3])
+  assert_eq(left_of(2), [0, 1])
+  assert_eq(right_of(3, 4), [])
+  assert_eq(left_of(0), [])
+}

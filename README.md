@@ -86,8 +86,10 @@ before closing a busy tab or pasting line breaks, are macOS only for now.
   Pasting line breaks into a shell that would run each line asks first.
 - **Tabs**: open in the current directory, switch by click or keys, rename by
   double-click, close by the × at the end of a tab (it shows on the tab in
-  front and under the pointer), drag to reorder — or out of the tab bar for
-  a window of their own. A tab is titled by its directory, or by what the program in it
+  front and under the pointer) or a middle click, drag to reorder — or out
+  of the tab bar for a window of their own. A right click on a tab opens its
+  menu: rename, close, close the other tabs or those to the right or left,
+  move it left or right or to a new window. A tab is titled by its directory, or by what the program in it
   says of itself while it runs (Claude Code, ssh); the window takes the
   title of the tab in front. Closing a tab or a window asks first while a
   program is running; so does the app, when its tabs won't come back.
@@ -112,7 +114,8 @@ before closing a busy tab or pasting line breaks, are macOS only for now.
 | Copy / paste | Cmd+C / V | Ctrl+Shift+C / V |
 | Select all / find | Cmd+A / F (Cmd+G next) | Ctrl+Shift+A / F (Ctrl+Shift+G next) |
 | New tab / close tab or pane | Cmd+T / W | Ctrl+Shift+T / W |
-| Switch tab | Cmd+1–9, Ctrl+Tab, Cmd+Shift+[ ] | Ctrl+Shift+1–9, Ctrl+Tab, Ctrl+Page Up / Down |
+| Close other tabs | Cmd+Option+W | (tab menu) |
+| Switch tab | Cmd+1–8, Cmd+9 last, Ctrl+Tab, Cmd+Shift+[ ] | Ctrl+Shift+1–9, Ctrl+Tab, Ctrl+Page Up / Down |
 | Split across / down | Cmd+D / Cmd+Shift+D | Ctrl+Shift+D / E |
 | Next / previous pane, the pane that way | Cmd+] / [, Cmd+Option+arrows | Ctrl+Shift+] / [, Ctrl+Alt+arrows |
 | Move a divider / equal panes | Cmd+Ctrl+arrows / = | Ctrl+Shift+Alt+arrows / = |
