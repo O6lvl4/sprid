@@ -187,10 +187,10 @@ fn place(sb: Scrollback, i: Int) -> Option[(Int, Int, Int)] = {
   let (block, len) = if b < nb then (sb.sealed[b], bytes.len(sb.sealed[b])) else (sb.cur, sb.cur_len)
   var p = 0
   while rest > 0 and p < len {
-    p = p + 4 + bytes.get_u32_le(block, p) ?? 0
+    p = p + 4 + (bytes.get_u32_le(block, p) ?? 0)
     rest = rest - 1
   }
-  some((b, p + 4, p + 4 + bytes.get_u32_le(block, p) ?? 0))
+  some((b, p + 4, p + 4 + (bytes.get_u32_le(block, p) ?? 0)))
 }
 
 /// Every stored line, oldest first: its block and the record's payload

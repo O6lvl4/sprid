@@ -1,6 +1,9 @@
 # Release builds: Linux (x86_64, arm64) and macOS (arm64), attached to a
 # draft release for the pushed tag. Built with the Almide commit in
-# ALMIDE_REF, on develop: a commit, so a build is the same whenever it runs. Linux builds run on
+# ALMIDE_REF (a release tag's: v0.69.1, dialect epoch 15 — v0.69.0 dropped a
+# dependency's [native-deps] from the generated Cargo.toml, and the v0.70.0
+# release candidates read dialect 16), so a build is the same whenever it
+# runs. Linux builds run on
 # Ubuntu 22.04, so the binary needs glibc 2.35 or later.
 name: release
 
@@ -18,7 +21,7 @@ permissions:
 
 env:
   TAG: ${{ github.event.inputs.tag || github.ref_name }}
-  ALMIDE_REF: 3201c20439f39a5bf2502f15bd465c21916c9422
+  ALMIDE_REF: 20809e12fcdfae893b154e213d9677b90a2eec20
 
 jobs:
   build:

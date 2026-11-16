@@ -72,6 +72,7 @@ fn spec(ja: Bool) -> String = {
     item(t("New Tab", "新規タブ"), "t", 0),
     "-",
     item(t("Close Tab", "タブを閉じる"), "w", 0),
+    item(t("Close Other Tabs", "ほかのタブを閉じる"), "w", OPT),
     item(t("Close Window", "ウインドウを閉じる"), "w", SHIFT),
     item(t("Minimize", "しまう"), "m", 0),
     "-",

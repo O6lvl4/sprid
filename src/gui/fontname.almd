@@ -37,7 +37,7 @@ fn lookup(data: Bytes, at: Int, id: Int) -> String =
   if at + 6 > bytes.len(data) then ""
   else {
     let count = bytes.get_u16_be(data, at + 2) ?? 0
-    let strings = at + bytes.get_u16_be(data, at + 4) ?? 0
+    let strings = at + (bytes.get_u16_be(data, at + 4) ?? 0)
     list.range(0, count)
       |> list.filter_map((i) => record(data, at + 6 + i * 12, strings, id))
       |> list.fold((0, ""), (best, r) => if r.0 > best.0 then r else best)
@@ -52,7 +52,7 @@ fn record(data: Bytes, rec: Int, strings: Int, id: Int) -> Option[(Int, String)]
     let platform = bytes.get_u16_be(data, rec) ?? 0
     let rank = rank_of(platform, bytes.get_u16_be(data, rec + 4) ?? 0)
     let len = bytes.get_u16_be(data, rec + 8) ?? 0
-    let off = strings + bytes.get_u16_be(data, rec + 10) ?? 0
+    let off = strings + (bytes.get_u16_be(data, rec + 10) ?? 0)
     let text = if rank == 0 or off + len > bytes.len(data) then ""
       else if platform == 1 then latin(data, off, len) else utf16(data, off, len)
     if text == "" then none else some((rank, text))

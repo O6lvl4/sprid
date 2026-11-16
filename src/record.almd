@@ -184,7 +184,7 @@ fn cell_text(row: Bytes, x: Int, extras: Map[Int, String]) -> String = {
   let cp = bytes.get_u32_le(row, o + cell.OFF_CP) ?? 0
   if bytes.get(row, o + cell.OFF_WIDTH) ?? 0 == 0 then ""
   else if cp == 0 then " "
-  else if has_marks(row, o) then (string.from_codepoint(cp) ?? "") + map.get(extras, x) ?? ""
+  else if has_marks(row, o) then (string.from_codepoint(cp) ?? "") + (map.get(extras, x) ?? "")
   else string.from_codepoint(cp) ?? ""
 }
 
@@ -272,7 +272,7 @@ fn decode_run(mut row: Row, block: Bytes, p: Int, n: Int, cols: Int, at: (Int, I
 /// A combining mark on the character at column `last`, if there is one.
 fn add_mark(mut row: Row, last: Int, ch: String) -> Unit =
   if last >= 0 then {
-    row.extras = map.set(row.extras, last, map.get(row.extras, last) ?? "" + ch)
+    row.extras = map.set(row.extras, last, (map.get(row.extras, last) ?? "") + ch)
     let o = last * cell.SIZE + cell.OFF_FLAGS
     bytes.put_u8(row.cells, o, int.bor(bytes.get(row.cells, o) ?? 0, cell.FLAG_GRAPHEME))
   }

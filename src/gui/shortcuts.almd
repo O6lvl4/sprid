@@ -91,10 +91,14 @@ fn command_shift_side(k: Key, text: Int, arrow: Int) -> Bool =
 /// What Cmd with a letter opens or closes.
 let COMMAND_ACTS = [(0x74, uistate.NewTab), (0x77, uistate.CloseTab), (0x6E, uistate.NewWindow)]
 
-/// Cmd+T, Cmd+W, Cmd+N, Cmd+1..9, Cmd+Shift+W; on Linux Ctrl+Shift+Q closes
-/// the window (a Mac's Cmd+Q is the menu's).
+/// Cmd+T, Cmd+W, Cmd+N, Cmd+1..8, Cmd+9 for the last tab (as browsers and
+/// Ghostty have it), Cmd+Option+W for the other tabs (as browsers do),
+/// Cmd+Shift+W; on Linux Ctrl+Shift+Q closes the window (a Mac's Cmd+Q is
+/// the menu's).
 fn open_act(k: Key) -> Option[uistate.Act] =
-  if k.command and k.code >= 0x31 and k.code <= 0x39 then some(uistate.GoTo(k.code - 0x31))
+  if k.command and k.code >= 0x31 and k.code <= 0x38 then some(uistate.GoTo(k.code - 0x31))
+  else if k.command and k.code == 0x39 then some(uistate.LastTab)
+  else if k.kind == window.TEXT and k.mods == window.MOD_SUPER + window.MOD_ALT and k.lower == 0x77 then some(uistate.CloseOthers(-1))
   else if closes_window(k) then some(uistate.CloseWindow)
   else if k.command then list.find(COMMAND_ACTS, (e) => e.0 == k.lower) |> option.map((e) => e.1)
   else none
@@ -177,8 +181,8 @@ fn scroll_target(cur: tabset.Tab, k: Key) -> Option[Int] =
 fn command_scroll(cur: tabset.Tab, code: Int) -> Option[Int] =
   if code == window.KEY_HOME then some(view.max_back(cur.t))
   else if code == window.KEY_END then some(0)
-  else if code == window.KEY_UP then some(prompts.up(cur.t, cur.back) ?? cur.back + 1)
-  else if code == window.KEY_DOWN then some(prompts.down(cur.t, cur.back) ?? cur.back - 1)
+  else if code == window.KEY_UP then some(prompts.up(cur.t, cur.back) ?? (cur.back + 1))
+  else if code == window.KEY_DOWN then some(prompts.down(cur.t, cur.back) ?? (cur.back - 1))
   else page_scroll(cur, code)
 
 /// PageUp / PageDown: by pages.
