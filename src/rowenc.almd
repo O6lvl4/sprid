@@ -1,0 +1,37 @@
+// Row records written natively (native/rowenc.rs): record.almd's
+// `used_cols_at` and `write` for a row without combining marks, byte for
+// byte — the path every line scrolling off the screen takes.
+
+import bytes
+import self.cell
+import self.record
+
+/// `record.used_cols_at` of the row at byte `off` of `grid`, the cells
+/// from column `within` on known to be default blanks.
+@extern(rust, "crate::rowenc", "used_cols")
+fn used_cols(grid: Bytes, off: Int, within: Int) -> Int = _
+
+/// `record.write` of `used` columns of the row at `off` of `grid`, without
+/// marks, into `out` at `start` (room for `record.bound` bytes); where it ends.
+@extern(rust, "crate::rowenc", "write")
+fn write(mut out: Bytes, start: Int, grid: Bytes, off: Int, used: Int, wrapped: Bool) -> Int = _
+
+test "the native record is the one record.almd writes" {
+  let cols = 12
+  var row = cell.blank_row(cols, 0)
+  record.set_cell(row, 0, 0x61, 1, (0, 0, 0))
+  record.set_cell(row, 1, 0x62, 1, (cell.palette(3), 0, cell.ATTR_BOLD))
+  record.set_cell(row, 2, 0x6F22, 2, (cell.palette(3), 0, cell.ATTR_BOLD))
+  record.set_cell(row, 4, 0xE9, 1, (0, cell.rgb(1, 2, 3), 0))
+  record.set_cell(row, 5, 0x1F600, 2, (0, cell.rgb(1, 2, 3), 0))
+  record.set_cell(row, 8, 32, 1, (0, 0, int.bor(cell.link_bits(5), cell.PROMPT_BIT)))
+  for wrapped in [false, true] {
+    let want = record.encode_cells(row, 0, cols, wrapped, [:], 0)
+    let used = used_cols(row, 0, cols)
+    assert_eq(used, record.used_cols_at(row, 0, cols))
+    var out = bytes.zeros(record.bound(row, 0, used, [:]))
+    let end = write(out, 0, row, 0, used, wrapped)
+    assert_eq(bytes.slice(out, 0, end), want)
+  }
+  assert_eq(used_cols(cell.blank_row(cols, 0), 0, cols), 0)
+}

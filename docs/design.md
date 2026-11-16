@@ -86,6 +86,18 @@ show.
   parameters in fixed buffers. A PTY read no longer allocates and zeroes
   64 KB per 1 KB it returns, and the window sleeps on its PTYs and events at
   once instead of polling (snaidhm's `wait_fds`).
+- **And 2x again (0.9.27)**, measured against Ghostty 1.4 with `sprid bench
+  FILE COLS ROWS` (the terminal alone, fed a file as the PTY would hand it
+  over): a row leaving the screen is encoded into scrollback by native code
+  (`native/rowenc.rs`), and only up to its extent — the column from which it
+  is known blank, kept per row (`core.extent`) so a short line is not
+  searched from its last column; printable ASCII runs go into the grid
+  natively (`native/glyphs.rs`); `ESC [` and a CSI sequence's parameters are
+  taken in one step each; and a PTY read tries the non-blocking read before
+  polling, spinning briefly while a streaming program refills its KB. A
+  22 MB log: 122 → 52 ms; `seq 1 2000000`: 503 → 81 ms. In the window `cat`
+  is ~30% faster; what remains is macOS handing the PTY over 1 KB at a time,
+  each a wake of each process.
 
 ## How it is measured
 

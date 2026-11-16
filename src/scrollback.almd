@@ -19,6 +19,7 @@
 
 import bytes
 import self.record
+import self.rowenc
 
 let DEFAULT_BLOCK = 65536
 
@@ -83,8 +84,18 @@ fn push(mut sb: Scrollback, record: Bytes) -> Unit = {
 /// line scrolling off the screen goes through. Marks come from `graphemes`
 /// keyed by `base` + column.
 fn push_cells(mut sb: Scrollback, grid: Bytes, off: Int, cols: Int, wrapped: Bool,
-              graphemes: Map[Int, String], base: Int) -> Unit = {
-  let used = record.used_cols_at(grid, off, cols)
+              graphemes: Map[Int, String], base: Int) -> Unit =
+  push_cells_within(sb, grid, off, cols, cols, wrapped, graphemes, base)
+
+/// `push_cells` of a row known to be default blanks from column `within`
+/// on (`core.extent`): only the columns before it are looked at for where
+/// the text ends.
+fn push_cells_within(mut sb: Scrollback, grid: Bytes, off: Int, cols: Int, within: Int, wrapped: Bool,
+                     graphemes: Map[Int, String], base: Int) -> Unit = {
+  // Without marks on the screen — nearly always — the row is scanned and
+  // written natively (rowenc.almd).
+  let plain = map.len(graphemes) == 0
+  let used = if plain then rowenc.used_cols(grid, off, int.min(within, cols)) else record.used_cols_at(grid, off, int.min(within, cols))
   let bound = record.bound(grid, off, used, graphemes)
   if bound > sb.block_size then push(sb, record.encode_cells(grid, off, cols, wrapped, graphemes, base))
   else {
@@ -92,7 +103,8 @@ fn push_cells(mut sb: Scrollback, grid: Bytes, off: Int, cols: Int, wrapped: Boo
       seal(sb)
       sb.cur = bytes.zeros(sb.block_size)
     }
-    sb.cur_len = record.write(sb.cur, sb.cur_len, grid, off, used, wrapped, graphemes, base)
+    sb.cur_len = if plain then rowenc.write(sb.cur, sb.cur_len, grid, off, used, wrapped)
+                 else record.write(sb.cur, sb.cur_len, grid, off, used, wrapped, graphemes, base)
     sb.cur_lines = sb.cur_lines + 1
     evict(sb)
   }

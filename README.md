@@ -186,6 +186,7 @@ almide test                       # run the tests
 sprid                    open a window running your login shell
 sprid run <command>      run <command> on a PTY headless, print the screen
 sprid bench [MB]         stream styled, emoji-heavy output, report memory
+sprid bench FILE [C R]   feed FILE to a C x R terminal three times, time each pass
 sprid capture <png>      draw one screen of $SPRID_CAPTURE_CMD and save it
 ```
 

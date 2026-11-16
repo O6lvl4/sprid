@@ -3,7 +3,7 @@
 //   sprid                   open a window running your shell
 //   sprid capture <png>     draw one screen of SPRID_CAPTURE_CMD, save it
 //   sprid run <command>     run <command> on a PTY, then print the screen
-//   sprid bench [MB]        stream MB of styled, emoji-heavy output through a
+//   sprid bench [MB | FILE [COLS ROWS]]        stream MB of styled, emoji-heavy output through a
 //                           terminal and report memory as it goes
 //
 
@@ -15,6 +15,7 @@ import self.scrollback
 import self.sys
 import self.terminal
 import env
+import fs
 
 let COLS = 100
 let ROWS = 30
@@ -24,9 +25,12 @@ effect fn main() -> Unit = {
   match list.get(args, 1) ?? "" {
     "capture" => app.run(app.Options { command: none, cols: 0, rows: 0, capture: list.get(args, 2) })!,
     "run" => run(list.join(list.drop(args, 2), " "))!,
-    "bench" => bench(int.parse(list.get(args, 2) ?? "512") ?? 512)!,
+    "bench" => match int.parse(list.get(args, 2) ?? "512") {
+      ok(mb) => bench(mb)!,
+      err(_) => bench_file(list.get(args, 2) ?? "", int.parse(list.get(args, 3) ?? "200") ?? 200, int.parse(list.get(args, 4) ?? "50") ?? 50, list.get(args, 5) == some("alt"))!,
+    },
     first => if first == "" or string.starts_with(first, "-") then app.run(window_options(list.drop(args, 1)))!
-             else println("usage: sprid [--cols=N --rows=N] [-e command...] | sprid capture <png> | sprid run <command> | sprid bench [MB]"),
+             else println("usage: sprid [--cols=N --rows=N] [-e command...] | sprid capture <png> | sprid run <command> | sprid bench [MB | FILE [COLS ROWS]]"),
   }
 }
 
@@ -104,6 +108,36 @@ effect fn bench(mb: Int) -> Unit = {
       println("${pad(int.to_string(fed / 1000000), 6)}   ${pad(mib(sys.footprint()), 9)}   ${pad(mib(scrollback.bytes_used(t.sb)), 10)}   ${pad(int.to_string(scrollback.line_count(t.sb)), 10)}   ${float.to_string(float.from(fed / 100000) / 10.0 / secs)}")
       next_report = next_report + mb * 1000000 / 8
     }
+  }
+}
+
+/// `sprid bench FILE [COLS ROWS]`: FILE fed to a terminal of that size in
+/// 64 KB pieces, as the PTY hands it over, three times; each pass's time and
+/// rate. What the terminal alone takes of a `cat` of FILE.
+effect fn bench_file(path: String, cols: Int, rows: Int, alt: Bool) -> Unit = {
+  match fs.read_text(path) {
+    ok(text) => {
+      // As the PTY hands a file over: the line discipline's ONLCR turns
+      // every newline into a carriage return and newline.
+      let data = bytes.from_string(string.replace(text, "\n", "\r\n"))
+      let n = bytes.len(data)
+      println("${path}: ${int.to_string(n / 1000000)} MB into ${int.to_string(cols)}x${int.to_string(rows)}")
+      for pass in 1...3 {
+        var t = terminal.new(cols, rows)
+        // On the alternate screen nothing goes to scrollback: what the rest costs.
+        if alt then t.alt = true
+        let start = sys.now_ms()
+        var at = 0
+        while at < n {
+          let end = int.min(at + 65536, n)
+          terminal.feed(t, bytes.slice(data, at, end))
+          at = end
+        }
+        let ms = int.max(sys.now_ms() - start, 1)
+        println("pass ${int.to_string(pass)}: ${int.to_string(ms)} ms, ${int.to_string(n / 1000 / ms)} MB/s, ${int.to_string(scrollback.line_count(t.sb))} lines in scrollback")
+      }
+    },
+    err(e) => println("cannot read ${path}: ${e}"),
   }
 }
 
