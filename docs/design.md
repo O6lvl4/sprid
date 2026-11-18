@@ -98,6 +98,18 @@ show.
   22 MB log: 122 → 52 ms; `seq 1 2000000`: 503 → 81 ms. In the window `cat`
   is ~30% faster; what remains is macOS handing the PTY over 1 KB at a time,
   each a wake of each process.
+- **Reading on a thread of its own (0.9.28).** Each tab's master is read by
+  a thread that does nothing else (`native/pty.rs`): it tries again for a
+  moment when the KB is not there yet, as a streaming program refills it
+  within microseconds, and sleeps in poll otherwise; the loop takes what it
+  collected in one piece (up to 256 KB) and sleeps on a pipe the thread
+  signals, in place of the master. The parsing no longer sits between one KB
+  and the next, so the program and the terminal run at the same time rather
+  than taking turns. In the window, `cat` of the 22 MB log 150 → 85 ms and
+  of 35 MB of dense redraws 220 → 137 ms, level with Ghostty 1.4 (88 / 141);
+  `seq 1 2000000` 7.1 → 6.5 s (Ghostty 9.5). Unread output is capped at
+  4 MB per tab, after which the program waits, as with one reader. Idle costs
+  nothing more: the thread is in poll.
 
 ## How it is measured
 
