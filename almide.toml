@@ -1,6 +1,6 @@
 [package]
 name = "sprid"
-version = "0.9.28"
+version = "0.9.29"
 description = "A terminal emulator written in Almide"
 
 [dependencies]
