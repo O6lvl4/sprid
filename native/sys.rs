@@ -249,8 +249,18 @@ pub fn watch(path: &str) -> i64 {
             let mask = libc::IN_CLOSE_WRITE | libc::IN_MOVED_TO | libc::IN_CREATE | libc::IN_DELETE | libc::IN_MODIFY;
             libc::inotify_add_watch(fd, d.as_ptr(), mask);
         }
+        let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        WATCHED.with(|w| w.borrow_mut().insert(fd as i64, name.into_bytes()));
         fd as i64
     }
+}
+
+#[cfg(target_os = "linux")]
+thread_local! {
+    /// Per inotify fd: the name of the watched file within its directory —
+    /// the directory is what is watched, and a neighbour's save (in /tmp,
+    /// anyone's) is not a change of the file.
+    static WATCHED: std::cell::RefCell<std::collections::HashMap<i64, Vec<u8>>> = std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
 #[cfg(target_os = "macos")]
@@ -316,10 +326,28 @@ pub fn watch_changed(fd: i64) -> bool {
     }
     #[cfg(target_os = "linux")]
     unsafe {
+        // Each event: wd i32, mask u32, cookie u32, len u32, then `len` bytes
+        // of name, NUL-padded. Only an event about the watched file counts.
+        let name = WATCHED.with(|w| w.borrow().get(&fd).cloned()).unwrap_or_default();
         let mut buf = [0u8; 4096];
         let mut any = false;
-        while libc::read(fd as i32, buf.as_mut_ptr() as *mut _, buf.len()) > 0 {
-            any = true;
+        loop {
+            let n = libc::read(fd as i32, buf.as_mut_ptr() as *mut _, buf.len());
+            if n <= 0 {
+                break;
+            }
+            let n = n as usize;
+            let mut off = 0;
+            while off + 16 <= n {
+                let len = u32::from_ne_bytes([buf[off + 12], buf[off + 13], buf[off + 14], buf[off + 15]]) as usize;
+                let end = (off + 16 + len).min(n);
+                let ev_name = &buf[off + 16..end];
+                let ev_name = &ev_name[..ev_name.iter().position(|&b| b == 0).unwrap_or(ev_name.len())];
+                if name.is_empty() || ev_name == name.as_slice() {
+                    any = true;
+                }
+                off = end;
+            }
         }
         any
     }
