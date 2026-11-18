@@ -76,6 +76,32 @@ test "overwriting half of a wide char blanks the other half" {
   assert_eq(terminal.screen_text(t), " x本")
 }
 
+test "a UTF-8 run mixes wide and narrow text and stops short of the last column" {
+  var t = run(9, 3, "日本x語é")
+  assert_eq(terminal.screen_text(t), "日本x語é")
+  assert_eq((t.x, t.y, t.last_x, t.last_cp), (8, 0, 7, 0xE9))
+  // The last column: a wide char does not fit, so it wraps whole.
+  terminal.feed_string(t, "字")
+  assert_eq(terminal.screen_text(t), "日本x語é\n字")
+  assert_eq((t.x, t.y), (2, 1))
+}
+
+test "a UTF-8 run over wide chars replaces them whole, and splits one it half covers" {
+  var t = run(8, 2, "日本語\x1b[1;1H漢字")
+  assert_eq(terminal.screen_text(t), "漢字語")
+  terminal.feed_string(t, "\x1b[1;2Hあ")
+  assert_eq(terminal.screen_text(t), " あ 語")
+  assert_eq(t.x, 3)
+}
+
+test "a UTF-8 run keeps the pen's colours and leaves a combining mark to the general path" {
+  let t = run(8, 2, "\x1b[31mé\u{0301}日")
+  assert_eq(terminal.screen_text(t), "é\u{0301}日")
+  assert_eq(terminal.cell_fg(t, 0, 0), cell.palette(1))
+  assert_eq(terminal.cell_fg(t, 1, 0), cell.palette(1))
+  assert_eq(t.x, 3)
+}
+
 test "combining marks join the previous cell" {
   let t = run(6, 2, "e\u{0301}x")
   assert_eq(terminal.screen_text(t), "e\u{0301}x")

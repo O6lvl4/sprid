@@ -150,6 +150,44 @@ fn print_ascii_run(mut t: core.Terminal, data: Bytes, i: Int, n: Int) -> Int = {
   }
 }
 
+/// `print_ascii_run` for UTF-8 text: printable ASCII and characters of the
+/// Basic Multilingual Plane one or two columns wide, over plain cells (or a
+/// wide char over a wide char), as far as they fit short of the row's last
+/// column. Native (native/glyphs.rs). What comes back: the bytes taken, the
+/// columns written at bit 24, the last character at bit 40 and whether it
+/// was wide at bit 60; 0 when nothing was taken.
+@extern(rust, "crate::glyphs", "print_utf8_run")
+fn utf8_run(mut grid: Bytes, o: Int, data: Bytes, i: Int, n: Int, max: Int, colors: Int, attrs: Int) -> Int = _
+
+/// Give the native run the width table (`width.BMP`) once: passed on each
+/// call it would be copied each time. Called when a terminal is made; until
+/// then the run takes nothing and `print` does the work.
+@extern(rust, "crate::glyphs", "set_widths")
+fn set_widths(bmp: Bytes) -> Unit = _
+
+/// In the ground state at a UTF-8 lead byte: the text that follows at `i`,
+/// natively, while it fits on the cursor's row. Returns where it stopped —
+/// `i` when nothing was taken, and `print` is to take the byte.
+fn print_utf8_run(mut t: core.Terminal, data: Bytes, i: Int, n: Int) -> Int = {
+  let max = t.cols - 1 - t.x
+  if t.pending_wrap or max <= 0 then i
+  else {
+    let o = screen.cell_off(t, t.x, t.y)
+    let colors = int.bor(t.fg, int.bshl(t.bg, 32))
+    let r = utf8_run(t.grid, o, data, i, n, max, colors, t.attrs)
+    if r == 0 then i
+    else {
+      let cols = int.band(int.bshr(r, 24), 0xFFFF)
+      t.x = t.x + cols
+      t.last_x = t.x - (if int.bshr(r, 60) != 0 then 2 else 1)
+      t.last_y = t.y
+      t.last_cp = int.band(int.bshr(r, 40), 0xFFFFF)
+      screen.touched(t, t.y, t.x)
+      i + int.band(r, 0xFFFFFF)
+    }
+  }
+}
+
 /// `print` of a printable ASCII byte with the character set and insert mode
 /// off: one cell wide, never combining.
 fn print_ascii(mut t: core.Terminal, b: Int) -> Unit = {
