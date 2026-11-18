@@ -15,6 +15,11 @@ fn read(fd: Int, timeout_ms: Int) -> Bytes = _
 fn wait(fds: List[Int], timeout_ms: Int) -> Unit = _
 
 /// Whether the program on `fd` has closed its side.
+/// The fd the loop sleeps on for output of `fd`'s program: its reader
+/// thread's wake pipe (see native/pty.rs).
+@extern(rust, "crate::pty", "wake_fd")
+fn wake_fd(fd: Int) -> Int = _
+
 @extern(rust, "crate::pty", "eof")
 fn eof(fd: Int) -> Bool = _
 

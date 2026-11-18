@@ -16,7 +16,7 @@ import self.gui.groups
 
 /// The PTYs, and the config file's watch.
 fn watched(a: session.Session) -> List[Int] =
-  list.map(a.tabs, (tb) => tb.fd) + (if a.config_fd >= 0 then [a.config_fd] else [])
+  list.map(a.tabs, (tb) => pty.wake_fd(tb.fd)) + (if a.config_fd >= 0 then [a.config_fd] else [])
 
 /// How long to sleep: until input, output on any tab, or the next frame is
 /// due — with nothing to draw that is indefinitely, so an idle window costs

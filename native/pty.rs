@@ -8,9 +8,6 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 
 thread_local! {
-    /// Whether the last `read` found data without polling: the next tries
-    /// that first again.
-    static EAGER: std::cell::Cell<bool> = std::cell::Cell::new(false);
     /// Master fds whose child side has closed: a read hit the end.
     static ENDED: RefCell<HashSet<i32>> = RefCell::new(HashSet::new());
     static SCRATCH: RefCell<Vec<u8>> = RefCell::new(vec![0u8; 65536]);
@@ -19,6 +16,154 @@ thread_local! {
     /// Input the child hasn't taken yet, per master fd: written as it reads.
     static PENDING: RefCell<std::collections::HashMap<i32, Vec<u8>>> = RefCell::new(std::collections::HashMap::new());
 }
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
+
+/// A tab's program is read by a thread of its own, and the loop takes what
+/// it collected in one piece. macOS hands a PTY over 1 KB at a time, each KB
+/// a handoff between the program and its reader: done on the loop's thread,
+/// the parsing sat between one KB and the next, and `cat` of a big file ran
+/// at the pace of the two taking turns. The thread does nothing but read —
+/// trying again for a moment when the KB is not there yet, as a streaming
+/// program refills it within microseconds, then sleeping in poll — while the
+/// loop parses what came.
+struct Chan {
+    queued: Mutex<Queued>,
+    /// Signalled when output comes, the end comes, or the queue is taken.
+    changed: Condvar,
+    /// Readable while the queue holds output or has ended: what the loop
+    /// sleeps on in place of the master (`wake_fd`).
+    wake_r: i32,
+    wake_w: i32,
+    /// Written once to end the thread.
+    stop_r: i32,
+    stop_w: i32,
+    stop: AtomicBool,
+}
+
+struct Queued {
+    data: Vec<u8>,
+    eof: bool,
+    /// A byte waits in the wake pipe.
+    signalled: bool,
+}
+
+/// The most output a tab keeps unread before its program is made to wait.
+const QUEUE_LIMIT: usize = 4 << 20;
+/// The most one `read` hands over, so the loop looks at the clock between
+/// pieces.
+const READ_MAX: usize = 256 << 10;
+/// How many empty reads the thread tries before it sleeps: each a few
+/// hundred ns, the wake-up from poll several µs.
+const SPINS: u32 = 200;
+
+fn chans() -> &'static Mutex<std::collections::HashMap<i32, Arc<Chan>>> {
+    static CHANS: OnceLock<Mutex<std::collections::HashMap<i32, Arc<Chan>>>> = OnceLock::new();
+    CHANS.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
+
+fn chan(fd: i64) -> Option<Arc<Chan>> { chans().lock().unwrap().get(&(fd as i32)).cloned() }
+
+/// A pipe neither end of which a child inherits, both non-blocking.
+fn pipe_cloexec() -> Option<(i32, i32)> {
+    let mut p = [0i32; 2];
+    if unsafe { libc::pipe(p.as_mut_ptr()) } != 0 { return None; }
+    for f in p {
+        unsafe {
+            libc::fcntl(f, libc::F_SETFD, libc::FD_CLOEXEC);
+            let fl = libc::fcntl(f, libc::F_GETFL);
+            libc::fcntl(f, libc::F_SETFL, fl | libc::O_NONBLOCK);
+        }
+    }
+    Some((p[0], p[1]))
+}
+
+/// Start reading `master` on a thread of its own.
+fn start_reader(master: i32) {
+    let Some((wake_r, wake_w)) = pipe_cloexec() else { return };
+    let Some((stop_r, stop_w)) = pipe_cloexec() else {
+        unsafe { libc::close(wake_r); libc::close(wake_w); }
+        return;
+    };
+    let ch = Arc::new(Chan {
+        queued: Mutex::new(Queued { data: Vec::new(), eof: false, signalled: false }),
+        changed: Condvar::new(),
+        wake_r, wake_w, stop_r, stop_w,
+        stop: AtomicBool::new(false),
+    });
+    chans().lock().unwrap().insert(master, ch.clone());
+    let started = std::thread::Builder::new().name(format!("pty-{master}")).spawn(move || reader(master, ch));
+    if started.is_err() {
+        if let Some(ch) = chans().lock().unwrap().remove(&master) {
+            unsafe { libc::close(ch.wake_r); libc::close(ch.wake_w); libc::close(ch.stop_r); libc::close(ch.stop_w); }
+        }
+    }
+}
+
+/// The thread: `fd`'s output into the queue until the end or `stop`; closes
+/// `fd` and `stop_r` on the way out.
+fn reader(fd: i32, ch: Arc<Chan>) {
+    let mut buf = vec![0u8; 65536];
+    let mut spins = 0u32;
+    while !ch.stop.load(Ordering::Relaxed) {
+        {
+            let mut q = ch.queued.lock().unwrap();
+            while q.data.len() >= QUEUE_LIMIT && !ch.stop.load(Ordering::Relaxed) {
+                q = ch.changed.wait(q).unwrap();
+            }
+        }
+        let r = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut _, buf.len()) };
+        if r > 0 {
+            let mut q = ch.queued.lock().unwrap();
+            q.data.extend_from_slice(&buf[..r as usize]);
+            signal(&ch, &mut q);
+            ch.changed.notify_all();
+            spins = 0;
+            continue;
+        }
+        let e = if r == 0 { 0 } else { errno() };
+        if e == libc::EINTR { continue; }
+        if e != libc::EAGAIN {
+            // 0, or EIO once the child side is closed: the end. Wait to be
+            // stopped, not to be read again.
+            {
+                let mut q = ch.queued.lock().unwrap();
+                q.eof = true;
+                signal(&ch, &mut q);
+                ch.changed.notify_all();
+            }
+            let mut p = libc::pollfd { fd: ch.stop_r, events: libc::POLLIN, revents: 0 };
+            unsafe { libc::poll(&mut p, 1, -1) };
+            break;
+        }
+        if spins < SPINS {
+            std::hint::spin_loop();
+            spins += 1;
+            continue;
+        }
+        spins = 0;
+        let mut p = [
+            libc::pollfd { fd, events: libc::POLLIN, revents: 0 },
+            libc::pollfd { fd: ch.stop_r, events: libc::POLLIN, revents: 0 },
+        ];
+        unsafe { libc::poll(p.as_mut_ptr(), 2, -1) };
+    }
+    unsafe { libc::close(fd); libc::close(ch.stop_r); }
+}
+
+/// A byte into the wake pipe, unless one waits there already. Under the
+/// queue's lock, as is `close`, so the pipe is never written after it went.
+fn signal(ch: &Chan, q: &mut Queued) {
+    if !q.signalled && !ch.stop.load(Ordering::Relaxed) {
+        let b = 1u8;
+        unsafe { libc::write(ch.wake_w, &b as *const u8 as *const _, 1) };
+        q.signalled = true;
+    }
+}
+
+/// The fd the loop sleeps on for output of `fd`'s program.
+pub fn wake_fd(fd: i64) -> i64 { chan(fd).map(|c| c.wake_r as i64).unwrap_or(fd) }
 
 /// Start `program` (run through `/bin/sh -c`) on a new PTY of `cols` x `rows`,
 /// in directory `cwd` when it is not empty. Returns the master fd, or -1.
@@ -82,6 +227,7 @@ pub fn spawn(program: &str, cwd: &str, cols: i64, rows: i64) -> i64 {
         let flags = libc::fcntl(master, libc::F_GETFL);
         libc::fcntl(master, libc::F_SETFL, flags | libc::O_NONBLOCK);
     }
+    start_reader(master);
     STARTED.with(|m| m.borrow_mut().insert(master, pid));
     // Asked when the app is told to quit: only with a program running is
     // there anything to ask the user about.
@@ -97,37 +243,53 @@ fn any_busy() -> bool {
 
 fn errno() -> i32 { std::io::Error::last_os_error().raw_os_error().unwrap_or(0) }
 
-/// Wait up to `timeout_ms` for output on `fd` and return what is there; empty
-/// on timeout, and once the child side has closed (`eof` then says so).
+/// What `fd`'s program wrote since the last call — up to `READ_MAX` of it,
+/// waiting up to `timeout_ms` when there is nothing yet; empty on timeout,
+/// and once the child side has closed (`eof` then says so).
 pub fn read(fd: i64, timeout_ms: i64) -> AlmideRcCow<Vec<u8>> {
-    // The master is non-blocking. While a program streams, the PTY has its
-    // next KB ready at every turn, and polling first was one of two system
-    // calls per KB: after a read that found data, the next reads first and
-    // polls only when nothing was there. After one that found nothing — a
-    // program writing a line at a time — the next polls first, as the read
-    // would mostly fail.
-    let eager = EAGER.with(|e| e.get());
-    let mut out = if eager { take(fd) } else { Err(libc::EAGAIN) };
-    // A streaming program refills the KB within microseconds of it being
-    // taken: a few more tries before sleeping in poll — whose wake-up costs
-    // more than they do — keep the handoff tight.
-    let mut tries = if eager && timeout_ms > 0 { 40 } else { 0 };
-    while tries > 0 && matches!(out, Err(libc::EAGAIN)) {
-        std::hint::spin_loop();
-        out = take(fd);
-        tries -= 1;
+    let Some(ch) = chan(fd) else { return read_direct(fd, timeout_ms) };
+    let mut q = ch.queued.lock().unwrap();
+    if q.data.is_empty() && !q.eof && timeout_ms > 0 {
+        let (guard, _) = ch.changed.wait_timeout(q, std::time::Duration::from_millis(timeout_ms as u64)).unwrap();
+        q = guard;
     }
+    let out = if q.data.len() > READ_MAX {
+        let rest = q.data.split_off(READ_MAX);
+        std::mem::replace(&mut q.data, rest)
+    } else {
+        std::mem::take(&mut q.data)
+    };
+    if q.data.is_empty() {
+        if q.eof { ENDED.with(|e| e.borrow_mut().insert(fd as i32)); }
+        // Nothing left: the wake pipe emptied, so the loop sleeps again.
+        if q.signalled && !q.eof {
+            let mut sink = [0u8; 16];
+            while unsafe { libc::read(ch.wake_r, sink.as_mut_ptr() as *mut _, sink.len()) } > 0 {}
+            q.signalled = false;
+        }
+    }
+    // The thread may wait for room.
+    if !out.is_empty() { ch.changed.notify_all(); }
+    AlmideRcCow::new(out)
+}
+
+/// Wait up to `timeout_ms` until any of `fds` has output (or has ended).
+pub fn wait(fds: &[i64], timeout_ms: i64) {
+    let mut pfds: Vec<libc::pollfd> =
+        fds.iter().map(|&fd| libc::pollfd { fd: wake_fd(fd) as i32, events: libc::POLLIN, revents: 0 }).collect();
+    if pfds.is_empty() { return; }
+    unsafe { libc::poll(pfds.as_mut_ptr(), pfds.len() as libc::nfds_t, timeout_ms as i32) };
+}
+
+/// `read` straight from the master, for one without a reader thread.
+fn read_direct(fd: i64, timeout_ms: i64) -> AlmideRcCow<Vec<u8>> {
+    let mut out = take(fd);
     if matches!(out, Err(libc::EAGAIN)) {
         let mut pfd = libc::pollfd { fd: fd as i32, events: libc::POLLIN, revents: 0 };
         let n = unsafe { libc::poll(&mut pfd, 1, timeout_ms as i32) };
-        if n <= 0 {
-            EAGER.with(|e| e.set(false));
-            return AlmideRcCow::new(Vec::new());
-        }
+        if n <= 0 { return AlmideRcCow::new(Vec::new()); }
         out = take(fd);
     }
-    // Whole KBs mean a stream; less, a program writing as it goes.
-    EAGER.with(|e| e.set(matches!(out, Ok(ref v) if v.len() >= 1024)));
     match out {
         Ok(v) => AlmideRcCow::new(v),
         // Interrupted, or nothing after all: not the end.
@@ -138,14 +300,6 @@ pub fn read(fd: i64, timeout_ms: i64) -> AlmideRcCow<Vec<u8>> {
             AlmideRcCow::new(Vec::new())
         }
     }
-}
-
-/// Wait up to `timeout_ms` until any of `fds` has output (or has ended).
-pub fn wait(fds: &[i64], timeout_ms: i64) {
-    let mut pfds: Vec<libc::pollfd> =
-        fds.iter().map(|&fd| libc::pollfd { fd: fd as i32, events: libc::POLLIN, revents: 0 }).collect();
-    if pfds.is_empty() { return; }
-    unsafe { libc::poll(pfds.as_mut_ptr(), pfds.len() as libc::nfds_t, timeout_ms as i32) };
 }
 
 /// One read of `fd` into the scratch buffer; what came, or the errno (0 at
@@ -162,7 +316,10 @@ fn take(fd: i64) -> Result<Vec<u8>, i32> {
 }
 
 /// `true` once a read of `fd` has hit the end of the child's output.
-pub fn eof(fd: i64) -> bool { ENDED.with(|e| e.borrow().contains(&(fd as i32))) }
+pub fn eof(fd: i64) -> bool {
+    ENDED.with(|e| e.borrow().contains(&(fd as i32)))
+        || chan(fd).is_some_and(|c| { let q = c.queued.lock().unwrap(); q.eof && q.data.is_empty() })
+}
 
 /// Send `data` to the child: as much as it takes now, the rest queued for
 /// `flush` — a big paste into a program that echoes it must not wait on the
@@ -215,7 +372,23 @@ pub fn close(fd: i64) {
     ENDED.with(|e| e.borrow_mut().remove(&(fd as i32)));
     PENDING.with(|p| p.borrow_mut().remove(&(fd as i32)));
     STARTED.with(|m| m.borrow_mut().remove(&(fd as i32)));
-    unsafe { libc::close(fd as i32) };
+    let ch = chans().lock().unwrap().remove(&(fd as i32));
+    match ch {
+        // The thread closes the master (and `stop_r`) once told to stop.
+        Some(ch) => {
+            let _q = ch.queued.lock().unwrap();
+            ch.stop.store(true, Ordering::Relaxed);
+            let b = 1u8;
+            unsafe {
+                libc::write(ch.stop_w, &b as *const u8 as *const _, 1);
+                libc::close(ch.wake_r);
+                libc::close(ch.wake_w);
+                libc::close(ch.stop_w);
+            }
+            ch.changed.notify_all();
+        }
+        None => unsafe { libc::close(fd as i32); },
+    }
 }
 
 /// Collect children that have exited, so they don't linger as zombies.
