@@ -110,6 +110,20 @@ show.
   `seq 1 2000000` 7.1 → 6.5 s (Ghostty 9.5). Unread output is capped at
   4 MB per tab, after which the program waits, as with one reader. Idle costs
   nothing more: the thread is in poll.
+- **UTF-8 text as a run too (0.9.29).** CJK and other non-ASCII text went
+  through the state machine a byte at a time and `print` a character at a
+  time — the width lookup, the wide-char checks, three stores, the extent —
+  while ASCII had its native run. Now a UTF-8 lead byte in the ground state
+  starts a native run as well (`native/glyphs.rs` `print_utf8_run`):
+  characters of the Basic Multilingual Plane one or two columns wide, over
+  plain cells or a wide char over a wide char, as far as they fit short of
+  the row's last column; a combining mark, a char beyond the plane, a half
+  of a wide char that would be left over, and the last column go through
+  `print` as before. The width table is handed to the native side once
+  (`set_widths`): passed on each call, the 64 KB was copied each time and
+  the run cost more than it saved. The terminal alone on 16.5 MB of
+  Japanese text: 85 → 31 ms; in the window, `cat` of it 115 → 65 ms,
+  level with Ghostty 1.4 (59–64).
 
 ## How it is measured
 
