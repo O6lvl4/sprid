@@ -285,6 +285,9 @@ mod mac {
             pop(menu, sel("popUpMenuPositioningItem:atLocation:inView:"), std::ptr::null_mut(), location, std::ptr::null_mut());
             send(menu, "release");
             send(target, "release");
+            // The menu ran its own loop: a modifier let go over it went
+            // unseen by the window (see `confirm`).
+            crate::window::resync_mods();
             PICKED.load(std::sync::atomic::Ordering::Relaxed)
         }
     }
@@ -317,6 +320,11 @@ mod mac {
             send_id(cancel_button, "setKeyEquivalent:", ns_string("\u{1b}"));
             let answer = run_modal(alert);
             send(alert, "release");
+            // The alert ran its own loop between the window's pumps, and
+            // what the window host is told meanwhile is lost: Cmd let go
+            // over the alert Cmd+W opened stayed held for it, and every key
+            // typed after came as a shortcut — typing nothing.
+            crate::window::resync_mods();
             answer == FIRST
         }
     }
